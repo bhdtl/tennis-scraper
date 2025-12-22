@@ -1,24 +1,37 @@
 name: Neural Scout Sync
+
 on:
   schedule:
-    - cron: '*/30 * * * *' # Alle 30 Minuten (0€ Plan)
-  workflow_dispatch:
+    - cron: '*/30 * * * *' # Alle 30 Minuten
+  workflow_dispatch: # Erlaubt manuellen Start per Klick
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - name: Install
+          
+      - name: Install Dependencies
         run: |
           pip install -r requirements.txt
           playwright install chromium
-      - name: Run
+          
+      - name: Run Scraper (Neural Engine)
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # --- HIER WAR DER FEHLER: ---
+          # Das Skript nutzt Groq, nicht Gemini!
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          
+          # Supabase Connection
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          GEMINI_MODEL: 'gemini-2.5-pro'
+          
+          # Der "Double-Bind" Trick: Wir setzen beide Variablen auf dein Secret,
+          # damit das Skript den Key garantiert findet, egal wie es sucht.
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python scraper.py
