@@ -3,7 +3,7 @@ name: Neural Scout Sync
 on:
   schedule:
     - cron: '*/30 * * * *' # Alle 30 Minuten
-  workflow_dispatch: # Erlaubt manuellen Start per Klick
+  workflow_dispatch:
 
 jobs:
   scrape:
@@ -21,16 +21,11 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium
           
-      - name: Run Scraper (Gemini Core)
+      - name: Run Scraper
         env:
-          # --- UPDATE: ENGINE SWAP ---
-          # Wir füttern das Skript jetzt mit dem Gemini Key
+          # JETZT GEMINI!
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          
-          # Supabase Connection (Bleibt gleich)
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          
-          # Der "Double-Bind" Trick für Supabase bleibt bestehen (Sicherheitsnetz)
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python scraper.py
