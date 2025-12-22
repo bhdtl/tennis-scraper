@@ -18,18 +18,58 @@ import httpx
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+# SWITCH: GEMINI KEYS
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("CRITICAL: API Keys fehlen!")
+if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("CRITICAL: API Keys fehlen (Prüfe GEMINI_API_KEY in Secrets)!")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'llama-3.3-70b-versatile'
+
+# Wir nutzen das stärkste verfügbare Modell für die Analyse
+MODEL_NAME = 'gemini-1.5-pro' 
 
 # =================================================================
-# DATA LOADING & HELPERS
+# GEMINI ENGINE (The New Motor)
+# =================================================================
+async def call_gemini(prompt):
+    """Sendet Anfragen an die Google Gemini API."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    
+    headers = {"Content-Type": "application/json"}
+    
+    # Gemini Payload Struktur
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json", # Zwingt Gemini zu sauberem JSON
+            "temperature": 0.2
+        }
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # Gemini Pro kann bei komplexen Analysen etwas dauern, daher 60s Timeout
+            response = await client.post(url, headers=headers, json=payload, timeout=60.0)
+            
+            if response.status_code != 200:
+                logger.error(f"Gemini API Error {response.status_code}: {response.text}")
+                return None
+            
+            data = response.json()
+            # Extrahiere die Antwort
+            return data['candidates'][0]['content']['parts'][0]['text']
+            
+        except Exception as e:
+            logger.error(f"Gemini Network Error: {e}")
+            return None
+
+# =================================================================
+# DATA LOADING & MATCHING LOGIC (Preserved)
 # =================================================================
 async def get_db_data():
     try:
@@ -43,17 +83,21 @@ async def get_db_data():
         return [], [], [], []
 
 def find_best_court_match(scraped_tour_name, db_tournaments):
+    """
+    Silicon Valley Logic für United Cup & Co.
+    """
     scraped_lower = scraped_tour_name.lower().strip()
     
-    # 1. Exakter Match
+    # 1. Priorität: Exakter Match (z.B. "United Cup (Sydney)")
     for t in db_tournaments:
         if t['name'].lower() == scraped_lower:
             return t['surface'], t['bsi_rating'], t.get('notes', '')
 
-    # 2. "Contains" Match (Fuzzy Logic)
+    # 2. Priorität: "Contains" Match (Fuzzy)
     best_candidate = None
     for t in db_tournaments:
         db_name = t['name'].lower()
+        # Findet "United Cup" in "United Cup (Perth)" oder umgekehrt
         if db_name in scraped_lower or scraped_lower in db_name:
             if best_candidate is None or len(db_name) < len(best_candidate['name']):
                 best_candidate = t
@@ -66,6 +110,9 @@ def find_best_court_match(scraped_tour_name, db_tournaments):
     if any(x in scraped_lower for x in ['clay', 'sand', 'roland']): return 'Red Clay', 3.5, 'Slow Clay fallback'
     return 'Hard', 6.5, 'Standard Hard fallback'
 
+# =================================================================
+# MATH CORE (Preserved)
+# =================================================================
 def calculate_math_odds(s1, s2, bsi):
     is_fast = bsi >= 7
     is_slow = bsi <= 4
@@ -73,6 +120,7 @@ def calculate_math_odds(s1, s2, bsi):
     w_baseline = 0.7 if is_fast else (1.4 if is_slow else 1.0)
     w_mental = 1.2
     
+    # Safe Get mit Default 50
     serve_val1 = s1.get('serve', 50) + s1.get('power', 50)
     serve_val2 = s2.get('serve', 50) + s2.get('power', 50)
     serve_diff = (serve_val1 - serve_val2) * w_serve
@@ -84,16 +132,17 @@ def calculate_math_odds(s1, s2, bsi):
     mental_diff = (s1.get('mental', 50) - s2.get('mental', 50)) * w_mental
     
     total_score = (serve_diff + base_diff + mental_diff) / 200
+    
+    # Sigmoid Wahrscheinlichkeit
     return 1 / (1 + math.exp(-0.7 * (6.0 + total_score - 6.0)))
 
 # =================================================================
-# AI ANALYSIS (VETERAN FIX: RETRY LOGIC)
+# AI ANALYSIS (Updated for Gemini)
 # =================================================================
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # Full Prompt (Teuer & Groß)
     prompt = f"""
-    ROLE: Elite Tennis Scout.
-    TASK: Analyze Matchup: {p1['last_name']} vs {p2['last_name']}.
+    ROLE: Elite Tennis Analyst.
+    MATCH: {p1['last_name']} vs {p2['last_name']}.
     COURT: {surface} (Speed BSI: {bsi}/10). Notes: {notes}
     
     PLAYER A ({p1['last_name']}):
@@ -104,49 +153,29 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     - Skills: Srv {s2.get('serve')}, FH {s2.get('forehand')}, BH {s2.get('backhand')}, Men {s2.get('mental')}.
     - Scout: {r2.get('strengths', 'N/A')} (Pros), {r2.get('weaknesses', 'N/A')} (Cons).
     
+    TASK: Analyze based on the specific court speed (BSI {bsi}). Does the surface favor the big server or the grinder?
+    
     OUTPUT JSON ONLY:
     {{
-        "analysis_brief": "Short tactical summary focusing on how court speed affects the matchup.",
+        "analysis_brief": "One sharp tactical sentence focusing on court speed vs weapons.",
         "p1_win_probability": 0.XX
     }}
     """
     
-    # 1. Versuch: Voller Prompt
-    res = await call_groq(prompt)
-    if not res: 
-        logger.warning(f"⚠️ AI Timeout 1 for {p1['last_name']} vs {p2['last_name']}. Retrying simple mode...")
-        # 2. Versuch: Vereinfachter Prompt (Weniger Token, schneller)
-        simple_prompt = f"""
-        Analyze tennis match: {p1['last_name']} vs {p2['last_name']} on {surface} (Speed {bsi}/10).
-        Who wins? Output JSON: {{"analysis_brief": "Reasoning...", "p1_win_probability": 0.XX}}
-        """
-        res = await call_groq(simple_prompt)
-        
-    if not res: return 0.5, "AI Analysis Failed (Network/Model Error)"
+    res = await call_gemini(prompt)
+    if not res: return 0.5, "AI Timeout"
     
     try:
-        data = json.loads(res)
+        # Gemini packt JSON manchmal in Markdown Blöcke, wir reinigen das
+        clean_json = res.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_json)
         return data.get('p1_win_probability', 0.5), data.get('analysis_brief', 'No analysis')
     except:
-        return 0.5, "AI JSON Parse Error"
+        return 0.5, "AI Parse Error"
 
-async def call_groq(prompt):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
-    async with httpx.AsyncClient() as client:
-        try:
-            # VETERAN FIX: Timeout auf 60s erhöht für komplexe Analysen
-            r = await client.post(url, headers=headers, json=data, timeout=60.0)
-            if r.status_code != 200:
-                logger.error(f"Groq API Error {r.status_code}: {r.text}")
-                return None
-            return r.json()['choices'][0]['message']['content']
-        except Exception as e:
-            logger.error(f"Groq Net Error: {e}")
-            return None
-
-# --- SCRAPER HELPERS ---
+# =================================================================
+# SCRAPER CORE (Preserved)
+# =================================================================
 def normalize_text(text):
     if not text: return ""
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn')
@@ -164,7 +193,7 @@ async def scrape_tennis_odds_for_date(target_date):
             url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             logger.info(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            try: await page.wait_for_selector(".result", timeout=15000)
+            try: await page.wait_for_selector(".result", timeout=10000)
             except: 
                 await browser.close()
                 return None
@@ -200,14 +229,15 @@ def clean_html_for_extraction(html_content):
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v52 (Resilient Hybrid) Starting...")
+    logger.info("🚀 Neural Scout v53 (Gemini Pro - 35 Day Future Scan) Starting...")
     
+    # 1. Daten laden
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
 
     current_date = datetime.now()
     
-    # 35-Tage Future Scan für United Cup etc.
+    # 35 Tage Loop für United Cup und AO Vorbereitung
     for day_offset in range(35): 
         target_date = current_date + timedelta(days=day_offset)
         
@@ -217,11 +247,12 @@ async def run_pipeline():
         cleaned_text = clean_html_for_extraction(html)
         if not cleaned_text: continue
 
+        # Filter für Gemini
         player_names = [p['last_name'] for p in players]
         
         extract_prompt = f"""
         Extract matches where BOTH players are in this list: {json.dumps(player_names)}
-        Input: {cleaned_text[:15000]}
+        Input Text: {cleaned_text[:20000]}
         
         OUTPUT JSON: 
         {{ 
@@ -229,15 +260,16 @@ async def run_pipeline():
                 {{ "p1": "Lastname", "p2": "Lastname", "tour": "Tour Name (Full)", "odds1": 1.5, "odds2": 2.5 }} 
             ] 
         }}
-        If odds missing, set 0.
+        If odds missing, set to 0.
         """
         
-        # Extrahieren (nur Namen & Quoten)
-        extract_res = await call_groq(extract_prompt)
+        # 2. Extrahieren mit Gemini
+        extract_res = await call_gemini(extract_prompt)
         if not extract_res: continue
 
         try:
-            matches = json.loads(extract_res).get("matches", [])
+            clean_json = extract_res.replace("```json", "").replace("```", "").strip()
+            matches = json.loads(clean_json).get("matches", [])
             
             for m in matches:
                 p1_obj = next((p for p in players if p['last_name'] in m['p1']), None)
@@ -249,15 +281,16 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # 1. INTELLIGENTES MATCHING (United Cup -> BSI 7.4)
+                    # 3. SMART COURT MATCHING
                     surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
                     
-                    # 2. MATHE (Skill-basiert)
+                    # 4. MATH PROB
                     math_prob = calculate_math_odds(s1, s2, bsi)
                     
-                    # 3. AI DEEP DIVE (Mit Retry-Mechanismus gegen Timeouts!)
+                    # 5. GEMINI DEEP ANALYSIS
                     ai_prob, ai_reason = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
+                    # 6. HYBRID ODDS CALCULATION
                     final_prob_p1 = (math_prob * 0.5) + (ai_prob * 0.5)
                     fair_odds1 = round(1 / final_prob_p1, 2) if final_prob_p1 > 0.01 else 99.0
                     fair_odds2 = round(1 / (1 - final_prob_p1), 2) if final_prob_p1 < 0.99 else 99.0
@@ -274,13 +307,13 @@ async def run_pipeline():
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    logger.info(f"✅ Analyzed: {p1_obj['last_name']} vs {p2_obj['last_name']} @ {m['tour']} (AI: {ai_prob})")
+                    logger.info(f"✅ Analyzed: {p1_obj['last_name']} vs {p2_obj['last_name']} @ {m['tour']} | AI: {ai_prob}")
                     supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
         except Exception as e:
             logger.error(f"Processing Error: {e}")
 
-    logger.info("🏁 35-Day Cycle Finished.")
+    logger.info("🏁 35-Day Gemini Cycle Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
