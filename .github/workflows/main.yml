@@ -1,0 +1,24 @@
+name: Neural Scout Sync
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Alle 30 Minuten (0€ Plan)
+  workflow_dispatch:
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+      - name: Run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          GEMINI_MODEL: 'gemini-2.5-pro'
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python scraper.py
