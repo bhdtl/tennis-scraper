@@ -8,30 +8,44 @@ import time
 import math
 import logging
 from datetime import datetime, timezone, timedelta
+
+# VETERAN FIX: Lokale .env Unterstützung für einfacheres Debugging
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass # In GitHub Actions ist dotenv oft nicht nötig, da Secrets injiziert werden
+
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
-import httpx # Groq nutzt Standard-HTTP oder das OpenAI-Schema
+import httpx 
 
 # =================================================================
-# CONFIGURATION - UNIFIED NEURAL SCOUT (V26.0 - GROQ ENGINE)
+# CONFIGURATION - UNIFIED NEURAL SCOUT (V27.0 - ROBUST EDITION)
 # =================================================================
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-MODEL_NAME = 'llama-3.3-70b-versatile' # High-End Modell, kostenlos auf Groq
-
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.error("❌ CRITICAL: API Credentials missing in Secrets!")
-    raise ValueError("Missing Security Credentials")
+# VETERAN FIX: Granularer Check, damit wir wissen, WAS fehlt
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") # Fallback für Key-Namen
 
+missing_keys = []
+if not GROQ_API_KEY: missing_keys.append("GROQ_API_KEY")
+if not SUPABASE_URL: missing_keys.append("SUPABASE_URL")
+if not SUPABASE_KEY: missing_keys.append("SUPABASE_KEY")
+
+if missing_keys:
+    logger.error(f"❌ CRITICAL: The following keys are missing in Secrets: {', '.join(missing_keys)}")
+    logger.error("👉 Action Required: Go to GitHub Repo -> Settings -> Secrets -> Actions and add them.")
+    raise ValueError(f"Missing Security Credentials: {missing_keys}")
+
+MODEL_NAME = 'llama-3.3-70b-versatile'
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- MATH CORE (V24.0 SYNCED) ---
+# --- MATH CORE (V24.0 SYNCED - UNTOUCHED) ---
 def calculate_sophisticated_fair_odds(s1, s2, bsi):
     is_fast = bsi >= 7
     is_slow = bsi <= 4
@@ -151,7 +165,10 @@ def perform_database_hygiene(matches_to_upsert, matches_to_delete):
 async def run_pipeline():
     logger.info("🚀 Sync Cycle Start (Groq Future Scout)...")
     known_players = await get_known_players()
-    if not known_players: return
+    if not known_players: 
+        logger.warning("⚠️ No known players found in DB.")
+        return
+
     skills_res = supabase.table("player_skills").select("*").execute()
     all_skills = skills_res.data
     existing_odds_res = supabase.table("market_odds").select("*").execute()
@@ -175,6 +192,7 @@ async def run_pipeline():
         
         try:
             raw_response = await call_groq(prompt)
+            if not raw_response: continue
             data = json.loads(raw_response)
             matches = data.get('matches', [])
             
@@ -198,14 +216,18 @@ async def run_pipeline():
                         # Neural Analysis via Groq
                         analysis_prompt = f"Analyze matchup: {p1['last_name']} vs {p2['last_name']} on {surf}. Skills: {s1} vs {s2}. Output JSON only: {{'briefing': '...', 'ai_prob': 0.XX}}"
                         analysis_raw = await call_groq(analysis_prompt)
-                        analysis = json.loads(analysis_raw)
-                        
-                        final_p1 = (skill_p * 0.5) + (analysis['ai_prob'] * 0.5)
-                        m.update({"ai_fair_odds1": round(1/final_p1, 2), "ai_fair_odds2": round(1/(1-final_p1), 2), "ai_analysis_text": analysis['briefing']})
-                    except: continue
+                        if analysis_raw:
+                            analysis = json.loads(analysis_raw)
+                            final_p1 = (skill_p * 0.5) + (analysis['ai_prob'] * 0.5)
+                            m.update({"ai_fair_odds1": round(1/final_p1, 2), "ai_fair_odds2": round(1/(1-final_p1), 2), "ai_analysis_text": analysis['briefing']})
+                    except Exception as e:
+                        logger.warning(f"Skipping analysis for match {m['player1_name']} vs {m['player2_name']}: {e}")
+                        continue
                 valid_upserts.append(m)
             perform_database_hygiene(valid_upserts, invalid_deletes)
-        except: continue
+        except Exception as e:
+            logger.error(f"Pipeline Step Error: {e}")
+            continue
     logger.info("🏁 Cycle Done.")
 
 if __name__ == "__main__":
