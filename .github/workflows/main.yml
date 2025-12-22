@@ -21,17 +21,16 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium
           
-      - name: Run Scraper (Neural Engine)
+      - name: Run Scraper (Gemini Core)
         env:
-          # --- HIER WAR DER FEHLER: ---
-          # Das Skript nutzt Groq, nicht Gemini!
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # --- UPDATE: ENGINE SWAP ---
+          # Wir füttern das Skript jetzt mit dem Gemini Key
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           
-          # Supabase Connection
+          # Supabase Connection (Bleibt gleich)
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           
-          # Der "Double-Bind" Trick: Wir setzen beide Variablen auf dein Secret,
-          # damit das Skript den Key garantiert findet, egal wie es sucht.
+          # Der "Double-Bind" Trick für Supabase bleibt bestehen (Sicherheitsnetz)
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python scraper.py
