@@ -2,4 +2,4 @@ playwright
 beautifulsoup4
 supabase
 google-genai
-pip install python-dotenv
+
