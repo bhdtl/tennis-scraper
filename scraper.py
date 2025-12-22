@@ -29,11 +29,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'llama-3.3-70b-versatile'
 
 # =================================================================
-# INTELLIGENT MATCHING & HELPERS
+# DATA LOADING & HELPERS
 # =================================================================
 async def get_db_data():
     try:
-        # Wir laden alles, um lokal schnell zu matchen
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
@@ -44,42 +43,30 @@ async def get_db_data():
         return [], [], [], []
 
 def find_best_court_match(scraped_tour_name, db_tournaments):
-    """
-    Silicon Valley Logic: 
-    Versucht erst den exakten Match (z.B. 'United Cup (Sydney)').
-    Wenn nicht gefunden, sucht er nach dem Basis-Namen ('United Cup').
-    """
     scraped_lower = scraped_tour_name.lower().strip()
     
-    # 1. Priorität: Spezifischer Match (Falls im Scraped Text 'Sydney' steht)
-    # Das funktioniert, wenn TennisExplorer z.B. "United Cup - Sydney" schreibt
+    # 1. Exakter Match
     for t in db_tournaments:
-        db_name = t['name'].lower()
-        if db_name == scraped_lower:
+        if t['name'].lower() == scraped_lower:
             return t['surface'], t['bsi_rating'], t.get('notes', '')
 
-    # 2. Priorität: "Contains" Match (Der DB Name ist im Scraped Name enthalten oder umgekehrt)
-    # Beispiel: Scraped "United Cup" findet DB "United Cup" (General)
-    # WICHTIG: Du solltest einen Eintrag "United Cup" in der DB haben als Fallback!
+    # 2. "Contains" Match (Fuzzy Logic)
     best_candidate = None
     for t in db_tournaments:
         db_name = t['name'].lower()
-        # Wenn wir "United Cup" suchen, und "United Cup" in der DB finden -> Bingo
         if db_name in scraped_lower or scraped_lower in db_name:
-            # Wir bevorzugen den kürzesten Match (den generischen), falls keine Stadt dabei steht
             if best_candidate is None or len(db_name) < len(best_candidate['name']):
                 best_candidate = t
     
     if best_candidate:
         return best_candidate['surface'], best_candidate['bsi_rating'], best_candidate.get('notes', '')
 
-    # 3. Fallback: Heuristik (Wenn gar nichts in der DB steht)
+    # 3. Fallback
     if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor fallback'
     if any(x in scraped_lower for x in ['clay', 'sand', 'roland']): return 'Red Clay', 3.5, 'Slow Clay fallback'
     return 'Hard', 6.5, 'Standard Hard fallback'
 
 def calculate_math_odds(s1, s2, bsi):
-    # Deine bewährte Formel
     is_fast = bsi >= 7
     is_slow = bsi <= 4
     w_serve = 2.2 if is_fast else (0.6 if is_slow else 1.0)
@@ -100,9 +87,10 @@ def calculate_math_odds(s1, s2, bsi):
     return 1 / (1 + math.exp(-0.7 * (6.0 + total_score - 6.0)))
 
 # =================================================================
-# AI & SCRAPER
+# AI ANALYSIS (VETERAN FIX: RETRY LOGIC)
 # =================================================================
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
+    # Full Prompt (Teuer & Groß)
     prompt = f"""
     ROLE: Elite Tennis Scout.
     TASK: Analyze Matchup: {p1['last_name']} vs {p2['last_name']}.
@@ -122,12 +110,25 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
         "p1_win_probability": 0.XX
     }}
     """
+    
+    # 1. Versuch: Voller Prompt
     res = await call_groq(prompt)
-    if not res: return 0.5, "AI Timeout"
+    if not res: 
+        logger.warning(f"⚠️ AI Timeout 1 for {p1['last_name']} vs {p2['last_name']}. Retrying simple mode...")
+        # 2. Versuch: Vereinfachter Prompt (Weniger Token, schneller)
+        simple_prompt = f"""
+        Analyze tennis match: {p1['last_name']} vs {p2['last_name']} on {surface} (Speed {bsi}/10).
+        Who wins? Output JSON: {{"analysis_brief": "Reasoning...", "p1_win_probability": 0.XX}}
+        """
+        res = await call_groq(simple_prompt)
+        
+    if not res: return 0.5, "AI Analysis Failed (Network/Model Error)"
+    
     try:
         data = json.loads(res)
         return data.get('p1_win_probability', 0.5), data.get('analysis_brief', 'No analysis')
-    except: return 0.5, "AI Parse Error"
+    except:
+        return 0.5, "AI JSON Parse Error"
 
 async def call_groq(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -135,9 +136,15 @@ async def call_groq(prompt):
     data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
     async with httpx.AsyncClient() as client:
         try:
-            r = await client.post(url, headers=headers, json=data, timeout=30.0)
+            # VETERAN FIX: Timeout auf 60s erhöht für komplexe Analysen
+            r = await client.post(url, headers=headers, json=data, timeout=60.0)
+            if r.status_code != 200:
+                logger.error(f"Groq API Error {r.status_code}: {r.text}")
+                return None
             return r.json()['choices'][0]['message']['content']
-        except: return None
+        except Exception as e:
+            logger.error(f"Groq Net Error: {e}")
+            return None
 
 # --- SCRAPER HELPERS ---
 def normalize_text(text):
@@ -156,8 +163,8 @@ async def scrape_tennis_odds_for_date(target_date):
         try:
             url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             logger.info(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000) # Längeres Timeout für Future Dates
-            try: await page.wait_for_selector(".result", timeout=10000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            try: await page.wait_for_selector(".result", timeout=15000)
             except: 
                 await browser.close()
                 return None
@@ -193,20 +200,16 @@ def clean_html_for_extraction(html_content):
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v51 (35-Day Deep Future Scan) Starting...")
+    logger.info("🚀 Neural Scout v52 (Resilient Hybrid) Starting...")
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
 
     current_date = datetime.now()
     
-    # UPDATE: Scan 35 Tage in die Zukunft (für United Cup etc.)
+    # 35-Tage Future Scan für United Cup etc.
     for day_offset in range(35): 
         target_date = current_date + timedelta(days=day_offset)
-        
-        # Performance: Überspringe weit entfernte Tage, wenn wir noch im alten Jahr sind,
-        # es sei denn es ist der 1. Januar Woche. 
-        # (Aber da TennisExplorer sehr leicht ist, scannen wir einfach alles durch).
         
         html = await scrape_tennis_odds_for_date(target_date)
         if not html: continue
@@ -214,10 +217,8 @@ async def run_pipeline():
         cleaned_text = clean_html_for_extraction(html)
         if not cleaned_text: continue
 
-        # Filter Listen erstellen
         player_names = [p['last_name'] for p in players]
         
-        # Wir übergeben jetzt den Turniernamen explizit an die KI
         extract_prompt = f"""
         Extract matches where BOTH players are in this list: {json.dumps(player_names)}
         Input: {cleaned_text[:15000]}
@@ -231,6 +232,7 @@ async def run_pipeline():
         If odds missing, set 0.
         """
         
+        # Extrahieren (nur Namen & Quoten)
         extract_res = await call_groq(extract_prompt)
         if not extract_res: continue
 
@@ -247,11 +249,13 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # SMART MATCHING: Findet "United Cup" oder "United Cup (Sydney)"
+                    # 1. INTELLIGENTES MATCHING (United Cup -> BSI 7.4)
                     surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
                     
-                    # ANALYSE
+                    # 2. MATHE (Skill-basiert)
                     math_prob = calculate_math_odds(s1, s2, bsi)
+                    
+                    # 3. AI DEEP DIVE (Mit Retry-Mechanismus gegen Timeouts!)
                     ai_prob, ai_reason = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
                     final_prob_p1 = (math_prob * 0.5) + (ai_prob * 0.5)
@@ -270,13 +274,13 @@ async def run_pipeline():
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    logger.info(f"✅ Analyzed: {p1_obj['last_name']} vs {p2_obj['last_name']} @ {m['tour']}")
+                    logger.info(f"✅ Analyzed: {p1_obj['last_name']} vs {p2_obj['last_name']} @ {m['tour']} (AI: {ai_prob})")
                     supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
         except Exception as e:
             logger.error(f"Processing Error: {e}")
 
-    logger.info("🏁 35-Day Future Cycle Finished.")
+    logger.info("🏁 35-Day Cycle Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
