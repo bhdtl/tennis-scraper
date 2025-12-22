@@ -13,151 +13,164 @@ from supabase import create_client, Client
 import httpx
 
 # =================================================================
-# CONFIGURATION & DEBUGGING
+# CONFIGURATION
 # =================================================================
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 1. Keys aus den Environment Variables laden
+# Keys laden
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# Liest entweder SUPABASE_KEY oder SUPABASE_SERVICE_ROLE_KEY (Sicherheitsnetz)
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# --- DEBUG DIAGNOSE START (Das ist neu, um den Fehler zu finden) ---
-print("\n" + "="*40)
-print("🔍 DEBUG: PRÜFUNG DER GITHUB SECRETS")
-print(f"1. GROQ_API_KEY:   {'✅ VORHANDEN' if GROQ_API_KEY else '❌ FEHLT'}")
-print(f"2. SUPABASE_URL:   {'✅ VORHANDEN' if SUPABASE_URL else '❌ FEHLT'}")
-print(f"3. SUPABASE_KEY:   {'✅ VORHANDEN' if SUPABASE_KEY else '❌ FEHLT'}")
-print("="*40 + "\n")
-# --- DEBUG DIAGNOSE ENDE ---
-
 if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    # Wir sagen dem Fehler genau, was fehlt
-    missing = []
-    if not GROQ_API_KEY: missing.append("GROQ_API_KEY")
-    if not SUPABASE_URL: missing.append("SUPABASE_URL")
-    if not SUPABASE_KEY: missing.append("SUPABASE_KEY")
-    raise ValueError(f"CRITICAL: Abbruch! Folgende Keys fehlen: {', '.join(missing)}")
+    raise ValueError("CRITICAL: API Keys fehlen!")
 
-# Client Initialisierung (nur wenn Keys da sind)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'llama-3.3-70b-versatile'
 
 # =================================================================
-# MATH CORE (Unverändert)
+# DATA LOADING & HELPERS
 # =================================================================
-def calculate_sophisticated_fair_odds(s1, s2, bsi):
+async def get_db_data():
+    """Lädt alle wichtigen Daten für die Analyse aus der DB."""
+    try:
+        players = supabase.table("players").select("*").execute().data
+        skills = supabase.table("player_skills").select("*").execute().data
+        reports = supabase.table("scouting_reports").select("*").execute().data
+        tournaments = supabase.table("tournaments").select("*").execute().data
+        return players, skills, reports, tournaments
+    except Exception as e:
+        logger.error(f"DB Load Error: {e}")
+        return [], [], [], []
+
+def find_best_court_match(scraped_name, db_tournaments):
+    """Findet das passende Turnier in der DB oder nutzt Fallback."""
+    scraped_lower = scraped_name.lower()
+    
+    # 1. Direkter DB Match
+    for t in db_tournaments:
+        if t['name'].lower() in scraped_lower or scraped_lower in t['name'].lower():
+            return t['surface'], t['bsi_rating'], t.get('notes', '')
+            
+    # 2. Fallback Logik (wenn Turnier nicht in DB)
+    if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor fallback'
+    if any(x in scraped_lower for x in ['clay', 'sand', 'roland']): return 'Red Clay', 3.5, 'Slow Clay fallback'
+    return 'Hard', 6.5, 'Standard Hard fallback'
+
+# =================================================================
+# MATH CORE
+# =================================================================
+def calculate_math_odds(s1, s2, bsi):
+    """Reine Mathematik basierend auf Skills & BSI."""
     is_fast = bsi >= 7
     is_slow = bsi <= 4
+    
+    # Gewichtung basierend auf Court Speed
     w_serve = 2.2 if is_fast else (0.6 if is_slow else 1.0)
     w_baseline = 0.7 if is_fast else (1.4 if is_slow else 1.0)
-    w_mental = 0.6 if is_fast else (1.2 if is_slow else 0.8)
-    w_physical = 0.4 if is_fast else (1.5 if is_slow else 0.8)
+    w_mental = 1.2 # Mental ist immer wichtig
     
-    # Safe Get mit Default 50, falls Daten fehlen
-    serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
-    baseline_diff = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_baseline
-    physical_diff = ((s1.get('speed', 50) + s1.get('stamina', 50)) - (s2.get('speed', 50) + s2.get('stamina', 50))) * w_physical
+    # Differenzen berechnen
+    serve_val1 = s1.get('serve', 50) + s1.get('power', 50)
+    serve_val2 = s2.get('serve', 50) + s2.get('power', 50)
+    serve_diff = (serve_val1 - serve_val2) * w_serve
+    
+    base_val1 = s1.get('forehand', 50) + s1.get('backhand', 50)
+    base_val2 = s2.get('forehand', 50) + s2.get('backhand', 50)
+    base_diff = (base_val1 - base_val2) * w_baseline
+    
     mental_diff = (s1.get('mental', 50) - s2.get('mental', 50)) * w_mental
     
-    total_advantage_a = (serve_diff + baseline_diff + physical_diff + mental_diff) / 200
-    class_diff = (s1.get('overall_rating', 50) - s2.get('overall_rating', 50)) / 25
+    total_score = (serve_diff + base_diff + mental_diff) / 200
     
-    rating_a = 6.0 + total_advantage_a + class_diff
-    rating_b = 6.0 - total_advantage_a - class_diff
+    # Sigmoid Funktion für Wahrscheinlichkeit (0.0 bis 1.0)
+    return 1 / (1 + math.exp(-0.7 * (6.0 + total_score - 6.0)))
+
+# =================================================================
+# AI ANALYSIS
+# =================================================================
+async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
+    """Fragt Groq nach einer tiefen Analyse."""
+    prompt = f"""
+    ROLE: Elite Tennis Scout & Oddsmaker.
+    TASK: Calculate the WIN PROBABILITY for {p1['last_name']} vs {p2['last_name']}.
     
+    CONTEXT:
+    - Surface: {surface} (Speed BSI: {bsi}/10). 
+    - Court Notes: {notes}
+    
+    PLAYER A ({p1['last_name']}):
+    - Skills: Srv {s1.get('serve')}, FH {s1.get('forehand')}, BH {s1.get('backhand')}, Men {s1.get('mental')}.
+    - Scout Report: {r1.get('strengths', 'N/A')} (Pros), {r1.get('weaknesses', 'N/A')} (Cons).
+    
+    PLAYER B ({p2['last_name']}):
+    - Skills: Srv {s2.get('serve')}, FH {s2.get('forehand')}, BH {s2.get('backhand')}, Men {s2.get('mental')}.
+    - Scout Report: {r2.get('strengths', 'N/A')} (Pros), {r2.get('weaknesses', 'N/A')} (Cons).
+    
+    OUTPUT JSON ONLY:
+    {{
+        "analysis_brief": "One sentence summary why X wins based on court speed and weakness exploitation.",
+        "p1_win_probability": 0.XX (Float between 0 and 1, e.g. 0.65)
+    }}
+    """
+    
+    res = await call_groq(prompt)
+    if not res: return 0.5, "AI Timeout"
     try:
-        return 1 / (1 + math.exp(-0.7 * (rating_a - rating_b)))
-    except OverflowError:
-        return 0.99 if rating_a > rating_b else 0.01
+        data = json.loads(res)
+        return data.get('p1_win_probability', 0.5), data.get('analysis_brief', 'No analysis')
+    except:
+        return 0.5, "AI Parse Error"
 
-def detect_surface_config(tournament_name):
-    name = (tournament_name or '').lower()
-    if 'indoor' in name: return 'Indoor', 8.2
-    if any(x in name for x in ['clay', 'sand', 'roland garros']): return 'Red Clay', 3.5
-    if any(x in name for x in ['hard', 'australian', 'us open']): return 'Hard', 6.5
-    return 'Hard', 5.0
-
-# =================================================================
-# API & SCRAPING HELPERS
-# =================================================================
 async def call_groq(prompt):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.0,
-        "response_format": {"type": "json_object"}
-    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "response_format": {"type": "json_object"}}
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=data, timeout=30.0)
-            if response.status_code != 200:
-                logger.error(f"Groq Error {response.status_code}: {response.text}")
-                return None
-            return response.json()['choices'][0]['message']['content']
-        except Exception as e:
-            logger.error(f"Groq Connection Error: {e}")
-            return None
+            r = await client.post(url, headers=headers, json=data, timeout=30.0)
+            return r.json()['choices'][0]['message']['content']
+        except: return None
 
+# =================================================================
+# SCRAPER CORE
+# =================================================================
 def normalize_text(text):
     if not text: return ""
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn')
 
 def clean_player_name(raw):
-    noise = [r'Live streams', r'1xBet', r'bwin', r'TV', r'Sky Sports', r'beIN Sports', r'bet365', r'Unibet', r'William Hill']
+    noise = [r'Live streams', r'1xBet', r'bwin', r'TV', r'Sky Sports', r'bet365', r'Unibet', r'William Hill']
     for pat in noise: raw = re.sub(pat, '', raw, flags=re.IGNORECASE)
     return raw.replace('|', '').strip()
 
-async def get_known_players():
-    try:
-        response = supabase.table("players").select("*").execute()
-        return response.data
-    except Exception as e:
-        logger.error(f"DB Error (get_known_players): {e}")
-        return []
-
 async def scrape_tennis_odds_for_date(target_date):
     async with async_playwright() as p:
-        # Headless mode für Server-Umgebung
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
             url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-            logger.info(f"📡 Scanning Date: {target_date.strftime('%Y-%m-%d')}")
-            
+            logger.info(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            
-            # Kurz warten, ob Tabelle geladen wird
-            try:
-                await page.wait_for_selector(".result", timeout=10000)
-            except:
-                logger.warning("Keine Ergebnisse auf der Seite gefunden.")
+            try: await page.wait_for_selector(".result", timeout=10000)
+            except: 
                 await browser.close()
                 return None
-
             content = await page.content()
             await browser.close()
             return content
         except Exception as e:
-            logger.error(f"Playwright Error: {e}")
+            logger.error(f"Scrape Error: {e}")
             await browser.close()
             return None
 
-def clean_html_for_ai(html_content):
+def clean_html_for_extraction(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     for tag in soup(["script", "style", "nav", "footer"]): tag.extract()
-    
     txt = ""
     tables = soup.find_all("table", class_="result")
     current_tour = "Unknown"
-    
     for table in tables:
         rows = table.find_all("tr")
         for i in range(len(rows)):
@@ -165,114 +178,95 @@ def clean_html_for_ai(html_content):
             if "head" in row.get("class", []):
                 current_tour = row.get_text(strip=True)
                 continue
-            
             row_text = normalize_text(row.get_text(separator=' | ', strip=True))
-            # Einfacher Check: Ist es eine Match-Zeile? (Hat Zeitformat HH:MM)
             if re.search(r'\d{2}:\d{2}', row_text) and i+1 < len(rows):
-                p1_raw = clean_player_name(row_text)
-                # Der Gegner steht oft in der nächsten Zeile bei TennisExplorer
-                p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' | ', strip=True)))
-                
-                txt += f"TOURNAMENT: {current_tour} | MATCH: {p1_raw} VS {p2_raw}\n"
+                p1 = clean_player_name(row_text)
+                p2 = clean_player_name(normalize_text(rows[i+1].get_text(separator=' | ', strip=True)))
+                txt += f"TOURNAMENT: {current_tour} | {p1} VS {p2}\n"
     return txt
 
 # =================================================================
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Sync Cycle Start (Groq Future Scout)...")
+    logger.info("🚀 Neural Scout v50 (Hybrid Intelligence) Starting...")
     
-    known_players = await get_known_players()
-    if not known_players:
-        logger.error("⚠️ Abbruch: Keine Spieler in der Datenbank gefunden.")
-        return
-
-    # Lade Skills für Berechnung
-    skills_res = supabase.table("player_skills").select("*").execute()
-    all_skills = skills_res.data if skills_res.data else []
+    # 1. Lade ALLES aus der DB
+    players, all_skills, all_reports, all_tournaments = await get_db_data()
+    if not players: return
 
     current_date = datetime.now()
     
-    # Scanne die nächsten 7 Tage (Future Scan)
-    for day_offset in range(7):
+    for day_offset in range(5): # Scan nächste 5 Tage
         target_date = current_date + timedelta(days=day_offset)
         html = await scrape_tennis_odds_for_date(target_date)
         if not html: continue
 
-        cleaned_text = clean_html_for_ai(html)
+        cleaned_text = clean_html_for_extraction(html)
         if not cleaned_text: continue
 
-        # Filter: Wir suchen nur Matches mit unseren bekannten Spielern
-        # Das spart AI-Tokens und verhindert Halluzinationen
-        player_names = [p['last_name'] for p in known_players]
-        
-        prompt = f"""
-        ### ROLE: Data Auditor
-        Extract matches from the text below where BOTH players exist in this list: {json.dumps(player_names)}
-        
-        TEXT DATA:
-        {cleaned_text[:15000]} 
-        
-        RULES: 
-        1. If odds are missing or results like '6-4', set odds1 and odds2 to 0.00.
-        2. Format match_time as HH:MM
-        
-        OUTPUT JSON ONLY:
-        {{
-            "matches": [
-                {{
-                    "player1_last_name": "Name",
-                    "player2_last_name": "Name",
-                    "tournament": "Tournament Name",
-                    "match_time": "HH:MM",
-                    "odds1": 1.50,
-                    "odds2": 2.50
-                }}
-            ]
-        }}
+        # 2. Schnelle Extraktion der Matches via Groq (noch ohne Deep Analysis)
+        player_names = [p['last_name'] for p in players]
+        extract_prompt = f"""
+        Extract matches where BOTH players are in this list: {json.dumps(player_names)}
+        Input: {cleaned_text[:12000]}
+        Output JSON: {{ "matches": [ {{ "p1": "Lastname", "p2": "Lastname", "tour": "Tour Name", "odds1": 1.5, "odds2": 2.5 }} ] }}
+        If odds missing, set 0.
         """
-
-        ai_res = await call_groq(prompt)
-        if not ai_res: continue
+        
+        extract_res = await call_groq(extract_prompt)
+        if not extract_res: continue
 
         try:
-            data = json.loads(ai_res)
-            matches = data.get("matches", [])
+            matches = json.loads(extract_res).get("matches", [])
             
             for m in matches:
-                # Finde Spieler IDs aus unserer DB
-                p1 = next((p for p in known_players if p['last_name'] in m['player1_last_name']), None)
-                p2 = next((p for p in known_players if p['last_name'] in m['player2_last_name']), None)
+                # Daten zuordnen
+                p1_obj = next((p for p in players if p['last_name'] in m['p1']), None)
+                p2_obj = next((p for p in players if p['last_name'] in m['p2']), None)
                 
-                if p1 and p2:
-                    # Berechne unsere eigenen "Fair Odds"
-                    s1 = next((s for s in all_skills if s['player_id'] == p1['id']), {})
-                    s2 = next((s for s in all_skills if s['player_id'] == p2['id']), {})
-                    surf, bsi = detect_surface_config(m['tournament'])
+                if p1_obj and p2_obj:
+                    s1 = next((s for s in all_skills if s['player_id'] == p1_obj['id']), {})
+                    s2 = next((s for s in all_skills if s['player_id'] == p2_obj['id']), {})
+                    r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
+                    r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    prob_p1 = calculate_sophisticated_fair_odds(s1, s2, bsi)
+                    # 3. Court BSI & Notes aus DB finden
+                    surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
                     
-                    # Upsert in DB
-                    match_data = {
-                        "player1_name": p1['last_name'],
-                        "player2_name": p2['last_name'],
-                        "tournament": m['tournament'],
+                    # 4. MATH PROBABILITY (Basis)
+                    math_prob = calculate_math_odds(s1, s2, bsi)
+                    
+                    # 5. AI DEEP DIVE (Nuancen, Mental, Matchup)
+                    ai_prob, ai_reason = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
+                    
+                    # 6. HYBRID FUSION (50/50 Gewichtung)
+                    final_prob_p1 = (math_prob * 0.5) + (ai_prob * 0.5)
+                    
+                    # Odds berechnen
+                    fair_odds1 = round(1 / final_prob_p1, 2) if final_prob_p1 > 0.01 else 99.0
+                    fair_odds2 = round(1 / (1 - final_prob_p1), 2) if final_prob_p1 < 0.99 else 99.0
+                    
+                    # Speichern
+                    match_entry = {
+                        "player1_name": p1_obj['last_name'],
+                        "player2_name": p2_obj['last_name'],
+                        "tournament": m['tour'],
                         "odds1": m['odds1'],
                         "odds2": m['odds2'],
-                        "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0 else 0,
-                        "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 1 else 0,
+                        "ai_fair_odds1": fair_odds1,
+                        "ai_fair_odds2": fair_odds2,
+                        "ai_analysis_text": f"[{surf}, BSI {bsi}] {ai_reason}",
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    logger.info(f"💾 Saving Match: {p1['last_name']} vs {p2['last_name']} ({m['tournament']})")
-                    supabase.table("market_odds").upsert(match_data, on_conflict="player1_name, player2_name, tournament").execute()
+                    logger.info(f"✅ Analyzed: {p1_obj['last_name']} vs {p2_obj['last_name']} -> AI Odds: {fair_odds1} vs {fair_odds2}")
+                    supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
-        except json.JSONDecodeError:
-            logger.error("Failed to parse AI JSON response")
         except Exception as e:
-            logger.error(f"Processing Error: {e}")
+            logger.error(f"Processing Loop Error: {e}")
 
-    logger.info("🏁 Cycle Done.")
+    logger.info("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
