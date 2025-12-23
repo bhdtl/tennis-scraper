@@ -185,9 +185,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     # FINAL WEIGHTED SUM
     # ---------------------------------------------------------
     final_prob = (
-        (prob_skills  * 0.35) +
+        (prob_skills  * 0.25) +
         (prob_matchup * 0.25) +
-        (prob_elo     * 0.15) +
+        (prob_elo     * 0.25) +
         (prob_court   * 0.10) +
         (prob_form    * 0.10) +
         (prob_utr     * 0.05)
@@ -271,7 +271,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     2. FORM SCORE (10% Weight): Analyze recent matches. Did they beat favorites (high odds) or lose to underdogs? 
        - If P1 beat a 1.20 favorite -> High Form Score (8-9).
        - If P1 lost to a 5.00 underdog -> Low Form Score (1-2).
-    3. UTR ESTIMATE (5% Weight): Search or estimate their Universal Tennis Rating (e.g., 14.5 vs 13.8).
+    3. UTR Ranking (5% Weight): Search their Universal Tennis Rating (e.g., 14.5 vs 13.8).
     
     OUTPUT JSON ONLY:
     {{
