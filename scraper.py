@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V61.0 - Surface Physics Engine)...")
+log("🔌 Initialisiere Neural Scout (V61.0 - Surface Physics Value Scanner)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -105,7 +105,7 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# MATH CORE V2 (The Silicon Valley Upgrade)
+# MATH CORE V2 (The Silicon Valley Upgrade - FULL WEIGHTING INTEGRATED)
 # =================================================================
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
     """
@@ -134,25 +134,28 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
         if n2 in name: elo2 = stats.get(elo_surf, 1500)
         
     # Elo Delta Probability
+    # Die Elo-Wahrscheinlichkeit ist der "Anker"
     elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
     # 3. PHYSICS & SKILL ENGINE
     is_fast = bsi >= 7.0
     is_slow = bsi <= 4.0
     
-    # Dynamic Weighting (CSI Multiplier)
+    # Dynamic Weighting (CSI Multiplier - CRITICAL UPDATE)
     # Auf schnellem Belag zählt der Aufschlag exponentiell mehr
-    w_serve = 1.0 * (1.5 if is_fast else (0.5 if is_slow else 1.0))
-    w_base  = 1.0 * (0.6 if is_fast else (1.4 if is_slow else 1.0))
-    w_move  = 1.0 * (0.5 if is_fast else (1.3 if is_slow else 1.0)) # Movement auf Sand extrem wichtig
+    w_serve = 1.0 * (1.6 if is_fast else (0.4 if is_slow else 1.0))
+    w_base  = 1.0 * (0.5 if is_fast else (1.5 if is_slow else 1.0))
+    w_move  = 1.0 * (0.4 if is_fast else (1.4 if is_slow else 1.0)) # Movement auf Sand extrem wichtig
     
-    # Skill Differentials
+    # Skill Differentials (Skala 0-100)
     serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
     base_diff  = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_base
     phys_diff  = ((s1.get('speed', 50) + s1.get('stamina', 50)) - (s2.get('speed', 50) + s2.get('stamina', 50))) * w_move
-    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.8 # Mental ist immer relevant
+    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.9 # Mental leicht erhöht
     
-    raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 180
+    # Aggregation der Skills
+    # Wir teilen durch einen Faktor, um den Score in einen Bereich für die Sigmoid-Funktion zu bringen
+    raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 160.0
     
     # 4. SPECIALIST PENALTY & FATIGUE (Data from AI Meta)
     # ai_meta kommt aus der Gemini Analyse
@@ -162,15 +165,18 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     surface_comfort_p2 = ai_meta.get('p2_surface_comfort', 5)
     
     # Penalty Calculation
-    fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.15 # Wer müder ist, verliert Punkte
-    comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.20 # Wer den Belag liebt, kriegt Bonus
+    # Fatigue bestraft stark (exponentiell bei hohen Werten wäre besser, hier linear genähert)
+    fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.25 
+    # Comfort Bonus
+    comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.30
     
     # 5. FINAL FUSION
-    # Wir gewichten Elo (Realität) und Skills (Theorie) und AI (Kontext)
-    # Elo ist sehr stark, daher 40% Gewicht
-    skill_prob = 1 / (1 + math.exp(-0.8 * (raw_skill_score - fatigue_malus + comfort_bonus)))
+    # Skill Probability via Sigmoid Funktion
+    skill_prob = 1 / (1 + math.exp(-1.0 * (raw_skill_score - fatigue_malus + comfort_bonus)))
     
-    final_prob = (elo_prob * 0.40) + (skill_prob * 0.60)
+    # Weighted Average:
+    # 45% Elo (Markt-Basis) vs 55% Physics/AI (Edge)
+    final_prob = (elo_prob * 0.45) + (skill_prob * 0.55)
     
     return final_prob
 
@@ -351,19 +357,23 @@ async def run_pipeline():
                     fair_odds1 = round(1 / prob_p1, 2) if prob_p1 > 0.01 else 99.0
                     fair_odds2 = round(1 / (1 - prob_p1), 2) if prob_p1 < 0.99 else 99.0
                     
+                    # Value Check
+                    market_odds1 = float(m.get('odds1', 0))
+                    market_odds2 = float(m.get('odds2', 0))
+                    
                     match_entry = {
                         "player1_name": p1_obj['last_name'],
                         "player2_name": p2_obj['last_name'],
                         "tournament": m['tour'],
-                        "odds1": m['odds1'],
-                        "odds2": m['odds2'],
+                        "odds1": market_odds1,
+                        "odds2": market_odds2,
                         "ai_fair_odds1": fair_odds1,
                         "ai_fair_odds2": fair_odds2,
                         "ai_analysis_text": ai_meta.get('ai_text', 'No analysis'),
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {fair_odds1})")
+                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {fair_odds1} vs Market: {market_odds1})")
                     supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
         except Exception as e:
