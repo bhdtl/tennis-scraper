@@ -20,12 +20,14 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (Gemini Core)...")
+log("🔌 Initialisiere Neural Scout (Gemini 2.5 Pro Core)...")
 
 # 1. Keys laden
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+log(f"🔑 Key Check: URL={'OK' if SUPABASE_URL else 'MISSING'}, DB_KEY={'OK' if SUPABASE_KEY else 'MISSING'}, GEMINI={'OK' if GEMINI_API_KEY else 'MISSING'}")
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY in GitHub.")
@@ -33,15 +35,18 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# HIER: Das Modell einstellen. Aktuell ist 1.5-pro das stabilste High-End Modell.
-MODEL_NAME = 'gemini-1.5-pro' 
+# --- DEIN WUNSCH-MODELL ---
+MODEL_NAME = 'gemini-2.5-pro' 
 
 # =================================================================
 # GEMINI API ENGINE (REST)
 # =================================================================
 async def call_gemini(prompt):
+    # API URL für das spezifische Modell
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    
     headers = {"Content-Type": "application/json"}
+    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -49,14 +54,19 @@ async def call_gemini(prompt):
             "temperature": 0.2
         }
     }
+
     async with httpx.AsyncClient() as client:
         try:
+            # 60s Timeout für das große Pro Modell
             response = await client.post(url, headers=headers, json=payload, timeout=60.0)
+            
             if response.status_code != 200:
                 log(f"⚠️ Gemini API Error {response.status_code}: {response.text}")
                 return None
+            
             data = response.json()
             return data['candidates'][0]['content']['parts'][0]['text']
+            
         except Exception as e:
             log(f"⚠️ Gemini Network Error: {e}")
             return None
@@ -65,21 +75,19 @@ async def call_gemini(prompt):
 # DATA LOADING (Deine DB Logik)
 # =================================================================
 async def get_db_data():
+    log("📥 Lade Datenbank-Daten...")
     try:
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
+        log(f"✅ Geladen: {len(players)} Spieler, {len(skills)} Skills, {len(tournaments)} Turniere.")
         return players, skills, reports, tournaments
     except Exception as e:
         log(f"❌ DB Load Error: {e}")
         return [], [], [], []
 
 def find_best_court_match(scraped_tour_name, db_tournaments):
-    """
-    Findet den BSI aus DEINER Datenbank.
-    Priorität: Exakter Name -> Teil-Name (für United Cup) -> Fallback
-    """
     scraped_lower = scraped_tour_name.lower().strip()
     
     # 1. Exakter Match
@@ -87,7 +95,7 @@ def find_best_court_match(scraped_tour_name, db_tournaments):
         if t['name'].lower() == scraped_lower:
             return t['surface'], t['bsi_rating'], t.get('notes', '')
 
-    # 2. Fuzzy Match (z.B. "United Cup" findet "United Cup (Sydney)")
+    # 2. Fuzzy Match
     best_candidate = None
     for t in db_tournaments:
         db_name = t['name'].lower()
@@ -98,7 +106,7 @@ def find_best_court_match(scraped_tour_name, db_tournaments):
     if best_candidate:
         return best_candidate['surface'], best_candidate['bsi_rating'], best_candidate.get('notes', '')
 
-    # 3. Fallback (Nur wenn gar nichts in deiner DB steht)
+    # 3. Fallback
     if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor fallback'
     if any(x in scraped_lower for x in ['clay', 'sand', 'roland']): return 'Red Clay', 3.5, 'Slow Clay fallback'
     return 'Hard', 6.5, 'Standard Hard fallback'
@@ -207,7 +215,7 @@ def clean_html_for_extraction(html_content):
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    log("🚀 Neural Scout v55 (Gemini + DB Sync) Starting...")
+    log(f"🚀 Neural Scout v57 (Model: {MODEL_NAME}) Starting...")
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: 
@@ -253,7 +261,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # 1. COURT MATCHING (Deine DB Logik)
+                    # 1. COURT MATCHING
                     surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
                     log(f"   🎾 Match: {m['tour']} -> BSI {bsi} ({surf})")
                     
