@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V64.0 - Active Odds Filter)...")
+log("🔌 Initialisiere Neural Scout (V65.0 - Smart Update & Cost Saver)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -33,7 +33,6 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'gemini-2.5-pro' 
 
-# Globaler Cache für Elo Ratings
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
@@ -98,12 +97,10 @@ async def call_gemini(prompt):
 # MATH CORE V2
 # =================================================================
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
-    # 1. SETUP
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
     
-    # 2. ELO LOOKUP
     elo1 = 1500; elo2 = 1500
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
@@ -115,7 +112,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
         
     elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
-    # 3. PHYSICS & SKILL ENGINE
     is_fast = bsi >= 7.0
     is_slow = bsi <= 4.0
     
@@ -130,7 +126,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     
     raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 160.0
     
-    # 4. SPECIALIST PENALTY & FATIGUE
     fatigue_p1 = ai_meta.get('p1_fatigue_score', 0)
     fatigue_p2 = ai_meta.get('p2_fatigue_score', 0)
     surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5)
@@ -139,7 +134,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.25 
     comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.30
     
-    # 5. FINAL FUSION
     skill_prob = 1 / (1 + math.exp(-1.0 * (raw_skill_score - fatigue_malus + comfort_bonus)))
     final_prob = (elo_prob * 0.45) + (skill_prob * 0.55)
     
@@ -157,7 +151,7 @@ async def get_db_data():
         return [], [], [], []
 
 # =================================================================
-# SMART TOURNAMENT RESOLVER
+# SMART HELPERS
 # =================================================================
 async def resolve_ambiguous_tournament(p1_name, p2_name, scraped_tour_name):
     prompt = f"""
@@ -177,31 +171,24 @@ async def resolve_ambiguous_tournament(p1_name, p2_name, scraped_tour_name):
 
 async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name, p2_name):
     scraped_lower = scraped_tour_name.lower().strip()
-    
-    # 1. Direct Search
     for t in db_tournaments:
         if t['name'].lower() == scraped_lower: 
             return t['surface'], t['bsi_rating'], t.get('notes', '')
-    
-    # 2. Fuzzy Search
     if "futures" not in scraped_lower or len(scraped_lower) > 15:
         for t in db_tournaments:
             if t['name'].lower() in scraped_lower or scraped_lower in t['name'].lower(): 
                 return t['surface'], t['bsi_rating'], t.get('notes', '')
 
-    # 3. SMART AI RESOLVER
     log(f"   🤖 KI recherchiert Turnierort für: {p1_name} vs {p2_name} ({scraped_tour_name[:20]}...)...")
     ai_loc = await resolve_ambiguous_tournament(p1_name, p2_name, scraped_tour_name)
     
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
         surface_guess = ai_loc.get('surface_guessed', 'Hard')
-        
         for t in db_tournaments:
             if city in t['name'].lower():
                 log(f"   ✅ KI Location Match: {t['name']} (BSI: {t['bsi_rating']})")
                 return t['surface'], t['bsi_rating'], f"AI inferred location: {city}"
-        
         guessed_bsi = 3.5 if 'clay' in surface_guess.lower() else (8.0 if ai_loc.get('is_indoor') else 6.5)
         log(f"   ⚠️ Location '{city}' nicht in DB. Nutze KI Surface: {surface_guess}")
         return surface_guess, guessed_bsi, f"AI Guess: {city}"
@@ -287,7 +274,7 @@ def clean_html_for_extraction(html_content):
     return txt
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v64 (Clean DB - Only Active Odds) Starting...")
+    log(f"🚀 Neural Scout v65 (Smart Update Logic) Starting...")
     await fetch_elo_ratings()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -312,7 +299,7 @@ async def run_pipeline():
         INSTRUCTIONS:
         1. Find matches where BOTH players are in the Target List.
         2. Extract Market Odds (Decimal) from the "RAW_ROW" text.
-           - Look for numbers like 1.57, 2.30, 10.00 at the end of the rows.
+           - Look for numbers like 1.57, 2.30, 10.00.
            - CAUTION: If the row is empty or contains only "-" or "info", ODDS ARE 0.0.
         3. Return JSON.
         
@@ -335,18 +322,35 @@ async def run_pipeline():
                 p2_obj = next((p for p in players if p['last_name'] in m['p2']), None)
                 
                 if p1_obj and p2_obj:
-                    # -----------------------------------------------------------
-                    # NEW FILTER: CHECK MARKET ODDS FIRST
-                    # -----------------------------------------------------------
                     market_odds1 = float(m.get('odds1', 0.0))
                     market_odds2 = float(m.get('odds2', 0.0))
                     
-                    # Wenn Odds 0.0 oder extrem klein sind, ignorieren wir das Match komplett
+                    # 1. PRÜFUNG: GIBT ES DAS MATCH SCHON IN DER DB?
+                    # Wir prüfen nur auf Spielernamen, um Duplikate durch Turniernamen-Änderung zu vermeiden
+                    existing_match = supabase.table("market_odds").select("id, ai_fair_odds1").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
+                    
+                    if existing_match.data and len(existing_match.data) > 0:
+                        # MATCH EXISTIERT BEREITS
+                        # Wir updaten NUR die Market Odds und die Updated_At Zeit
+                        # Wir lassen Fair Odds unberührt, um Kosten zu sparen
+                        match_id = existing_match.data[0]['id']
+                        update_payload = {
+                            "odds1": market_odds1,
+                            "odds2": market_odds2,
+                            # Wir aktualisieren den Turniernamen falls er genauer wurde
+                            "tournament": m['tour'] 
+                        }
+                        supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
+                        log(f"🔄 Updated Odds for: {p1_obj['last_name']} vs {p2_obj['last_name']} (New Market: {market_odds1})")
+                        continue
+
+                    # 2. MATCH IST NEU - ABER SIND QUOTEN DA?
                     if market_odds1 <= 1.0 or market_odds2 <= 1.0:
-                        log(f"⏩ Skipping {p1_obj['last_name']} vs {p2_obj['last_name']} - No Market Odds available yet.")
+                        log(f"⏩ Skipping New Match {p1_obj['last_name']} vs {p2_obj['last_name']} - No Odds available yet.")
                         continue
                     
-                    # Wenn wir hier sind, HABEN wir Quoten. Jetzt starten wir die teure Analyse.
+                    # 3. MATCH IST NEU UND HAT QUOTEN -> VOLLGAS ANALYSE
+                    log(f"✨ New Match Detected: {p1_obj['last_name']} vs {p2_obj['last_name']} -> Starting AI Analysis...")
                     s1 = next((s for s in all_skills if s['player_id'] == p1_obj['id']), {})
                     s2 = next((s for s in all_skills if s['player_id'] == p2_obj['id']), {})
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
@@ -371,8 +375,8 @@ async def run_pipeline():
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Mkt: {market_odds1} | Fair: {fair_odds1})")
-                    supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
+                    log(f"💾 Saving NEW: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {fair_odds1})")
+                    supabase.table("market_odds").insert(match_entry).execute()
 
         except Exception as e:
             log(f"⚠️ Process Error: {e}")
