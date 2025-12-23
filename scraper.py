@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V65.0 - Smart Update & Cost Saver)...")
+log("🔌 Initialisiere Neural Scout (V66.0 - Form & Momentum Integration)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -94,13 +94,18 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# MATH CORE V2
+# MATH CORE V3 - NOW WITH FORM & MOMENTUM
 # =================================================================
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
+    """
+    V3 Calculation Engine:
+    Integrates Elo + Physics Skills + AI Meta (Fatigue/Comfort) + FORM/MOMENTUM
+    """
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
     
+    # --- 1. ELO BASE (The Historic Truth) ---
     elo1 = 1500; elo2 = 1500
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
@@ -112,12 +117,13 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
         
     elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
+    # --- 2. PHYSICS ENGINE (The Matchup Truth) ---
     is_fast = bsi >= 7.0
     is_slow = bsi <= 4.0
     
-    w_serve = 1.0 * (1.6 if is_fast else (0.4 if is_slow else 1.0))
-    w_base  = 1.0 * (0.5 if is_fast else (1.5 if is_slow else 1.0))
-    w_move  = 1.0 * (0.4 if is_fast else (1.4 if is_slow else 1.0)) 
+    w_serve = 1.0 * (1.7 if is_fast else (0.4 if is_slow else 1.0))
+    w_base  = 1.0 * (0.5 if is_fast else (1.6 if is_slow else 1.0))
+    w_move  = 1.0 * (0.4 if is_fast else (1.5 if is_slow else 1.0)) 
     
     serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
     base_diff  = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_base
@@ -126,16 +132,34 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     
     raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 160.0
     
+    # --- 3. AI META & FORM (The "Sofascore" Factor) ---
+    # Fatigue & Comfort
     fatigue_p1 = ai_meta.get('p1_fatigue_score', 0)
     fatigue_p2 = ai_meta.get('p2_fatigue_score', 0)
     surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5)
     surface_comfort_p2 = ai_meta.get('p2_surface_comfort', 5)
     
+    # NEW: Recent Form & Momentum (0-10 Scale from AI)
+    # 5 is average. >5 is good form. <5 is slump.
+    form_p1 = ai_meta.get('p1_recent_form', 5) 
+    form_p2 = ai_meta.get('p2_recent_form', 5)
+    
+    # Weighting Calculations
     fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.25 
     comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.30
     
-    skill_prob = 1 / (1 + math.exp(-1.0 * (raw_skill_score - fatigue_malus + comfort_bonus)))
-    final_prob = (elo_prob * 0.45) + (skill_prob * 0.55)
+    # Form Difference: If P1 is on fire (8) and P2 is slumping (3), diff is 5.
+    # 5 * 0.35 = 1.75 (Huge impact on Sigmoid)
+    form_impact = (form_p1 - form_p2) * 0.35
+    
+    # Combine Skills + Soft Factors
+    total_score = raw_skill_score - fatigue_malus + comfort_bonus + form_impact
+    skill_form_prob = 1 / (1 + math.exp(-1.0 * total_score))
+    
+    # --- 4. FINAL WEIGHTING ---
+    # Wir reduzieren Elo etwas zugunsten der aktuellen Form/Skills
+    # Elo (Long Term) 40% | Physics+Form (Now) 60%
+    final_prob = (elo_prob * 0.40) + (skill_form_prob * 0.60)
     
     return final_prob
 
@@ -198,28 +222,42 @@ async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name
     return 'Hard', 6.5, 'Standard Hard fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
+    # HIER IST DAS UPDATE: Wir bitten Gemini explizit um die Form-Einschätzung (Sofascore Simulation)
     prompt = f"""
-    ROLE: Elite Tennis Scout.
-    TASK: Deep Analysis of {p1['last_name']} vs {p2['last_name']}.
-    CONTEXT: Surface: {surface} (BSI {bsi}/10). Notes: {notes}
-    DATA P1: {r1.get('strengths')}, {r1.get('weaknesses')}. Style: {p1.get('play_style')}.
-    DATA P2: {r2.get('strengths')}, {r2.get('weaknesses')}. Style: {p2.get('play_style')}.
+    ROLE: Elite Tennis Scout & Data Analyst.
+    TASK: Analyze {p1['last_name']} vs {p2['last_name']} for a Professional Bettor.
+    
+    CONTEXT:
+    - Surface: {surface} (BSI {bsi}/10).
+    - Notes: {notes}
+    
+    PLAYER 1 DATA: {r1.get('strengths')}, {r1.get('weaknesses')}. Style: {p1.get('play_style')}.
+    PLAYER 2 DATA: {r2.get('strengths')}, {r2.get('weaknesses')}. Style: {p2.get('play_style')}.
+    
+    CRITICAL INSTRUCTION - FORM ESTIMATION:
+    You have knowledge of tennis results. Based on recent performances (last 5-10 matches) and general momentum:
+    1. Estimate "Recent Form" (0-10). 5 is average. 1 is terrible (losing streak). 9-10 is unplayable (winning streak).
+    2. Estimate "Fatigue Risk" (0-10).
+    3. Estimate "Surface Comfort" (0-10).
+    
     OUTPUT JSON ONLY:
     {{
+        "p1_recent_form": 7,
+        "p2_recent_form": 4,
         "p1_surface_comfort": 8,
         "p2_surface_comfort": 4,
         "p1_fatigue_score": 2,
         "p2_fatigue_score": 1,
-        "ai_text": "Short tactical analysis..."
+        "ai_text": "Tactical analysis mentioning form..."
     }}
     """
     res = await call_gemini(prompt)
-    if not res: return {'p1_surface_comfort': 5, 'p2_surface_comfort': 5, 'ai_text': "Analysis Pending."}
+    if not res: return {'p1_recent_form': 5, 'p2_recent_form': 5, 'ai_text': "Analysis Pending."}
     try:
         clean_json = res.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
     except:
-        return {'p1_surface_comfort': 5, 'p2_surface_comfort': 5, 'ai_text': "Parsing Error."}
+        return {'p1_recent_form': 5, 'p2_recent_form': 5, 'ai_text': "Parsing Error."}
 
 # =================================================================
 # SCRAPER CORE
@@ -274,7 +312,7 @@ def clean_html_for_extraction(html_content):
     return txt
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v65 (Smart Update Logic) Starting...")
+    log(f"🚀 Neural Scout v66 (Form & Momentum Integrated) Starting...")
     await fetch_elo_ratings()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -325,32 +363,23 @@ async def run_pipeline():
                     market_odds1 = float(m.get('odds1', 0.0))
                     market_odds2 = float(m.get('odds2', 0.0))
                     
-                    # 1. PRÜFUNG: GIBT ES DAS MATCH SCHON IN DER DB?
-                    # Wir prüfen nur auf Spielernamen, um Duplikate durch Turniernamen-Änderung zu vermeiden
-                    existing_match = supabase.table("market_odds").select("id, ai_fair_odds1").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
+                    # 1. Update Existing
+                    existing_match = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
                     
                     if existing_match.data and len(existing_match.data) > 0:
-                        # MATCH EXISTIERT BEREITS
-                        # Wir updaten NUR die Market Odds und die Updated_At Zeit
-                        # Wir lassen Fair Odds unberührt, um Kosten zu sparen
                         match_id = existing_match.data[0]['id']
-                        update_payload = {
-                            "odds1": market_odds1,
-                            "odds2": market_odds2,
-                            # Wir aktualisieren den Turniernamen falls er genauer wurde
-                            "tournament": m['tour'] 
-                        }
+                        update_payload = { "odds1": market_odds1, "odds2": market_odds2, "tournament": m['tour'] }
                         supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
-                        log(f"🔄 Updated Odds for: {p1_obj['last_name']} vs {p2_obj['last_name']} (New Market: {market_odds1})")
+                        log(f"🔄 Updated Odds for: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
 
-                    # 2. MATCH IST NEU - ABER SIND QUOTEN DA?
+                    # 2. Skip No Odds
                     if market_odds1 <= 1.0 or market_odds2 <= 1.0:
-                        log(f"⏩ Skipping New Match {p1_obj['last_name']} vs {p2_obj['last_name']} - No Odds available yet.")
+                        log(f"⏩ Skipping New Match {p1_obj['last_name']} vs {p2_obj['last_name']} - No Odds.")
                         continue
                     
-                    # 3. MATCH IST NEU UND HAT QUOTEN -> VOLLGAS ANALYSE
-                    log(f"✨ New Match Detected: {p1_obj['last_name']} vs {p2_obj['last_name']} -> Starting AI Analysis...")
+                    # 3. Analyze New
+                    log(f"✨ New Match Detected: {p1_obj['last_name']} vs {p2_obj['last_name']} -> Deep Analysis...")
                     s1 = next((s for s in all_skills if s['player_id'] == p1_obj['id']), {})
                     s2 = next((s for s in all_skills if s['player_id'] == p2_obj['id']), {})
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
