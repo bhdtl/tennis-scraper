@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V66.0 - Form & Momentum Integration)...")
+log("🔌 Initialisiere Neural Scout (V67.0 - Precision Weighting Protocol)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -94,18 +94,40 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# MATH CORE V3 - NOW WITH FORM & MOMENTUM
+# MATH CORE V3 - EXACT WEIGHTING
 # =================================================================
+def sigmoid_prob(diff, sensitivity=0.1):
+    """Converts a score difference into a probability (0-1)."""
+    return 1 / (1 + math.exp(-sensitivity * diff))
+
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
     """
-    V3 Calculation Engine:
-    Integrates Elo + Physics Skills + AI Meta (Fatigue/Comfort) + FORM/MOMENTUM
+    V3 Engine: 6-Component Weighted Model
     """
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
     
-    # --- 1. ELO BASE (The Historic Truth) ---
+    # ---------------------------------------------------------
+    # 1. SKILLS (35%) - Raw Attributes from DB
+    # ---------------------------------------------------------
+    # Wir nehmen hier reine Skills OHNE Surface-Anpassung (die kommt bei Court)
+    skill_diff_p1 = (s1.get('serve', 50) + s1.get('power', 50) + s1.get('forehand', 50) + s1.get('backhand', 50) + s1.get('speed', 50) + s1.get('mental', 50))
+    skill_diff_p2 = (s2.get('serve', 50) + s2.get('power', 50) + s2.get('forehand', 50) + s2.get('backhand', 50) + s2.get('speed', 50) + s2.get('mental', 50))
+    
+    # Skill Diff skaliert durch 100 für Sigmoid
+    prob_skills = sigmoid_prob(skill_diff_p1 - skill_diff_p2, sensitivity=0.08)
+
+    # ---------------------------------------------------------
+    # 2. MATCHUP AI (25%) - Tactical Fit from Gemini
+    # ---------------------------------------------------------
+    matchup_p1 = ai_meta.get('p1_tactical_score', 5) # 0-10
+    matchup_p2 = ai_meta.get('p2_tactical_score', 5)
+    prob_matchup = sigmoid_prob(matchup_p1 - matchup_p2, sensitivity=0.4)
+
+    # ---------------------------------------------------------
+    # 3. ELO (15%) - Surface Specific from TennisAbstract
+    # ---------------------------------------------------------
     elo1 = 1500; elo2 = 1500
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
@@ -114,52 +136,62 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     for name, stats in ELO_CACHE.get(tour, {}).items():
         if n1 in name: elo1 = stats.get(elo_surf, 1500)
         if n2 in name: elo2 = stats.get(elo_surf, 1500)
-        
-    elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
-    # --- 2. PHYSICS ENGINE (The Matchup Truth) ---
+    prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
+
+    # ---------------------------------------------------------
+    # 4. COURT BSI (10%) - Physics Fit (BSI Logic)
+    # ---------------------------------------------------------
     is_fast = bsi >= 7.0
     is_slow = bsi <= 4.0
     
-    w_serve = 1.0 * (1.7 if is_fast else (0.4 if is_slow else 1.0))
-    w_base  = 1.0 * (0.5 if is_fast else (1.6 if is_slow else 1.0))
-    w_move  = 1.0 * (0.4 if is_fast else (1.5 if is_slow else 1.0)) 
+    # Wer profitiert vom Court?
+    # Fast Court: Bonus für Serve/Power
+    # Slow Court: Bonus für Speed/Stamina
+    c_score_p1 = 0
+    c_score_p2 = 0
     
-    serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
-    base_diff  = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_base
-    phys_diff  = ((s1.get('speed', 50) + s1.get('stamina', 50)) - (s2.get('speed', 50) + s2.get('stamina', 50))) * w_move
-    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.9 
-    
-    raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 160.0
-    
-    # --- 3. AI META & FORM (The "Sofascore" Factor) ---
-    # Fatigue & Comfort
-    fatigue_p1 = ai_meta.get('p1_fatigue_score', 0)
-    fatigue_p2 = ai_meta.get('p2_fatigue_score', 0)
-    surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5)
-    surface_comfort_p2 = ai_meta.get('p2_surface_comfort', 5)
-    
-    # NEW: Recent Form & Momentum (0-10 Scale from AI)
-    # 5 is average. >5 is good form. <5 is slump.
-    form_p1 = ai_meta.get('p1_recent_form', 5) 
-    form_p2 = ai_meta.get('p2_recent_form', 5)
-    
-    # Weighting Calculations
-    fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.25 
-    comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.30
-    
-    # Form Difference: If P1 is on fire (8) and P2 is slumping (3), diff is 5.
-    # 5 * 0.35 = 1.75 (Huge impact on Sigmoid)
-    form_impact = (form_p1 - form_p2) * 0.35
-    
-    # Combine Skills + Soft Factors
-    total_score = raw_skill_score - fatigue_malus + comfort_bonus + form_impact
-    skill_form_prob = 1 / (1 + math.exp(-1.0 * total_score))
-    
-    # --- 4. FINAL WEIGHTING ---
-    # Wir reduzieren Elo etwas zugunsten der aktuellen Form/Skills
-    # Elo (Long Term) 40% | Physics+Form (Now) 60%
-    final_prob = (elo_prob * 0.40) + (skill_form_prob * 0.60)
+    if is_fast:
+        c_score_p1 = (s1.get('serve', 50) + s1.get('power', 50)) * 1.5
+        c_score_p2 = (s2.get('serve', 50) + s2.get('power', 50)) * 1.5
+    elif is_slow:
+        c_score_p1 = (s1.get('speed', 50) + s1.get('stamina', 50)) * 1.5
+        c_score_p2 = (s2.get('speed', 50) + s2.get('stamina', 50)) * 1.5
+    else:
+        # Balanced Court: Allround Bonus
+        c_score_p1 = sum(s1.values()) / len(s1) if s1 else 50
+        c_score_p2 = sum(s2.values()) / len(s2) if s2 else 50
+        
+    prob_court = sigmoid_prob(c_score_p1 - c_score_p2, sensitivity=0.05)
+
+    # ---------------------------------------------------------
+    # 5. FORM (10%) - Calculated via Opponent Odds (AI Proxy)
+    # ---------------------------------------------------------
+    # Gemini liefert hier einen Score (0-10), der berücksichtigt:
+    # "Hat er gegen den Favoriten (1.20 Quote) gewonnen?" -> Hoher Form Score
+    form_p1 = ai_meta.get('p1_form_score', 5)
+    form_p2 = ai_meta.get('p2_form_score', 5)
+    prob_form = sigmoid_prob(form_p1 - form_p2, sensitivity=0.4)
+
+    # ---------------------------------------------------------
+    # 6. UTR (5%) - Universal Tennis Rating from Sofascore/AI
+    # ---------------------------------------------------------
+    utr_p1 = ai_meta.get('p1_utr', 10.0)
+    utr_p2 = ai_meta.get('p2_utr', 10.0)
+    # UTR Diff von 1.0 ist signifikant -> Sensitivity hoch
+    prob_utr = sigmoid_prob(utr_p1 - utr_p2, sensitivity=0.8)
+
+    # ---------------------------------------------------------
+    # FINAL WEIGHTED SUM
+    # ---------------------------------------------------------
+    final_prob = (
+        (prob_skills  * 0.35) +
+        (prob_matchup * 0.25) +
+        (prob_elo     * 0.15) +
+        (prob_court   * 0.10) +
+        (prob_form    * 0.10) +
+        (prob_utr     * 0.05)
+    )
     
     return final_prob
 
@@ -222,42 +254,43 @@ async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name
     return 'Hard', 6.5, 'Standard Hard fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # HIER IST DAS UPDATE: Wir bitten Gemini explizit um die Form-Einschätzung (Sofascore Simulation)
+    # PROMPT UPDATED FOR UTR AND FORM-VIA-ODDS
     prompt = f"""
-    ROLE: Elite Tennis Scout & Data Analyst.
-    TASK: Analyze {p1['last_name']} vs {p2['last_name']} for a Professional Bettor.
+    ROLE: Elite Tennis Scout & Data Analyst (SofaScore Integration).
+    TASK: Deep Analysis of {p1['last_name']} vs {p2['last_name']}.
     
     CONTEXT:
     - Surface: {surface} (BSI {bsi}/10).
     - Notes: {notes}
     
-    PLAYER 1 DATA: {r1.get('strengths')}, {r1.get('weaknesses')}. Style: {p1.get('play_style')}.
-    PLAYER 2 DATA: {r2.get('strengths')}, {r2.get('weaknesses')}. Style: {p2.get('play_style')}.
+    DATA P1: {r1.get('strengths')}, {r1.get('weaknesses')}. Style: {p1.get('play_style')}.
+    DATA P2: {r2.get('strengths')}, {r2.get('weaknesses')}. Style: {p2.get('play_style')}.
     
-    CRITICAL INSTRUCTION - FORM ESTIMATION:
-    You have knowledge of tennis results. Based on recent performances (last 5-10 matches) and general momentum:
-    1. Estimate "Recent Form" (0-10). 5 is average. 1 is terrible (losing streak). 9-10 is unplayable (winning streak).
-    2. Estimate "Fatigue Risk" (0-10).
-    3. Estimate "Surface Comfort" (0-10).
+    REQUIRED METRICS (0-10 Scale):
+    1. TACTICAL SCORE (25% Weight): How well does P1's style match P2's weaknesses? (e.g. Lefty vs weak BH).
+    2. FORM SCORE (10% Weight): Analyze recent matches. Did they beat favorites (high odds) or lose to underdogs? 
+       - If P1 beat a 1.20 favorite -> High Form Score (8-9).
+       - If P1 lost to a 5.00 underdog -> Low Form Score (1-2).
+    3. UTR ESTIMATE (5% Weight): Search or estimate their Universal Tennis Rating (e.g., 14.5 vs 13.8).
     
     OUTPUT JSON ONLY:
     {{
-        "p1_recent_form": 7,
-        "p2_recent_form": 4,
-        "p1_surface_comfort": 8,
-        "p2_surface_comfort": 4,
-        "p1_fatigue_score": 2,
-        "p2_fatigue_score": 1,
-        "ai_text": "Tactical analysis mentioning form..."
+        "p1_tactical_score": 7,
+        "p2_tactical_score": 5,
+        "p1_form_score": 8,
+        "p2_form_score": 4,
+        "p1_utr": 14.2,
+        "p2_utr": 13.8,
+        "ai_text": "Tactical analysis..."
     }}
     """
     res = await call_gemini(prompt)
-    if not res: return {'p1_recent_form': 5, 'p2_recent_form': 5, 'ai_text': "Analysis Pending."}
+    if not res: return {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_utr': 10, 'p2_utr': 10}
     try:
         clean_json = res.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
     except:
-        return {'p1_recent_form': 5, 'p2_recent_form': 5, 'ai_text': "Parsing Error."}
+        return {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_utr': 10, 'p2_utr': 10}
 
 # =================================================================
 # SCRAPER CORE
@@ -312,7 +345,7 @@ def clean_html_for_extraction(html_content):
     return txt
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v66 (Form & Momentum Integrated) Starting...")
+    log(f"🚀 Neural Scout v67 (Precision Weighting Protocol) Starting...")
     await fetch_elo_ratings()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
