@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V70.0 - Efficiency Engine)...")
+log("🔌 Initialisiere Neural Scout (V70.1 - Efficiency Engine Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -35,7 +35,7 @@ MODEL_NAME = 'gemini-2.5-pro'
 
 # Caches um API Calls zu sparen
 ELO_CACHE = {"ATP": {}, "WTA": {}}
-TOURNAMENT_LOC_CACHE = {} # Merkt sich KI-Ergebnisse für Orte
+TOURNAMENT_LOC_CACHE = {} 
 
 # =================================================================
 # DATA NORMALIZATION LAYER
@@ -101,9 +101,7 @@ async def fetch_elo_ratings():
 # GEMINI ENGINE (Optimized)
 # =================================================================
 async def call_gemini(prompt):
-    # RPM Drossel: Kurze Pause vor jedem Call, schont das Limit
-    await asyncio.sleep(1.0) 
-    
+    await asyncio.sleep(1.0) # RPM Drossel
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -112,7 +110,7 @@ async def call_gemini(prompt):
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=60.0) # Timeout reduziert
+            response = await client.post(url, headers=headers, json=payload, timeout=60.0)
             if response.status_code != 200: return None
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         except: return None
@@ -203,11 +201,9 @@ async def get_db_data():
 # SMART HELPERS (Optimized with Local Cache)
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
-    # CACHE CHECK: Haben wir diesen Turniernamen schon mal gelöst?
     if scraped_name in TOURNAMENT_LOC_CACHE:
         return TOURNAMENT_LOC_CACHE[scraped_name]
 
-    # Komprimierter Prompt spart Tokens
     prompt = f"""
     TASK: Locate Tennis Match (City/Surface).
     MATCH: {p1} vs {p2} | SOURCE: "{scraped_name}"
@@ -217,7 +213,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if not res: return None
     try: 
         data = json.loads(res.replace("```json", "").replace("```", "").strip())
-        TOURNAMENT_LOC_CACHE[scraped_name] = data # Speichern im Cache
+        TOURNAMENT_LOC_CACHE[scraped_name] = data 
         return data
     except: return None
 
@@ -226,7 +222,6 @@ async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name
     for t in db_tournaments:
         if t['name'].lower() == scraped_lower: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
-    # Lokale Fallbacks (Sparen API Calls für Standard-Namen)
     if "clay" in scraped_lower: return "Red Clay", 3.5, "Local Keyword Match"
     if "hard" in scraped_lower: return "Hard", 6.5, "Local Keyword Match"
     if "indoor" in scraped_lower: return "Indoor", 8.0, "Local Keyword Match"
@@ -250,7 +245,6 @@ async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # Komprimierter Prompt (Gleicher Inhalt, weniger Worte = weniger Tokens)
     prompt = f"""
     ROLE: Elite Tennis Analyst. TASK: Analyze {p1['last_name']} vs {p2['last_name']}.
     CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
@@ -269,7 +263,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     except: return default
 
 # =================================================================
-# LOCAL PARSING (The Huge Token Saver)
+# SCRAPER CORE (WIEDER DA!) & LOCAL PARSING
 # =================================================================
 def normalize_text(text): 
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
@@ -277,80 +271,74 @@ def normalize_text(text):
 def clean_player_name(raw): 
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
+# --- DIE FEHLENDE FUNKTION ---
+async def scrape_tennis_odds_for_date(target_date):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        try:
+            url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
+            log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            try: await page.wait_for_selector(".result", timeout=10000)
+            except: 
+                await browser.close()
+                return None
+            content = await page.content()
+            await browser.close()
+            return content
+        except Exception as e:
+            log(f"❌ Scrape Error: {e}")
+            await browser.close()
+            return None
+
 def parse_matches_locally(html_content, player_names):
     """
-    Ersetzt den teuren AI-Call durch schnelles Python.
-    Sucht nach Zeilen mit Spielern aus unserer DB und extrahiert Odds via Regex.
+    Lokaler Regex-Parser (Spart Tokens)
     """
     soup = BeautifulSoup(html_content, 'html.parser')
     tables = soup.find_all("table", class_="result")
     
     found_matches = []
-    # Set für schnellen Lookup (O(1)) statt Liste (O(n))
     target_players = set(p.lower() for p in player_names)
-    
     current_tour = "Unknown"
     
     for table in tables:
         rows = table.find_all("tr")
         for i in range(len(rows)):
             row = rows[i]
-            # Turnier Header finden
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 continue
             
-            # Zeilen Text holen
-            cols = row.find_all("td")
-            if not cols: continue
-            
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
-            
-            # Prüfen ob Match-Zeile (hat oft eine Uhrzeit wie 14:00 oder ist Teil eines Blocks)
-            # Wir schauen auf i+1 für den Gegner
             if i + 1 < len(rows):
-                # Namen extrahieren
-                raw_p1 = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text) # grober split
+                raw_p1 = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
                 raw_p2 = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
                 
-                # Check: Sind diese Namen in unserer DB?
-                p1_found = any(tp in raw_p1.lower() for tp in target_players)
-                p2_found = any(tp in raw_p2.lower() for tp in target_players)
-                
-                if p1_found and p2_found:
-                    # ODDS Extraction via Regex (Sucht nach dezimalzahlen am Ende)
-                    # Suche in der Zelle, die Quoten enthält (meistens die letzten TDs)
+                if any(tp in raw_p1.lower() for tp in target_players) and any(tp in raw_p2.lower() for tp in target_players):
                     odds = []
                     try:
-                        # TennisExplorer hat Quoten oft in spezifischen Spalten. 
-                        # Wir suchen alle Zahlen > 1.0 in der Zeile
                         nums = re.findall(r'\d+\.\d+', row_text)
-                        # Filtern auf plausible Quoten (1.01 bis 50.0)
-                        valid_nums = [float(x) for x in nums if 1.0 < float(x) < 50.0]
-                        if len(valid_nums) >= 2:
-                            odds = valid_nums[:2] # Nehmen wir an erste ist 1, zweite ist 2
+                        valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
+                        if len(valid) >= 2: odds = valid[:2]
                         else:
-                            # Versuch Zeile 2 (Gegner Zeile hat oft Quote 2)
                             nums2 = re.findall(r'\d+\.\d+', rows[i+1].get_text())
-                            valid_nums2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
-                            if valid_nums and valid_nums2:
-                                odds = [valid_nums[0], valid_nums2[0]]
+                            valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
+                            if valid and valid2: odds = [valid[0], valid2[0]]
                     except: pass
                     
-                    odd1 = odds[0] if len(odds) > 0 else 0.0
-                    odd2 = odds[1] if len(odds) > 1 else 0.0
-                    
-                    match_data = {
-                        "p1": raw_p1, "p2": raw_p2, 
-                        "tour": current_tour, 
-                        "odds1": odd1, "odds2": odd2
-                    }
-                    found_matches.append(match_data)
-                    
+                    found_matches.append({
+                        "p1": raw_p1, "p2": raw_p2, "tour": current_tour, 
+                        "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0
+                    })
     return found_matches
 
+# =================================================================
+# PIPELINE
+# =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout v70 (Efficiency Engine) Starting...")
+    log(f"🚀 Neural Scout v70.1 (Efficiency Engine Fix) Starting...")
     await fetch_elo_ratings()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -366,7 +354,7 @@ async def run_pipeline():
         html = await scrape_tennis_odds_for_date(target_date)
         if not html: continue
 
-        # 2. LOCAL PARSING (Spart Token!)
+        # 2. LOCAL PARSING
         matches = parse_matches_locally(html, player_names)
         log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
         
@@ -391,7 +379,7 @@ async def run_pipeline():
                         log(f"⏩ Skip New (No Odds): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
                     
-                    # Analyze New (Hier nutzt er noch AI, aber nur für relevante Matches!)
+                    # Analyze New
                     log(f"✨ Analyzing: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
