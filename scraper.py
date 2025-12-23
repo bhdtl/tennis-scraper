@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V61.0 - Surface Physics Value Scanner)...")
+log("🔌 Initialisiere Neural Scout (V62.0 - Smart Tournament Resolver)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -68,7 +68,6 @@ async def fetch_elo_ratings():
                         if len(cols) > 4:
                             name = normalize_text(cols[0].get_text(strip=True)).lower()
                             # TennisAbstract Struktur: Name, Age, Elo, HardRaw, ClayRaw, GrassRaw
-                            # Wir versuchen Hard (col 3), Clay (col 4), Grass (col 5) zu extrahieren
                             try:
                                 elo_hard = float(cols[3].get_text(strip=True) or 1500)
                                 elo_clay = float(cols[4].get_text(strip=True) or 1500)
@@ -105,7 +104,7 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# MATH CORE V2 (The Silicon Valley Upgrade - FULL WEIGHTING INTEGRATED)
+# MATH CORE V2 (The Silicon Valley Upgrade - FULL WEIGHTING)
 # =================================================================
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
     """
@@ -113,69 +112,49 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta)
     Kombiniert: Skills + Surface Physics + Elo + AI Meta-Data (Fatigue).
     """
     # 1. SETUP
-    # Normalisieren für Matching
-    n1 = p1_name.lower().split()[-1] # Nachname
+    n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
-    
-    # Tour ermitteln (einfache Heuristik, sonst ATP default)
     tour = "ATP" 
     
     # 2. ELO LOOKUP (Surface Specific)
     elo1 = 1500; elo2 = 1500
-    
-    # Mappe unseren Surface Namen auf TennisAbstract Spalten
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
     
-    # Suche in Cache (Fuzzy Search wäre besser, hier simpel)
     for name, stats in ELO_CACHE.get(tour, {}).items():
         if n1 in name: elo1 = stats.get(elo_surf, 1500)
         if n2 in name: elo2 = stats.get(elo_surf, 1500)
         
-    # Elo Delta Probability
-    # Die Elo-Wahrscheinlichkeit ist der "Anker"
     elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
     # 3. PHYSICS & SKILL ENGINE
     is_fast = bsi >= 7.0
     is_slow = bsi <= 4.0
     
-    # Dynamic Weighting (CSI Multiplier - CRITICAL UPDATE)
-    # Auf schnellem Belag zählt der Aufschlag exponentiell mehr
+    # Dynamic Weighting (CSI Multiplier)
     w_serve = 1.0 * (1.6 if is_fast else (0.4 if is_slow else 1.0))
     w_base  = 1.0 * (0.5 if is_fast else (1.5 if is_slow else 1.0))
-    w_move  = 1.0 * (0.4 if is_fast else (1.4 if is_slow else 1.0)) # Movement auf Sand extrem wichtig
+    w_move  = 1.0 * (0.4 if is_fast else (1.4 if is_slow else 1.0)) 
     
-    # Skill Differentials (Skala 0-100)
     serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
     base_diff  = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_base
     phys_diff  = ((s1.get('speed', 50) + s1.get('stamina', 50)) - (s2.get('speed', 50) + s2.get('stamina', 50))) * w_move
-    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.9 # Mental leicht erhöht
+    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.9 
     
-    # Aggregation der Skills
-    # Wir teilen durch einen Faktor, um den Score in einen Bereich für die Sigmoid-Funktion zu bringen
     raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 160.0
     
     # 4. SPECIALIST PENALTY & FATIGUE (Data from AI Meta)
-    # ai_meta kommt aus der Gemini Analyse
-    fatigue_p1 = ai_meta.get('p1_fatigue_score', 0) # 0-10 (10 = Dead)
+    fatigue_p1 = ai_meta.get('p1_fatigue_score', 0)
     fatigue_p2 = ai_meta.get('p2_fatigue_score', 0)
-    surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5) # 0-10
+    surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5)
     surface_comfort_p2 = ai_meta.get('p2_surface_comfort', 5)
     
-    # Penalty Calculation
-    # Fatigue bestraft stark (exponentiell bei hohen Werten wäre besser, hier linear genähert)
     fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.25 
-    # Comfort Bonus
     comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.30
     
     # 5. FINAL FUSION
-    # Skill Probability via Sigmoid Funktion
     skill_prob = 1 / (1 + math.exp(-1.0 * (raw_skill_score - fatigue_malus + comfort_bonus)))
-    
-    # Weighted Average:
-    # 45% Elo (Markt-Basis) vs 55% Physics/AI (Edge)
     final_prob = (elo_prob * 0.45) + (skill_prob * 0.55)
     
     return final_prob
@@ -194,21 +173,90 @@ async def get_db_data():
         log(f"❌ DB Load Error: {e}")
         return [], [], [], []
 
-def find_best_court_match(scraped_tour_name, db_tournaments):
+# =================================================================
+# SMART TOURNAMENT RESOLVER
+# =================================================================
+async def resolve_ambiguous_tournament(p1_name, p2_name, scraped_tour_name):
+    """
+    Fragt die KI nach dem echten Standort, wenn der Name generisch ist (z.B. 'Futures 2025').
+    """
+    prompt = f"""
+    TASK: Identify the specific Tennis Tournament Location & Surface.
+    MATCH: {p1_name} vs {p2_name}
+    SOURCE LABEL: "{scraped_tour_name}"
+    DATE: Today/Upcoming.
+    
+    INSTRUCTION: 
+    1. Based on these players, determine where they are currently playing (City/Country). 
+    2. Common ITF/Challenger hubs: Monastir, Antalya, Sharm El Sheikh, Heraklion, New Delhi, etc.
+    3. Return the CITY NAME and the SURFACE type.
+    
+    OUTPUT JSON ONLY:
+    {{
+        "city": "Monastir",
+        "surface_guessed": "Hard",
+        "is_indoor": false
+    }}
+    """
+    res = await call_gemini(prompt)
+    if not res: return None
+    try:
+        clean = res.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean)
+    except: return None
+
+async def find_best_court_match_smart(scraped_tour_name, db_tournaments, p1_name, p2_name):
+    """
+    Intelligente Suche:
+    1. Direkter Match.
+    2. Wenn 'Futures'/'Challenger' -> KI fragen -> Standort-Match.
+    3. Fallback.
+    """
     scraped_lower = scraped_tour_name.lower().strip()
+    
+    # 1. Direct Search (Exakter Name)
     for t in db_tournaments:
-        if t['name'].lower() == scraped_lower: return t['surface'], t['bsi_rating'], t.get('notes', '')
-    for t in db_tournaments:
-        if t['name'].lower() in scraped_lower or scraped_lower in t['name'].lower(): return t['surface'], t['bsi_rating'], t.get('notes', '')
+        if t['name'].lower() == scraped_lower: 
+            return t['surface'], t['bsi_rating'], t.get('notes', '')
+    
+    # 2. Fuzzy Search (Teilname)
+    # Ignoriere diese Logik, wenn es nur "Futures 2025" heißt, da zu ungenau
+    if "futures" not in scraped_lower or len(scraped_lower) > 15:
+        for t in db_tournaments:
+            if t['name'].lower() in scraped_lower or scraped_lower in t['name'].lower(): 
+                return t['surface'], t['bsi_rating'], t.get('notes', '')
+
+    # 3. SMART AI RESOLVER (Wenn generisch oder nicht gefunden)
+    # Das löst das Problem von "Futures 2025" oder fehlenden Details
+    log(f"   🤖 KI recherchiert Turnierort für: {p1_name} vs {p2_name} ({scraped_tour_name})...")
+    ai_loc = await resolve_ambiguous_tournament(p1_name, p2_name, scraped_tour_name)
+    
+    if ai_loc and ai_loc.get('city'):
+        city = ai_loc['city'].lower()
+        surface_guess = ai_loc.get('surface_guessed', 'Hard')
+        
+        # Suche nach der STADT in der Datenbank (z.B. "Monastir")
+        # Wir nehmen an, ITF und Challenger spielen am gleichen Ort auf ähnlichen Belägen
+        for t in db_tournaments:
+            if city in t['name'].lower():
+                log(f"   ✅ KI Location Match: {t['name']} (BSI: {t['bsi_rating']})")
+                return t['surface'], t['bsi_rating'], f"AI inferred location: {city}"
+        
+        # Wenn Stadt nicht in DB, nutze KI Surface Guess
+        guessed_bsi = 3.5 if 'clay' in surface_guess.lower() else (8.0 if ai_loc.get('is_indoor') else 6.5)
+        log(f"   ⚠️ Location '{city}' nicht in DB. Nutze KI Surface: {surface_guess}")
+        return surface_guess, guessed_bsi, f"AI Guess: {city}"
+
+    # 4. Absolute Fallbacks
     if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor fallback'
     if any(x in scraped_lower for x in ['clay', 'sand']): return 'Red Clay', 3.5, 'Slow Clay fallback'
+    
     return 'Hard', 6.5, 'Standard Hard fallback'
 
 # =================================================================
 # AI ANALYSIS (With Meta-Data Extraction)
 # =================================================================
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # Wir nutzen Gemini nicht nur für Text, sondern als Sensor für "Soft Factors"
     prompt = f"""
     ROLE: Elite Tennis Scout.
     TASK: Deep Analysis of {p1['last_name']} vs {p2['last_name']}.
@@ -300,7 +348,7 @@ def clean_html_for_extraction(html_content):
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout v61 (Elo + Physics Engine) Starting...")
+    log(f"🚀 Neural Scout v62 (Elo + Physics + Smart Resolver) Starting...")
     
     # 1. Elo Ratings laden (One-Time Fetch)
     await fetch_elo_ratings()
@@ -320,11 +368,12 @@ async def run_pipeline():
 
         player_names = [p['last_name'] for p in players]
         
+        # Update Prompt: Extrahiere auch Matches ohne Odds (0.00), wir brauchen die Fair Odds trotzdem!
         extract_prompt = f"""
         Extract matches where BOTH players are in this list: {json.dumps(player_names)}
         Input Text: {cleaned_text[:25000]}
         OUTPUT JSON: {{ "matches": [ {{ "p1": "Lastname", "p2": "Lastname", "tour": "Tour Name (Full)", "odds1": 1.5, "odds2": 2.5 }} ] }}
-        If odds missing, set to 0.
+        If odds missing or empty, set to 0.0.
         """
         
         extract_res = await call_gemini(extract_prompt)
@@ -345,8 +394,9 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # 1. COURT & BSI
-                    surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
+                    # 1. COURT & BSI (Jetzt SMART!)
+                    # Wir übergeben jetzt auch die Spielernamen für die AI-Recherche
+                    surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     # 2. AI META-ANALYSIS (Fatigue & Comfort)
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
@@ -373,7 +423,8 @@ async def run_pipeline():
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {fair_odds1} vs Market: {market_odds1})")
+                    # Log Details, auch wenn Market Odds 0 sind (für ITF/Futures wichtig)
+                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Loc: {notes[:20]}.. | Fair: {fair_odds1})")
                     supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
         except Exception as e:
