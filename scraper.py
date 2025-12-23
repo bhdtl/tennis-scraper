@@ -14,15 +14,14 @@ from supabase import create_client, Client
 import httpx
 
 # =================================================================
-# CONFIGURATION
+# CONFIGURATION & LOGGING
 # =================================================================
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (Gemini 2.5 Deep Sync)...")
+log("🔌 Initialisiere Neural Scout (V61.0 - Surface Physics Engine)...")
 
-# 1. Keys laden
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -32,12 +31,59 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- MODEL: HIGH END ---
 MODEL_NAME = 'gemini-2.5-pro' 
 
+# Globaler Cache für Elo Ratings (um unnötige Requests zu vermeiden)
+ELO_CACHE = {"ATP": {}, "WTA": {}}
+
 # =================================================================
-# GEMINI API ENGINE
+# ELO DATA INJECTION (TennisAbstract Scraper)
+# =================================================================
+async def fetch_elo_ratings():
+    """
+    Holt die aktuellen Surface-Specific Elo Ratings von TennisAbstract.
+    Dies ist der 'Realitäts-Check' für die KI.
+    """
+    log("📊 Lade Surface-Specific Elo Ratings...")
+    urls = {
+        "ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html",
+        "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"
+    }
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        
+        for tour, url in urls.items():
+            try:
+                page = await browser.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                content = await page.content()
+                soup = BeautifulSoup(content, 'html.parser')
+                table = soup.find('table', {'id': 'reportable'})
+                
+                if table:
+                    rows = table.find_all('tr')[1:] # Skip Header
+                    for row in rows:
+                        cols = row.find_all('td')
+                        if len(cols) > 4:
+                            name = normalize_text(cols[0].get_text(strip=True)).lower()
+                            # TennisAbstract Struktur: Name, Age, Elo, HardRaw, ClayRaw, GrassRaw
+                            # Wir versuchen Hard (col 3), Clay (col 4), Grass (col 5) zu extrahieren
+                            try:
+                                elo_hard = float(cols[3].get_text(strip=True) or 1500)
+                                elo_clay = float(cols[4].get_text(strip=True) or 1500)
+                                elo_grass = float(cols[5].get_text(strip=True) or 1500)
+                                ELO_CACHE[tour][name] = {'Hard': elo_hard, 'Clay': elo_clay, 'Grass': elo_grass}
+                            except: continue
+                    log(f"   ✅ {tour} Elo Ratings geladen: {len(ELO_CACHE[tour])} Spieler.")
+                await page.close()
+            except Exception as e:
+                log(f"   ⚠️ Elo Fetch Warning ({tour}): {e}")
+        
+        await browser.close()
+
+# =================================================================
+# GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
@@ -46,26 +92,92 @@ async def call_gemini(prompt):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "response_mime_type": "application/json", 
-            "temperature": 0.3 # Präzise aber kreativ genug für Text
+            "temperature": 0.2
         }
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=90.0) # Mehr Zeit für Deep Analysis
+            response = await client.post(url, headers=headers, json=payload, timeout=90.0)
             if response.status_code != 200:
-                log(f"⚠️ Gemini API Error {response.status_code}: {response.text}")
                 return None
             data = response.json()
             return data['candidates'][0]['content']['parts'][0]['text']
-        except Exception as e:
-            log(f"⚠️ Gemini Network Error: {e}")
-            return None
+        except: return None
+
+# =================================================================
+# MATH CORE V2 (The Silicon Valley Upgrade)
+# =================================================================
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
+    """
+    Die neue, hochkomplexe Berechnungs-Engine.
+    Kombiniert: Skills + Surface Physics + Elo + AI Meta-Data (Fatigue).
+    """
+    # 1. SETUP
+    # Normalisieren für Matching
+    n1 = p1_name.lower().split()[-1] # Nachname
+    n2 = p2_name.lower().split()[-1]
+    
+    # Tour ermitteln (einfache Heuristik, sonst ATP default)
+    tour = "ATP" 
+    
+    # 2. ELO LOOKUP (Surface Specific)
+    elo1 = 1500; elo2 = 1500
+    
+    # Mappe unseren Surface Namen auf TennisAbstract Spalten
+    elo_surf = 'Hard'
+    if 'clay' in surface.lower(): elo_surf = 'Clay'
+    elif 'grass' in surface.lower(): elo_surf = 'Grass'
+    
+    # Suche in Cache (Fuzzy Search wäre besser, hier simpel)
+    for name, stats in ELO_CACHE.get(tour, {}).items():
+        if n1 in name: elo1 = stats.get(elo_surf, 1500)
+        if n2 in name: elo2 = stats.get(elo_surf, 1500)
+        
+    # Elo Delta Probability
+    elo_prob = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
+    
+    # 3. PHYSICS & SKILL ENGINE
+    is_fast = bsi >= 7.0
+    is_slow = bsi <= 4.0
+    
+    # Dynamic Weighting (CSI Multiplier)
+    # Auf schnellem Belag zählt der Aufschlag exponentiell mehr
+    w_serve = 1.0 * (1.5 if is_fast else (0.5 if is_slow else 1.0))
+    w_base  = 1.0 * (0.6 if is_fast else (1.4 if is_slow else 1.0))
+    w_move  = 1.0 * (0.5 if is_fast else (1.3 if is_slow else 1.0)) # Movement auf Sand extrem wichtig
+    
+    # Skill Differentials
+    serve_diff = ((s1.get('serve', 50) + s1.get('power', 50)) - (s2.get('serve', 50) + s2.get('power', 50))) * w_serve
+    base_diff  = ((s1.get('forehand', 50) + s1.get('backhand', 50)) - (s2.get('forehand', 50) + s2.get('backhand', 50))) * w_base
+    phys_diff  = ((s1.get('speed', 50) + s1.get('stamina', 50)) - (s2.get('speed', 50) + s2.get('stamina', 50))) * w_move
+    ment_diff  = (s1.get('mental', 50) - s2.get('mental', 50)) * 0.8 # Mental ist immer relevant
+    
+    raw_skill_score = (serve_diff + base_diff + phys_diff + ment_diff) / 180
+    
+    # 4. SPECIALIST PENALTY & FATIGUE (Data from AI Meta)
+    # ai_meta kommt aus der Gemini Analyse
+    fatigue_p1 = ai_meta.get('p1_fatigue_score', 0) # 0-10 (10 = Dead)
+    fatigue_p2 = ai_meta.get('p2_fatigue_score', 0)
+    surface_comfort_p1 = ai_meta.get('p1_surface_comfort', 5) # 0-10
+    surface_comfort_p2 = ai_meta.get('p2_surface_comfort', 5)
+    
+    # Penalty Calculation
+    fatigue_malus = (fatigue_p1 - fatigue_p2) * 0.15 # Wer müder ist, verliert Punkte
+    comfort_bonus = (surface_comfort_p1 - surface_comfort_p2) * 0.20 # Wer den Belag liebt, kriegt Bonus
+    
+    # 5. FINAL FUSION
+    # Wir gewichten Elo (Realität) und Skills (Theorie) und AI (Kontext)
+    # Elo ist sehr stark, daher 40% Gewicht
+    skill_prob = 1 / (1 + math.exp(-0.8 * (raw_skill_score - fatigue_malus + comfort_bonus)))
+    
+    final_prob = (elo_prob * 0.40) + (skill_prob * 0.60)
+    
+    return final_prob
 
 # =================================================================
 # DATA LOADING
 # =================================================================
 async def get_db_data():
-    log("📥 Lade Deep Data (Skills & Reports)...")
     try:
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
@@ -78,122 +190,53 @@ async def get_db_data():
 
 def find_best_court_match(scraped_tour_name, db_tournaments):
     scraped_lower = scraped_tour_name.lower().strip()
-    # 1. Exakt
     for t in db_tournaments:
-        if t['name'].lower() == scraped_lower:
-            return t['surface'], t['bsi_rating'], t.get('notes', '')
-    # 2. Fuzzy
-    best_candidate = None
+        if t['name'].lower() == scraped_lower: return t['surface'], t['bsi_rating'], t.get('notes', '')
     for t in db_tournaments:
-        db_name = t['name'].lower()
-        if db_name in scraped_lower or scraped_lower in db_name:
-            if best_candidate is None or len(db_name) < len(best_candidate['name']):
-                best_candidate = t
-    if best_candidate:
-        return best_candidate['surface'], best_candidate['bsi_rating'], best_candidate.get('notes', '')
-    # 3. Fallback
-    if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor'
-    if any(x in scraped_lower for x in ['clay', 'sand', 'roland']): return 'Red Clay', 3.5, 'Slow Clay'
-    return 'Hard', 6.5, 'Standard Hard'
+        if t['name'].lower() in scraped_lower or scraped_lower in t['name'].lower(): return t['surface'], t['bsi_rating'], t.get('notes', '')
+    if 'indoor' in scraped_lower: return 'Indoor', 8.2, 'Fast Indoor fallback'
+    if any(x in scraped_lower for x in ['clay', 'sand']): return 'Red Clay', 3.5, 'Slow Clay fallback'
+    return 'Hard', 6.5, 'Standard Hard fallback'
 
 # =================================================================
-# MATH CORE (Synchronisiert mit Frontend V60)
-# =================================================================
-def calculate_sophisticated_fair_odds(s1, s2, bsi):
-    # VETERAN MATH: Identisch zum Frontend Code für Konsistenz
-    is_fast = bsi >= 7
-    is_slow = bsi <= 4
-    
-    # Gewichtung je nach Court Speed
-    w_serve = 1.0; w_baseline = 1.0; w_mental = 0.8; w_physical = 0.8
-    
-    if is_fast:
-        w_serve = 2.4      # Aufschlag dominiert
-        w_baseline = 0.6
-        w_mental = 0.7
-        w_physical = 0.3
-    elif is_slow:
-        w_serve = 0.5
-        w_baseline = 1.5   # Grind dominiert
-        w_mental = 1.3     # Geduld ist wichtig
-        w_physical = 1.6
-        
-    # Safe Gets mit Defaults
-    s1_serve = s1.get('serve', 50); s1_power = s1.get('power', 50)
-    s2_serve = s2.get('serve', 50); s2_power = s2.get('power', 50)
-    
-    s1_base = s1.get('forehand', 50) + s1.get('backhand', 50)
-    s2_base = s2.get('forehand', 50) + s2.get('backhand', 50)
-    
-    s1_phys = s1.get('speed', 50) + s1.get('stamina', 50)
-    s2_phys = s2.get('speed', 50) + s2.get('stamina', 50)
-
-    # Differenzen berechnen
-    serve_diff = ((s1_serve + s1_power) - (s2_serve + s2_power)) * w_serve
-    baseline_diff = (s1_base - s2_base) * w_baseline
-    physical_diff = (s1_phys - s2_phys) * w_physical
-    mental_diff = (s1.get('mental', 50) - s2.get('mental', 50)) * w_mental
-
-    # Total Score (Divisor 160 für etwas höhere Scores -> Green Zone)
-    total_advantage = (serve_diff + baseline_diff + physical_diff + mental_diff) / 160
-    
-    # Klassen-Unterschied (Overall Rating Bonus)
-    class_diff = (s1.get('overall_rating', 50) - s2.get('overall_rating', 50)) / 18
-    
-    total_score = total_advantage + class_diff
-    
-    # Sigmoid für Wahrscheinlichkeit
-    try:
-        prob_p1 = 1 / (1 + math.exp(-0.75 * total_score))
-    except OverflowError:
-        prob_p1 = 0.99 if total_score > 0 else 0.01
-        
-    return prob_p1
-
-# =================================================================
-# AI ANALYSIS (Deep Structure)
+# AI ANALYSIS (With Meta-Data Extraction)
 # =================================================================
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # Prompt synced mit Frontend-Logik
+    # Wir nutzen Gemini nicht nur für Text, sondern als Sensor für "Soft Factors"
     prompt = f"""
-    ROLE: Elite Tennis Tactical Analyst.
-    TASK: Deep Match Analysis: {p1['last_name']} vs {p2['last_name']}.
+    ROLE: Elite Tennis Scout.
+    TASK: Deep Analysis of {p1['last_name']} vs {p2['last_name']}.
     
-    ### CONTEXT
-    - Surface: {surface}
-    - Speed Index: {bsi}/10 (1=Slow, 10=Fast).
-    - Court Notes: {notes}
+    CONTEXT:
+    - Surface: {surface} (BSI {bsi}/10).
+    - Notes: {notes}
     
-    ### PLAYER A: {p1['last_name']}
-    - Stats: Srv {s1.get('serve')}, FH {s1.get('forehand')}, BH {s1.get('backhand')}, Men {s1.get('mental')}.
-    - Report: {r1.get('strengths', 'N/A')} (Pros), {r1.get('weaknesses', 'N/A')} (Cons).
+    DATA P1: {r1.get('strengths')}, {r1.get('weaknesses')}. Style: {p1.get('play_style')}.
+    DATA P2: {r2.get('strengths')}, {r2.get('weaknesses')}. Style: {p2.get('play_style')}.
     
-    ### PLAYER B: {p2['last_name']}
-    - Stats: Srv {s2.get('serve')}, FH {s2.get('forehand')}, BH {s2.get('backhand')}, Men {s2.get('mental')}.
-    - Report: {r2.get('strengths', 'N/A')} (Pros), {r2.get('weaknesses', 'N/A')} (Cons).
-    
-    ### OUTPUT REQUIREMENT
-    Write a sophisticated 3-paragraph analysis (approx 150 words):
-    1. Analysis of Player A's weapons on this specific surface.
-    2. Analysis of Player B's counter-play and vulnerabilities.
-    3. The Clash: How the court speed (BSI {bsi}) decides the winner. Mention specific shots.
+    MISSION:
+    1. Estimate "Surface Comfort" (0-10) for both. Is P1 a clay specialist on hard?
+    2. Estimate "Fatigue Risk" (0-10) based on typical schedules for these players.
+    3. Write a 3-paragraph tactical breakdown.
     
     OUTPUT JSON ONLY:
     {{
-        "deep_analysis": "The full 3-paragraph text here...",
-        "win_probability_p1": 0.XX
+        "p1_surface_comfort": 8,
+        "p2_surface_comfort": 4,
+        "p1_fatigue_score": 2,
+        "p2_fatigue_score": 1,
+        "ai_text": "Paragraph 1: P1 Analysis... Paragraph 2: P2 Analysis... Paragraph 3: Clash..."
     }}
     """
     
     res = await call_gemini(prompt)
-    if not res: return 0.5, "AI Timeout - Defaulting to Statistical Analysis."
+    if not res: return {'p1_surface_comfort': 5, 'p2_surface_comfort': 5, 'ai_text': "Analysis Pending."}
     
     try:
         clean_json = res.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_json)
-        return data.get('win_probability_p1', 0.5), data.get('deep_analysis', 'Analysis unavailable.')
+        return json.loads(clean_json)
     except:
-        return 0.5, "AI Parse Error."
+        return {'p1_surface_comfort': 5, 'p2_surface_comfort': 5, 'ai_text': "Parsing Error."}
 
 # =================================================================
 # SCRAPER CORE
@@ -251,17 +294,18 @@ def clean_html_for_extraction(html_content):
 # MAIN PIPELINE
 # =================================================================
 async def run_pipeline():
-    log("🚀 Neural Scout v60 (Deep Sync Edition) Starting...")
+    log(f"🚀 Neural Scout v61 (Elo + Physics Engine) Starting...")
+    
+    # 1. Elo Ratings laden (One-Time Fetch)
+    await fetch_elo_ratings()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
 
     current_date = datetime.now()
     
-    # 35 Tage Future Scan
     for day_offset in range(35): 
         target_date = current_date + timedelta(days=day_offset)
-        
         html = await scrape_tennis_odds_for_date(target_date)
         if not html: continue
 
@@ -298,17 +342,14 @@ async def run_pipeline():
                     # 1. COURT & BSI
                     surf, bsi, notes = find_best_court_match(m['tour'], all_tournaments)
                     
-                    # 2. MATH ODDS (Synchronisiert)
-                    prob_p1 = calculate_sophisticated_fair_odds(s1, s2, bsi)
+                    # 2. AI META-ANALYSIS (Fatigue & Comfort)
+                    ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
-                    # 3. AI DEEP ANALYSIS
-                    ai_prob_raw, ai_text = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
+                    # 3. PHYSICS & ELO CALCULATION
+                    prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta)
                     
-                    # 4. HYBRID CALCULATION (50/50 Split)
-                    final_prob_p1 = (prob_p1 * 0.5) + (ai_prob_raw * 0.5)
-                    
-                    fair_odds1 = round(1 / final_prob_p1, 2) if final_prob_p1 > 0.01 else 99.0
-                    fair_odds2 = round(1 / (1 - final_prob_p1), 2) if final_prob_p1 < 0.99 else 99.0
+                    fair_odds1 = round(1 / prob_p1, 2) if prob_p1 > 0.01 else 99.0
+                    fair_odds2 = round(1 / (1 - prob_p1), 2) if prob_p1 < 0.99 else 99.0
                     
                     match_entry = {
                         "player1_name": p1_obj['last_name'],
@@ -318,11 +359,11 @@ async def run_pipeline():
                         "odds2": m['odds2'],
                         "ai_fair_odds1": fair_odds1,
                         "ai_fair_odds2": fair_odds2,
-                        "ai_analysis_text": ai_text, # Speichert jetzt den langen 3-Absatz Text
+                        "ai_analysis_text": ai_meta.get('ai_text', 'No analysis'),
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     
-                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} ({fair_odds1} vs {fair_odds2})")
+                    log(f"💾 Saving: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {fair_odds1})")
                     supabase.table("market_odds").upsert(match_entry, on_conflict="player1_name, player2_name, tournament").execute()
 
         except Exception as e:
