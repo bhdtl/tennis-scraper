@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V79.0 - Hardcore Result Parsing)...")
+log("🔌 Initialisiere Neural Scout (V80.0 - Score-Based Result Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -53,7 +53,6 @@ def clean_player_name(raw):
 def get_last_name(full_name):
     """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
-    # Entferne Vornamen-Initialen wie "F." am Anfang oder Ende
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
     return parts[-1].lower() if parts else ""
@@ -132,7 +131,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# MATH CORE V7 (CONTEXT-FIRST + MISMATCH AMPLIFIER)
+# MATH CORE V7
 # =================================================================
 def sigmoid_prob(diff, sensitivity=0.1):
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -143,12 +142,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
-    # 1. AI MATCHUP ANALYSIS (50%)
+    # 1. AI MATCHUP (50%)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    # 2. COURT PHYSICS / BSI (20%)
+    # 2. COURT PHYSICS (20%)
     c1_score = 0; c2_score = 0
     if bsi_val <= 4.0:
         c1_score = s1.get('stamina',50) + s1.get('speed',50) + s1.get('mental',50)
@@ -176,42 +175,33 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    prob_alpha = (
-        (prob_matchup * 0.50) + 
-        (prob_bsi * 0.20) + 
-        (prob_skills * 0.15) + 
-        (prob_elo * 0.15)
-    )
+    prob_alpha = (prob_matchup * 0.50) + (prob_bsi * 0.20) + (prob_skills * 0.15) + (prob_elo * 0.15)
 
     if prob_alpha > 0.60:
-        prob_alpha = prob_alpha * 1.10
-        prob_alpha = min(prob_alpha, 0.92)
+        prob_alpha = min(prob_alpha * 1.10, 0.92)
     elif prob_alpha < 0.40:
-        prob_alpha = prob_alpha * 0.90
-        prob_alpha = max(prob_alpha, 0.08)
+        prob_alpha = max(prob_alpha * 0.90, 0.08)
 
     prob_market = 0.5 
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
-        margin = inv1 + inv2
-        prob_market = inv1 / margin 
+        prob_market = inv1 / (inv1 + inv2)
     
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION ENGINE (V79.0 - HTML STRUCTURE ANALYSIS)
+# RESULT VERIFICATION ENGINE (V80.0 - SCORE PARSING)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (HTML Structure)...")
+    log("🏆 Checking for Match Results (Score Analysis)...")
     
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
         log("   ✅ No pending matches to verify.")
         return
 
-    # Letzten 3 Tage prüfen
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         
@@ -225,63 +215,70 @@ async def update_past_results():
                 await browser.close()
                 
                 soup = BeautifulSoup(content, 'html.parser')
-                # Suche Tabelle
                 table = soup.find('table', class_='result')
                 if not table: continue
 
                 rows = table.find_all('tr')
                 
-                # Wir iterieren durch die HTML Rows
                 for i in range(len(rows)):
                     row = rows[i]
-                    # TennisExplorer hat immer 2 Zeilen pro Match oder 1 Zeile mit beiden Namen
-                    # Format oft: Name A ... Score ... Name B (nächste Zeile)
                     
-                    row_text = row.get_text(separator=" ", strip=True).lower()
+                    # Suche nach Zeilen, die Sets enthalten (erkennbar an Zahlen in td's)
+                    # Struktur ist oft: Name (td) | Sets (td) | Score (td)...
                     
                     for pm in pending_matches:
                         p1_last = get_last_name(pm['player1_name'])
                         p2_last = get_last_name(pm['player2_name'])
                         
-                        # Check ob BEIDE Namen in der Nähe sind (in dieser Row oder der nächsten)
-                        # TennisExplorer Results sind oft:
-                        # <tr><td>...Name A...</td></tr>
-                        # <tr><td>...Name B...</td></tr>
+                        # Prüfe, ob die Namen in diesem Block (diese Zeile + nächste) vorkommen
+                        row_text = row.get_text(separator=" ", strip=True).lower()
+                        next_row_text = ""
+                        if i+1 < len(rows):
+                            next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower()
                         
-                        # Wir suchen einfacher: Ist einer der Namen in dieser Zeile FETT gedruckt?
-                        # Und ist der andere Name auch in der Nähe?
-                        
-                        match_found_in_block = False
-                        current_winner = None
-                        
-                        # Check current row
-                        if p1_last in row_text or p2_last in row_text:
-                            # Wir prüfen 2 Zeilen (aktuell + nächste)
-                            block_text = row_text
-                            if i+1 < len(rows):
-                                block_text += " " + rows[i+1].get_text(separator=" ", strip=True).lower()
+                        # Wir brauchen beide Namen im Block
+                        if (p1_last in row_text and p2_last in next_row_text) or \
+                           (p2_last in row_text and p1_last in next_row_text) or \
+                           (p1_last in row_text and p2_last in row_text):
                             
-                            if p1_last in block_text and p2_last in block_text:
-                                # TREFFER! Jetzt wer hat gewonnen?
-                                # Suche nach <b> Tags im Original-HTML dieser Zeilen
-                                bold_tags = row.find_all(['b', 'strong'])
-                                if i+1 < len(rows):
-                                    bold_tags += rows[i+1].find_all(['b', 'strong'])
-                                    
-                                for tag in bold_tags:
-                                    tag_text = normalize_text(tag.get_text(strip=True)).lower()
-                                    if p1_last in tag_text:
-                                        current_winner = pm['player1_name']
-                                        break
-                                    if p2_last in tag_text:
-                                        current_winner = pm['player2_name']
-                                        break
+                            # OK, Match gefunden. Jetzt Scores parsen.
+                            # Wir suchen nach den Zellen, die die Sätze enthalten.
+                            # TennisExplorer Struktur: <td>Name</td> <td>SETS</td> ...
+                            
+                            try:
+                                cols1 = row.find_all('td')
+                                cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                                 
-                                if current_winner:
-                                    supabase.table("market_odds").update({"actual_winner_name": current_winner}).eq("id", pm['id']).execute()
-                                    log(f"   🎉 Result FOUND: {current_winner} won (Bold Tag Detected)")
-                                    # Entferne aus pending_matches um doppelte Updates zu sparen
+                                # Wir suchen die Spalte mit der Satz-Zahl (meistens index 1 oder 2)
+                                # Wir suchen einfach nach einer einzelnen Ziffer (0, 1, 2, 3) in den Spalten
+                                
+                                def find_set_score(columns):
+                                    for col in columns:
+                                        txt = col.get_text(strip=True)
+                                        if txt in ['0', '1', '2', '3']:
+                                            return int(txt)
+                                    return -1
+
+                                s1 = find_set_score(cols1)
+                                s2 = find_set_score(cols2)
+                                
+                                winner_name = None
+                                
+                                if s1 > s2 and s1 >= 2: # P1 in erster Zeile hat gewonnen
+                                    # Wer steht in Zeile 1?
+                                    if p1_last in row_text: winner_name = pm['player1_name']
+                                    elif p2_last in row_text: winner_name = pm['player2_name']
+                                elif s2 > s1 and s2 >= 2: # P2 in zweiter Zeile hat gewonnen
+                                    if p1_last in next_row_text: winner_name = pm['player1_name']
+                                    elif p2_last in next_row_text: winner_name = pm['player2_name']
+                                
+                                if winner_name:
+                                    supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
+                                    log(f"   🎉 Result FOUND: {winner_name} won ({s1}:{s2} sets)")
                                     pending_matches = [x for x in pending_matches if x['id'] != pm['id']]
+                                    
+                            except Exception as e:
+                                pass # Parsing error in specific row
 
             except Exception as e:
                 log(f"   ⚠️ Parsing Error: {e}")
@@ -378,7 +375,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v79.0 (Hardcore Result Engine) Starting...")
+    log(f"🚀 Neural Scout v80.0 (Score-Based Result Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
