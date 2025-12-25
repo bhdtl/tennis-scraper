@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V77.0 - Context-First Engine)...")
+log("🔌 Initialisiere Neural Scout (V78.0 - Smart Result Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -49,6 +49,16 @@ def normalize_text(text):
 
 def clean_player_name(raw): 
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
+
+def get_last_name(full_name):
+    """
+    Extrahiert den Nachnamen für den robusten Vergleich.
+    'Filip Cristian Jianu' -> 'jianu'
+    'Ozan Baris' -> 'baris'
+    """
+    if not full_name: return ""
+    parts = full_name.strip().split()
+    return parts[-1].lower() if parts else ""
 
 # =================================================================
 # GEMINI ENGINE
@@ -130,31 +140,22 @@ def sigmoid_prob(diff, sensitivity=0.1):
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
-    """
-    V77 Logic: Context-First.
-    Weights: 50% AI Matchup / 20% BSI / 15% Skills / 15% Elo.
-    Includes "Mismatch Amplifier" to push odds apart for decisive stylistic edges.
-    """
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
-    
     bsi_val = to_float(bsi, 6.0)
 
-    # 1. AI MATCHUP ANALYSIS (50% - The Dominant Factor)
+    # 1. AI MATCHUP ANALYSIS (50%)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    
-    # High Sensitivity: Eine Differenz von 2 Punkten (z.B. 7 vs 5) erzeugt schon eine starke Wahrscheinlichkeitsverschiebung
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    # 2. COURT PHYSICS / BSI (20% - Significant Context)
+    # 2. COURT PHYSICS / BSI (20%)
     c1_score = 0; c2_score = 0
-    if bsi_val <= 4.0: # Slow (Clay)
-        # Auf Clay zählen Speed, Stamina und Mental doppelt
+    if bsi_val <= 4.0:
         c1_score = s1.get('stamina',50) + s1.get('speed',50) + s1.get('mental',50)
         c2_score = s2.get('stamina',50) + s2.get('speed',50) + s2.get('mental',50)
-    elif bsi_val >= 7.5: # Fast
+    elif bsi_val >= 7.5:
         c1_score = s1.get('serve',50) + s1.get('power',50)
         c2_score = s2.get('serve',50) + s2.get('power',50)
     else:
@@ -162,23 +163,21 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         c2_score = sum(s2.values())
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
 
-    # 3. DATABASE SKILLS (15% - Reduced Baseline)
+    # 3. SKILLS (15%)
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
-    # 4. SURFACE ELO (15% - History Anchor)
+    # 4. ELO (15%)
     elo1 = 1500.0; elo2 = 1500.0
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
-    
     for name, stats in ELO_CACHE.get(tour, {}).items():
         if n1 in name: elo1 = stats.get(elo_surf, 1500.0)
         if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    # --- THE INTERNAL ALPHA PROBABILITY ---
     prob_alpha = (
         (prob_matchup * 0.50) + 
         (prob_bsi * 0.20) + 
@@ -186,18 +185,13 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         (prob_elo * 0.15)
     )
 
-    # --- MISMATCH AMPLIFIER ---
-    # Wenn die AI eine klare Meinung hat (>60% oder <40%), verstärken wir das Signal.
-    # Das hilft, aus "engen" Odds echte "Value" Odds zu machen.
     if prob_alpha > 0.60:
-        prob_alpha = prob_alpha * 1.10 # Boost Winner
-        prob_alpha = min(prob_alpha, 0.92) # Cap at 92%
+        prob_alpha = prob_alpha * 1.10
+        prob_alpha = min(prob_alpha, 0.92)
     elif prob_alpha < 0.40:
-        prob_alpha = prob_alpha * 0.90 # Drop Loser
-        prob_alpha = max(prob_alpha, 0.08) # Cap at 8%
+        prob_alpha = prob_alpha * 0.90
+        prob_alpha = max(prob_alpha, 0.08)
 
-    # --- MARKET ANCHORING (Reduced to 25%) ---
-    # Wir reduzieren den Markteinfluss, damit unsere AI-Meinung stärker durchschlägt.
     prob_market = 0.5 
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1
@@ -205,55 +199,92 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         margin = inv1 + inv2
         prob_market = inv1 / margin 
     
-    # Final Fusion: 75% Our Alpha / 25% Market
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
-    
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION
+# RESULT VERIFICATION ENGINE (V78.0 - SMART MATCHING)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results...")
+    log("🏆 Checking for Match Results (Last 3 Days)...")
+    
+    # 1. Matches holen, die noch keinen Gewinner haben
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    if not pending_matches: return
+    if not pending_matches:
+        log("   ✅ No pending matches to verify.")
+        return
 
-    for day_offset in range(2): 
+    # Wir scannen die letzten 3 Tage (Sicherheitsnetz für verschobene Matches)
+    for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
+        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             try:
+                # TennisExplorer Results Page
                 url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
                 await page.goto(url, wait_until="networkidle", timeout=60000)
                 content = await page.content()
                 await browser.close()
+                
                 soup = BeautifulSoup(content, 'html.parser')
                 relevant_rows = []
+                
+                # VORFILTERUNG: Suche nach Zeilen, die unsere Spielernamen enthalten
+                # Wir nutzen hier nur den Nachnamen für den groben Filter
                 for row in soup.find_all("tr"):
                     row_text = row.get_text(separator=" ", strip=True)
+                    row_lower = row_text.lower()
+                    
                     for pm in pending_matches:
-                        if pm['player1_name'] in row_text and pm['player2_name'] in row_text:
+                        # Extrahiere Nachnamen aus DB ("Ozan Baris" -> "baris")
+                        n1 = get_last_name(pm['player1_name'])
+                        n2 = get_last_name(pm['player2_name'])
+                        
+                        # Wenn beide Nachnamen in der Zeile vorkommen -> Treffer
+                        if n1 in row_lower and n2 in row_lower:
                             relevant_rows.append(row_text)
+                
                 if not relevant_rows: continue
 
-                prompt = f"ANALYZE RESULTS. Input: {json.dumps(relevant_rows)}. Output JSON: [ {{ \"p1\": \"Name\", \"p2\": \"Name\", \"winner_lastname\": \"Name\" }} ]"
+                # AI ANALYSE: Wer hat gewonnen?
+                prompt = f"""
+                ANALYZE TENNIS RESULTS. 
+                Input Rows: {json.dumps(relevant_rows)}
+                
+                Task: Identify the WINNER based on bold text or score.
+                Output JSON: [ {{ "p1": "Exact Name From Input", "p2": "Exact Name From Input", "winner_lastname": "Lastname Only" }} ]
+                Example Output: [ {{ "p1": "F. Jianu", "p2": "O. Baris", "winner_lastname": "Jianu" }} ]
+                """
+                
                 res = await call_gemini(prompt)
                 if res:
                     try:
                         results = json.loads(res.replace("```json", "").replace("```", "").strip())
+                        
                         for r in results:
-                            winner = r.get('winner_lastname')
-                            if winner:
+                            winner_lastname = r.get('winner_lastname', '').lower()
+                            if winner_lastname:
+                                # DB Update Match
                                 for pm in pending_matches:
-                                    if winner in pm['player1_name']:
+                                    p1_last = get_last_name(pm['player1_name'])
+                                    p2_last = get_last_name(pm['player2_name'])
+                                    
+                                    # Robuster Vergleich: Ist der erkannte Gewinner-Nachname in unserem DB-Namen?
+                                    if winner_lastname == p1_last:
                                         supabase.table("market_odds").update({"actual_winner_name": pm['player1_name']}).eq("id", pm['id']).execute()
-                                        log(f"   🎉 Result: {pm['player1_name']} won")
-                                    elif winner in pm['player2_name']:
+                                        log(f"   🎉 Result: {pm['player1_name']} won (Matched '{winner_lastname}')")
+                                    elif winner_lastname == p2_last:
                                         supabase.table("market_odds").update({"actual_winner_name": pm['player2_name']}).eq("id", pm['id']).execute()
-                                        log(f"   🎉 Result: {pm['player2_name']} won")
-                    except: pass
-            except: await browser.close()
+                                        log(f"   🎉 Result: {pm['player2_name']} won (Matched '{winner_lastname}')")
+                                        
+                    except Exception as e:
+                        log(f"   ⚠️ Result Parsing Error: {e}")
+
+            except Exception as e:
+                log(f"   ⚠️ Page Access Error: {e}")
+                await browser.close()
 
 # =================================================================
 # MAIN PIPELINE
@@ -346,7 +377,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v77.0 (Context-First Engine) Starting...")
+    log(f"🚀 Neural Scout v78.0 (Enhanced Result Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -391,6 +422,7 @@ async def run_pipeline():
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
+                    # V75: Market Odds werden jetzt mit übergeben!
                     prob_p1 = calculate_physics_fair_odds(
                         p1_obj['last_name'], p2_obj['last_name'], 
                         s1, s2, bsi, surf, ai_meta, 
