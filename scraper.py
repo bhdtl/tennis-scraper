@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V73.0 - Dynamic AI Authority)...")
+log("🔌 Initialisiere Neural Scout (V75.0 - Alpha Projection Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -54,7 +54,7 @@ def clean_player_name(raw):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt):
-    await asyncio.sleep(1.0) # Rate Limit Schutz
+    await asyncio.sleep(1.0)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -126,105 +126,93 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# MATH CORE V5 (AGENTIC WEIGHTING)
+# MATH CORE V5 (THE ALPHA PROJECTION)
 # =================================================================
 def sigmoid_prob(diff, sensitivity=0.1):
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta):
-    """
-    V5 Engine: Dynamic Authority.
-    Wenn die AI einen 'Decisive Advantage' sieht, zählt ihre Meinung doppelt so viel wie die DB-Skills.
-    """
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
     
-    # --- 1. AI TACTICAL SCORE (THE BOSS METRIC) ---
+    # ---------------------------------------------------------
+    # PART A: THE "ALPHA" SCORE (Your Proprietary Data)
+    # Weights: 35% Skills / 35% AI Matchup / 15% Elo / 15% BSI
+    # ---------------------------------------------------------
+
+    # 1. DATABASE SKILLS (35%)
+    # Wir nehmen die reine Skill-Summe. 
+    # (Keine BSI Anpassung hier, weil BSI einen eigenen 15% Block hat)
+    score_p1 = sum(s1.values())
+    score_p2 = sum(s2.values())
+    prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
+
+    # 2. AI MATCHUP ANALYSIS (35%)
+    # Das ist der wichtigste Teil für Fälle wie Jianu vs Baris
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    
-    # Berechne die "Dominanz" der AI-Meinung (Wie sicher ist sie sich?)
-    # Differenz z.B. |8 - 3| = 5.
-    ai_confidence_gap = abs(m1 - m2)
-    
-    # DYNAMIC WEIGHTING LOGIC:
-    # Hoher Gap -> AI hat Recht, DB Skills sind unwichtig.
-    # Niedriger Gap -> Wir vertrauen den langfristigen Stats.
-    if ai_confidence_gap >= 3.0:
-        weight_matchup = 0.50  # AI entscheidet zu 50%
-        weight_skills = 0.15   # DB Skills fast irrelevant
-        log(f"   🤖 AI Dominance Override: Trusting Text Analysis over Stats for {p1_name} vs {p2_name}")
-    else:
-        weight_matchup = 0.25  # Standard
-        weight_skills = 0.35   # Standard
-    
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.55)
+    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.5)
 
-    # --- 2. CONTEXTUAL SKILLS ---
-    bsi_val = to_float(bsi, 6.0)
-    
-    def get_contextual_score(skills):
-        if not skills: return 300.0
-        # Einfache Anpassung: Auf Clay (BSI<4) zählt Speed/Stamina doppelt, Power halb.
-        if bsi_val <= 4.0:
-            return (skills.get('speed',50)*1.5 + skills.get('stamina',50)*1.5 + skills.get('mental',50)*1.2 + skills.get('serve',50)*0.5)
-        elif bsi_val >= 7.5:
-            return (skills.get('serve',50)*1.5 + skills.get('power',50)*1.5 + skills.get('mental',50)*1.0)
-        return sum(skills.values()) # Balanced
-
-    score1 = get_contextual_score(s1)
-    score2 = get_contextual_score(s2)
-    prob_skills = sigmoid_prob(score1 - score2, sensitivity=0.10)
-
-    # --- 3. ELO & REST ---
+    # 3. SURFACE ELO (15%)
     elo1 = 1500.0; elo2 = 1500.0
-    elo_surf = 'Clay' if 'clay' in surface.lower() else ('Grass' if 'grass' in surface.lower() else 'Hard')
+    elo_surf = 'Hard'
+    if 'clay' in surface.lower(): elo_surf = 'Clay'
+    elif 'grass' in surface.lower(): elo_surf = 'Grass'
+    
     for name, stats in ELO_CACHE.get(tour, {}).items():
         if n1 in name: elo1 = stats.get(elo_surf, 1500.0)
         if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    f1 = to_float(ai_meta.get('p1_form_score', 5))
-    f2 = to_float(ai_meta.get('p2_form_score', 5))
-    prob_form = sigmoid_prob(f1 - f2, sensitivity=0.45)
-
-    u1 = to_float(ai_meta.get('p1_utr', 10.0))
-    u2 = to_float(ai_meta.get('p2_utr', 10.0))
-    prob_utr = sigmoid_prob(u1 - u2, sensitivity=0.9)
-
-    # --- 4. COURT FIT (Simple) ---
-    # Bonus für den, dessen Stil zur BSI passt (wird oft durch Skills abgedeckt, aber hier als kleiner Bonus)
-    prob_court = 0.5 
-    if bsi_val <= 4.0 and "grinder" in str(ai_meta).lower(): # Wenn AI sagt "Grinder" und Clay
-         # Wir müssten wissen WER der Grinder ist. Vereinfacht: wir nutzen die Scores von oben.
-         # Da prob_skills schon BSI enthält, lassen wir prob_court neutraler oder nutzen es als "Tie-Breaker"
-         pass
-
-    # --- FINAL MIX ---
-    # Wir nutzen die dynamischen Gewichte von oben
-    raw_prob = (
-        (prob_matchup * weight_matchup) + 
-        (prob_skills * weight_skills) + 
-        (prob_elo * 0.15) +
-        (prob_form * 0.10) +
-        (prob_utr * 0.05) +
-        (prob_skills * 0.05) # Rest auf Skills als Proxy für Court
-    )
+    # 4. COURT PHYSICS / BSI (15%)
+    # Explizite Berechnung: Passt der Spieler zum Speed Index?
+    bsi_val = to_float(bsi, 6.0)
+    c1_score = 0; c2_score = 0
     
-    # --- 5. THE "PEACEFUL ODDS" KILLER ---
-    # Wenn die Wahrscheinlichkeit klar ist, drück sie weiter auseinander.
-    # Simuliert, dass ein 80% Favorit in echt oft eine 1.10 Quote hat (90%).
-    if raw_prob > 0.65:
-        adjusted_prob = raw_prob + (raw_prob * 0.10) # Boost Favorit
-        adjusted_prob = min(adjusted_prob, 0.95)
-    elif raw_prob < 0.35:
-        adjusted_prob = raw_prob - (raw_prob * 0.10) # Crush Underdog
-        adjusted_prob = max(adjusted_prob, 0.05)
-    else:
-        adjusted_prob = raw_prob
+    if bsi_val <= 4.0: # Slow (Clay) -> Speed/Stamina/Mental wichtig
+        c1_score = s1.get('speed',50) + s1.get('stamina',50) + s1.get('mental',50)
+        c2_score = s2.get('speed',50) + s2.get('stamina',50) + s2.get('mental',50)
+    elif bsi_val >= 7.5: # Fast -> Serve/Power wichtig
+        c1_score = s1.get('serve',50) + s1.get('power',50)
+        c2_score = s2.get('serve',50) + s2.get('power',50)
+    else: # Balanced
+        c1_score = sum(s1.values())
+        c2_score = sum(s2.values())
+        
+    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.08)
 
-    return adjusted_prob
+    # ---> THE INTERNAL ALPHA PROBABILITY <---
+    # Das ist deine "Meinung" basierend auf deinen Daten.
+    prob_alpha = (
+        (prob_skills * 0.35) + 
+        (prob_matchup * 0.35) + 
+        (prob_elo * 0.15) + 
+        (prob_bsi * 0.15)
+    )
+
+    # ---------------------------------------------------------
+    # PART B: MARKET ANCHORING (Reality Check)
+    # ---------------------------------------------------------
+    # Wir berechnen die Wahrscheinlichkeit, die der Markt sieht (ohne Buchmacher-Marge)
+    prob_market = 0.5 # Default
+    if market_odds1 > 1 and market_odds2 > 1:
+        implied1 = 1 / market_odds1
+        implied2 = 1 / market_odds2
+        margin = implied1 + implied2
+        prob_market = implied1 / margin # True Market Probability
+    
+    # ---------------------------------------------------------
+    # PART C: THE PROJECTION (Bayesian Fusion)
+    # ---------------------------------------------------------
+    # Wir "ziehen" den Markt in Richtung unserer Alpha-Meinung.
+    # Wir vertrauen unserer AI/Daten zu 65%, lassen aber 35% Marktwahrheit drin.
+    # Das verhindert absurde Quoten (z.B. AI sagt 1.20, Markt sagt 10.0 -> Ergebnis wäre ~3.0, was Value ist, aber nicht verrückt).
+    
+    # Weighting: Alpha Model 65% / Market Reality 35%
+    final_prob = (prob_alpha * 0.65) + (prob_market * 0.35)
+    
+    return final_prob
 
 # =================================================================
 # RESULT VERIFICATION ENGINE
@@ -257,7 +245,7 @@ async def update_past_results():
 
                 prompt = f"""
                 ANALYZE TENNIS RESULTS. Input: {json.dumps(relevant_rows)}
-                Task: Identify WINNER. Output JSON: [ {{ "p1": "Name", "p2": "Name", "winner_lastname": "Name" }} ]
+                Task: Identify WINNER based on bold text/scores. Output JSON: [ {{ "p1": "Name", "p2": "Name", "winner_lastname": "Name" }} ]
                 """
                 res = await call_gemini(prompt)
                 if res:
@@ -309,20 +297,11 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    # PROMPT UPGRADE: Enforce DECISIVE scoring for mismatches
     prompt = f"""
     ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}). 
-    P1 ({p1.get('play_style')}) vs P2 ({p2.get('play_style')}).
-    
-    INSTRUCTION: If one player's style is a PERFECT match for the surface/opponent (e.g. Grinder on Clay vs Big Server), you MUST give them a high Tactical Score (8-9) and the opponent low (3-4).
-    
-    METRICS (0-10): 
-    1. TACTICAL: Style clash efficiency.
-    2. FORM: Recent momentum.
-    3. UTR: Class difference.
-    
-    JSON ONLY: {{ "p1_tactical_score": 9, "p2_tactical_score": 3, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
+    CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
+    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
+    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
     res = await call_gemini(prompt)
     d = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
@@ -376,7 +355,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v73.0 (Dynamic AI Authority) Starting...")
+    log(f"🚀 Neural Scout v75.0 (Alpha Projection Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -402,10 +381,8 @@ async def run_pipeline():
                     m_odds1 = m['odds1']
                     m_odds2 = m['odds2']
                     
-                    # LOGIC: Check Existing & UPDATE AI ANALYSIS if needed
                     existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
                     if existing.data:
-                        # Optional: Force re-analysis if odds changed significantly? For now just update odds.
                         supabase.table("market_odds").update({"odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
                         log(f"🔄 Update: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
@@ -422,13 +399,19 @@ async def run_pipeline():
                     
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
-                    prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta)
+                    
+                    # V75: Market Odds werden jetzt mit übergeben!
+                    prob_p1 = calculate_physics_fair_odds(
+                        p1_obj['last_name'], p2_obj['last_name'], 
+                        s1, s2, bsi, surf, ai_meta, 
+                        m_odds1, m_odds2
+                    )
                     
                     entry = {
                         "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'],
                         "odds1": m_odds1, "odds2": m_odds2,
-                        "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0 else 99,
-                        "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 1 else 99,
+                        "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0.01 else 99,
+                        "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 0.99 else 99,
                         "ai_analysis_text": ai_meta.get('ai_text', 'No analysis'),
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
