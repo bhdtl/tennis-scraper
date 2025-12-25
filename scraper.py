@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V75.0 - Alpha Projection Engine)...")
+log("🔌 Initialisiere Neural Scout (V76.0 - Context-Dominant Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -69,7 +69,7 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# CORE LOGIC: ELO & DB
+# CORE LOGIC
 # =================================================================
 async def fetch_elo_ratings():
     log("📊 Lade Surface-Specific Elo Ratings...")
@@ -108,8 +108,6 @@ async def get_db_data():
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
-        
-        # Normalize Skills
         clean_skills = {}
         for entry in skills:
             pid = entry.get('player_id')
@@ -126,33 +124,35 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# MATH CORE V5 (THE ALPHA PROJECTION)
+# MATH CORE V6 (CONTEXT-DOMINANT WEIGHTING)
 # =================================================================
 def sigmoid_prob(diff, sensitivity=0.1):
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
+    """
+    V76 Logic:
+    Emphasizes CONTEXT (Matchup + Court) over raw STATS (Skills).
+    Weights: 25% Skills / 45% AI Matchup / 15% Elo / 15% BSI
+    """
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
     
-    # ---------------------------------------------------------
-    # PART A: THE "ALPHA" SCORE (Your Proprietary Data)
-    # Weights: 35% Skills / 35% AI Matchup / 15% Elo / 15% BSI
-    # ---------------------------------------------------------
+    bsi_val = to_float(bsi, 6.0)
 
-    # 1. DATABASE SKILLS (35%)
-    # Wir nehmen die reine Skill-Summe. 
-    # (Keine BSI Anpassung hier, weil BSI einen eigenen 15% Block hat)
+    # 1. DATABASE SKILLS (25% - Reduced Weight)
+    # Basic quality check, but less dominant.
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
-    # 2. AI MATCHUP ANALYSIS (35%)
-    # Das ist der wichtigste Teil für Fälle wie Jianu vs Baris
+    # 2. AI MATCHUP ANALYSIS (45% - Increased Weight!)
+    # This is the "Brain" of the operation.
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.5)
+    # Higher sensitivity to make 8 vs 3 a decisive difference
+    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.6) 
 
     # 3. SURFACE ELO (15%)
     elo1 = 1500.0; elo2 = 1500.0
@@ -166,50 +166,37 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
     # 4. COURT PHYSICS / BSI (15%)
-    # Explizite Berechnung: Passt der Spieler zum Speed Index?
-    bsi_val = to_float(bsi, 6.0)
+    # Checks if specific attributes match the court speed.
     c1_score = 0; c2_score = 0
-    
-    if bsi_val <= 4.0: # Slow (Clay) -> Speed/Stamina/Mental wichtig
-        c1_score = s1.get('speed',50) + s1.get('stamina',50) + s1.get('mental',50)
-        c2_score = s2.get('speed',50) + s2.get('stamina',50) + s2.get('mental',50)
-    elif bsi_val >= 7.5: # Fast -> Serve/Power wichtig
+    if bsi_val <= 4.0: # Slow (Clay)
+        c1_score = s1.get('stamina',50) + s1.get('mental',50) # Grinder stats
+        c2_score = s2.get('stamina',50) + s2.get('mental',50)
+    elif bsi_val >= 7.5: # Fast
         c1_score = s1.get('serve',50) + s1.get('power',50)
         c2_score = s2.get('serve',50) + s2.get('power',50)
-    else: # Balanced
+    else:
         c1_score = sum(s1.values())
         c2_score = sum(s2.values())
         
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.08)
+    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.1)
 
-    # ---> THE INTERNAL ALPHA PROBABILITY <---
-    # Das ist deine "Meinung" basierend auf deinen Daten.
+    # --- THE INTERNAL ALPHA PROBABILITY ---
     prob_alpha = (
-        (prob_skills * 0.35) + 
-        (prob_matchup * 0.35) + 
+        (prob_skills * 0.25) + 
+        (prob_matchup * 0.45) + 
         (prob_elo * 0.15) + 
         (prob_bsi * 0.15)
     )
 
-    # ---------------------------------------------------------
-    # PART B: MARKET ANCHORING (Reality Check)
-    # ---------------------------------------------------------
-    # Wir berechnen die Wahrscheinlichkeit, die der Markt sieht (ohne Buchmacher-Marge)
-    prob_market = 0.5 # Default
+    # --- MARKET ANCHORING ---
+    # We allow the market to correct us slightly (35%), but our Alpha (65%) drives the bus.
+    prob_market = 0.5 
     if market_odds1 > 1 and market_odds2 > 1:
-        implied1 = 1 / market_odds1
-        implied2 = 1 / market_odds2
-        margin = implied1 + implied2
-        prob_market = implied1 / margin # True Market Probability
+        inv1 = 1/market_odds1
+        inv2 = 1/market_odds2
+        margin = inv1 + inv2
+        prob_market = inv1 / margin 
     
-    # ---------------------------------------------------------
-    # PART C: THE PROJECTION (Bayesian Fusion)
-    # ---------------------------------------------------------
-    # Wir "ziehen" den Markt in Richtung unserer Alpha-Meinung.
-    # Wir vertrauen unserer AI/Daten zu 65%, lassen aber 35% Marktwahrheit drin.
-    # Das verhindert absurde Quoten (z.B. AI sagt 1.20, Markt sagt 10.0 -> Ergebnis wäre ~3.0, was Value ist, aber nicht verrückt).
-    
-    # Weighting: Alpha Model 65% / Market Reality 35%
     final_prob = (prob_alpha * 0.65) + (prob_market * 0.35)
     
     return final_prob
@@ -218,11 +205,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 # RESULT VERIFICATION ENGINE
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Yesterday & Today)...")
+    log("🏆 Checking for Match Results...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    if not pending_matches:
-        log("   ✅ No pending matches to verify.")
-        return
+    if not pending_matches: return
 
     for day_offset in range(2): 
         target_date = datetime.now() - timedelta(days=day_offset)
@@ -243,10 +228,7 @@ async def update_past_results():
                             relevant_rows.append(row_text)
                 if not relevant_rows: continue
 
-                prompt = f"""
-                ANALYZE TENNIS RESULTS. Input: {json.dumps(relevant_rows)}
-                Task: Identify WINNER based on bold text/scores. Output JSON: [ {{ "p1": "Name", "p2": "Name", "winner_lastname": "Name" }} ]
-                """
+                prompt = f"ANALYZE RESULTS. Input: {json.dumps(relevant_rows)}. Output JSON: [ {{ \"p1\": \"Name\", \"p2\": \"Name\", \"winner_lastname\": \"Name\" }} ]"
                 res = await call_gemini(prompt)
                 if res:
                     try:
@@ -355,7 +337,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v75.0 (Alpha Projection Engine) Starting...")
+    log(f"🚀 Neural Scout v76.0 (Context-Dominant Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -400,7 +382,6 @@ async def run_pipeline():
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
-                    # V75: Market Odds werden jetzt mit übergeben!
                     prob_p1 = calculate_physics_fair_odds(
                         p1_obj['last_name'], p2_obj['last_name'], 
                         s1, s2, bsi, surf, ai_meta, 
