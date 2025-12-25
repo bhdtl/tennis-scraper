@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V78.0 - Smart Result Engine)...")
+log("🔌 Initialisiere Neural Scout (V79.0 - Hardcore Result Parsing)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,13 +51,11 @@ def clean_player_name(raw):
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def get_last_name(full_name):
-    """
-    Extrahiert den Nachnamen für den robusten Vergleich.
-    'Filip Cristian Jianu' -> 'jianu'
-    'Ozan Baris' -> 'baris'
-    """
+    """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
-    parts = full_name.strip().split()
+    # Entferne Vornamen-Initialen wie "F." am Anfang oder Ende
+    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
+    parts = clean.split()
     return parts[-1].lower() if parts else ""
 
 # =================================================================
@@ -203,18 +201,17 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION ENGINE (V78.0 - SMART MATCHING)
+# RESULT VERIFICATION ENGINE (V79.0 - HTML STRUCTURE ANALYSIS)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Last 3 Days)...")
+    log("🏆 Checking for Match Results (HTML Structure)...")
     
-    # 1. Matches holen, die noch keinen Gewinner haben
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
         log("   ✅ No pending matches to verify.")
         return
 
-    # Wir scannen die letzten 3 Tage (Sicherheitsnetz für verschobene Matches)
+    # Letzten 3 Tage prüfen
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         
@@ -222,68 +219,72 @@ async def update_past_results():
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             try:
-                # TennisExplorer Results Page
                 url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-                await page.goto(url, wait_until="networkidle", timeout=60000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 content = await page.content()
                 await browser.close()
                 
                 soup = BeautifulSoup(content, 'html.parser')
-                relevant_rows = []
+                # Suche Tabelle
+                table = soup.find('table', class_='result')
+                if not table: continue
+
+                rows = table.find_all('tr')
                 
-                # VORFILTERUNG: Suche nach Zeilen, die unsere Spielernamen enthalten
-                # Wir nutzen hier nur den Nachnamen für den groben Filter
-                for row in soup.find_all("tr"):
-                    row_text = row.get_text(separator=" ", strip=True)
-                    row_lower = row_text.lower()
+                # Wir iterieren durch die HTML Rows
+                for i in range(len(rows)):
+                    row = rows[i]
+                    # TennisExplorer hat immer 2 Zeilen pro Match oder 1 Zeile mit beiden Namen
+                    # Format oft: Name A ... Score ... Name B (nächste Zeile)
+                    
+                    row_text = row.get_text(separator=" ", strip=True).lower()
                     
                     for pm in pending_matches:
-                        # Extrahiere Nachnamen aus DB ("Ozan Baris" -> "baris")
-                        n1 = get_last_name(pm['player1_name'])
-                        n2 = get_last_name(pm['player2_name'])
+                        p1_last = get_last_name(pm['player1_name'])
+                        p2_last = get_last_name(pm['player2_name'])
                         
-                        # Wenn beide Nachnamen in der Zeile vorkommen -> Treffer
-                        if n1 in row_lower and n2 in row_lower:
-                            relevant_rows.append(row_text)
-                
-                if not relevant_rows: continue
-
-                # AI ANALYSE: Wer hat gewonnen?
-                prompt = f"""
-                ANALYZE TENNIS RESULTS. 
-                Input Rows: {json.dumps(relevant_rows)}
-                
-                Task: Identify the WINNER based on bold text or score.
-                Output JSON: [ {{ "p1": "Exact Name From Input", "p2": "Exact Name From Input", "winner_lastname": "Lastname Only" }} ]
-                Example Output: [ {{ "p1": "F. Jianu", "p2": "O. Baris", "winner_lastname": "Jianu" }} ]
-                """
-                
-                res = await call_gemini(prompt)
-                if res:
-                    try:
-                        results = json.loads(res.replace("```json", "").replace("```", "").strip())
+                        # Check ob BEIDE Namen in der Nähe sind (in dieser Row oder der nächsten)
+                        # TennisExplorer Results sind oft:
+                        # <tr><td>...Name A...</td></tr>
+                        # <tr><td>...Name B...</td></tr>
                         
-                        for r in results:
-                            winner_lastname = r.get('winner_lastname', '').lower()
-                            if winner_lastname:
-                                # DB Update Match
-                                for pm in pending_matches:
-                                    p1_last = get_last_name(pm['player1_name'])
-                                    p2_last = get_last_name(pm['player2_name'])
+                        # Wir suchen einfacher: Ist einer der Namen in dieser Zeile FETT gedruckt?
+                        # Und ist der andere Name auch in der Nähe?
+                        
+                        match_found_in_block = False
+                        current_winner = None
+                        
+                        # Check current row
+                        if p1_last in row_text or p2_last in row_text:
+                            # Wir prüfen 2 Zeilen (aktuell + nächste)
+                            block_text = row_text
+                            if i+1 < len(rows):
+                                block_text += " " + rows[i+1].get_text(separator=" ", strip=True).lower()
+                            
+                            if p1_last in block_text and p2_last in block_text:
+                                # TREFFER! Jetzt wer hat gewonnen?
+                                # Suche nach <b> Tags im Original-HTML dieser Zeilen
+                                bold_tags = row.find_all(['b', 'strong'])
+                                if i+1 < len(rows):
+                                    bold_tags += rows[i+1].find_all(['b', 'strong'])
                                     
-                                    # Robuster Vergleich: Ist der erkannte Gewinner-Nachname in unserem DB-Namen?
-                                    if winner_lastname == p1_last:
-                                        supabase.table("market_odds").update({"actual_winner_name": pm['player1_name']}).eq("id", pm['id']).execute()
-                                        log(f"   🎉 Result: {pm['player1_name']} won (Matched '{winner_lastname}')")
-                                    elif winner_lastname == p2_last:
-                                        supabase.table("market_odds").update({"actual_winner_name": pm['player2_name']}).eq("id", pm['id']).execute()
-                                        log(f"   🎉 Result: {pm['player2_name']} won (Matched '{winner_lastname}')")
-                                        
-                    except Exception as e:
-                        log(f"   ⚠️ Result Parsing Error: {e}")
+                                for tag in bold_tags:
+                                    tag_text = normalize_text(tag.get_text(strip=True)).lower()
+                                    if p1_last in tag_text:
+                                        current_winner = pm['player1_name']
+                                        break
+                                    if p2_last in tag_text:
+                                        current_winner = pm['player2_name']
+                                        break
+                                
+                                if current_winner:
+                                    supabase.table("market_odds").update({"actual_winner_name": current_winner}).eq("id", pm['id']).execute()
+                                    log(f"   🎉 Result FOUND: {current_winner} won (Bold Tag Detected)")
+                                    # Entferne aus pending_matches um doppelte Updates zu sparen
+                                    pending_matches = [x for x in pending_matches if x['id'] != pm['id']]
 
             except Exception as e:
-                log(f"   ⚠️ Page Access Error: {e}")
+                log(f"   ⚠️ Parsing Error: {e}")
                 await browser.close()
 
 # =================================================================
@@ -377,7 +378,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v78.0 (Enhanced Result Engine) Starting...")
+    log(f"🚀 Neural Scout v79.0 (Hardcore Result Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -422,7 +423,6 @@ async def run_pipeline():
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
-                    # V75: Market Odds werden jetzt mit übergeben!
                     prob_p1 = calculate_physics_fair_odds(
                         p1_obj['last_name'], p2_obj['last_name'], 
                         s1, s2, bsi, surf, ai_meta, 
