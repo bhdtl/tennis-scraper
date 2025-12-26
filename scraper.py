@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V80.0 - Score-Based Result Engine)...")
+log("🔌 Initialisiere Neural Scout (V80.1 - Idempotent Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -223,34 +223,22 @@ async def update_past_results():
                 for i in range(len(rows)):
                     row = rows[i]
                     
-                    # Suche nach Zeilen, die Sets enthalten (erkennbar an Zahlen in td's)
-                    # Struktur ist oft: Name (td) | Sets (td) | Score (td)...
-                    
                     for pm in pending_matches:
                         p1_last = get_last_name(pm['player1_name'])
                         p2_last = get_last_name(pm['player2_name'])
                         
-                        # Prüfe, ob die Namen in diesem Block (diese Zeile + nächste) vorkommen
                         row_text = row.get_text(separator=" ", strip=True).lower()
                         next_row_text = ""
                         if i+1 < len(rows):
                             next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower()
                         
-                        # Wir brauchen beide Namen im Block
                         if (p1_last in row_text and p2_last in next_row_text) or \
                            (p2_last in row_text and p1_last in next_row_text) or \
                            (p1_last in row_text and p2_last in row_text):
                             
-                            # OK, Match gefunden. Jetzt Scores parsen.
-                            # Wir suchen nach den Zellen, die die Sätze enthalten.
-                            # TennisExplorer Struktur: <td>Name</td> <td>SETS</td> ...
-                            
                             try:
                                 cols1 = row.find_all('td')
                                 cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
-                                
-                                # Wir suchen die Spalte mit der Satz-Zahl (meistens index 1 oder 2)
-                                # Wir suchen einfach nach einer einzelnen Ziffer (0, 1, 2, 3) in den Spalten
                                 
                                 def find_set_score(columns):
                                     for col in columns:
@@ -264,11 +252,10 @@ async def update_past_results():
                                 
                                 winner_name = None
                                 
-                                if s1 > s2 and s1 >= 2: # P1 in erster Zeile hat gewonnen
-                                    # Wer steht in Zeile 1?
+                                if s1 > s2 and s1 >= 2: 
                                     if p1_last in row_text: winner_name = pm['player1_name']
                                     elif p2_last in row_text: winner_name = pm['player2_name']
-                                elif s2 > s1 and s2 >= 2: # P2 in zweiter Zeile hat gewonnen
+                                elif s2 > s1 and s2 >= 2: 
                                     if p1_last in next_row_text: winner_name = pm['player1_name']
                                     elif p2_last in next_row_text: winner_name = pm['player2_name']
                                 
@@ -278,7 +265,7 @@ async def update_past_results():
                                     pending_matches = [x for x in pending_matches if x['id'] != pm['id']]
                                     
                             except Exception as e:
-                                pass # Parsing error in specific row
+                                pass
 
             except Exception as e:
                 log(f"   ⚠️ Parsing Error: {e}")
@@ -375,7 +362,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v80.0 (Score-Based Result Engine) Starting...")
+    log(f"🚀 Neural Scout v80.1 (Idempotent Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -401,17 +388,26 @@ async def run_pipeline():
                     m_odds1 = m['odds1']
                     m_odds2 = m['odds2']
                     
-                    existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
+                    # --- SILICON VALLEY IDEMPOTENCY FIX ---
+                    # 1. Check A vs B
+                    existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).is_("actual_winner_name", "null").execute()
+                    
+                    # 2. If not found, Check B vs A (Reverse)
+                    if not existing.data:
+                        existing = supabase.table("market_odds").select("id").eq("player1_name", p2_obj['last_name']).eq("player2_name", p1_obj['last_name']).is_("actual_winner_name", "null").execute()
+
+                    # UPDATE LOGIC (If found in either direction)
                     if existing.data:
                         supabase.table("market_odds").update({"odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
-                        log(f"🔄 Update: {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                        log(f"🔄 Update (Active): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
 
                     if m_odds1 <= 1.0: 
                         log(f"⏩ Skip New (No Odds): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
                     
-                    log(f"✨ Analyzing: {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                    # INSERT NEW (Only if truly unique)
+                    log(f"✨ Analyzing New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
