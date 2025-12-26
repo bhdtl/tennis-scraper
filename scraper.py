@@ -252,10 +252,10 @@ async def update_past_results():
                                 
                                 winner_name = None
                                 
-                                if s1 > s2 and s1 >= 2: 
+                                if s1 > s2 and s1 >= 2: # P1 in erster Zeile hat gewonnen
                                     if p1_last in row_text: winner_name = pm['player1_name']
                                     elif p2_last in row_text: winner_name = pm['player2_name']
-                                elif s2 > s1 and s2 >= 2: 
+                                elif s2 > s1 and s2 >= 2: # P2 in zweiter Zeile hat gewonnen
                                     if p1_last in next_row_text: winner_name = pm['player1_name']
                                     elif p2_last in next_row_text: winner_name = pm['player2_name']
                                 
@@ -389,24 +389,28 @@ async def run_pipeline():
                     m_odds2 = m['odds2']
                     
                     # --- SILICON VALLEY IDEMPOTENCY FIX ---
-                    # 1. Check A vs B
-                    existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).is_("actual_winner_name", "null").execute()
+                    # Wir prüfen jetzt ZWEIMAL: Einmal wie gescraped und einmal umgekehrt.
+                    # Das verhindert Duplikate, egal wie rum der Buchmacher es listet.
                     
-                    # 2. If not found, Check B vs A (Reverse)
+                    # Check 1: A vs B
+                    existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
+                    
+                    # Check 2: B vs A (Falls 1 nicht gefunden wurde)
                     if not existing.data:
-                        existing = supabase.table("market_odds").select("id").eq("player1_name", p2_obj['last_name']).eq("player2_name", p1_obj['last_name']).is_("actual_winner_name", "null").execute()
+                        existing = supabase.table("market_odds").select("id").eq("player1_name", p2_obj['last_name']).eq("player2_name", p1_obj['last_name']).execute()
 
-                    # UPDATE LOGIC (If found in either direction)
+                    # LOGIC: Wenn existent -> Update. Wenn nicht -> Insert.
                     if existing.data:
+                        # Match existiert (egal ob abgeschlossen oder nicht). Update nur die Quoten.
                         supabase.table("market_odds").update({"odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
-                        log(f"🔄 Update (Active): {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                        log(f"🔄 Update (Active/Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
 
                     if m_odds1 <= 1.0: 
                         log(f"⏩ Skip New (No Odds): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
                     
-                    # INSERT NEW (Only if truly unique)
+                    # INSERT NEW (Nur wenn wirklich NICHTS in der DB ist)
                     log(f"✨ Analyzing New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
