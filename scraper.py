@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V80.4 - Score Derivation Engine)...")
+log("🔌 Initialisiere Neural Scout (V80.6 - Final Production Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -192,31 +192,32 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION ENGINE (V80.4 - SCORE DERIVATION)
+# RESULT VERIFICATION ENGINE (V80.6 - FIXED PARSER)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Score Derivation V4)...")
+    log("🏆 Checking for Match Results (Deep Scan V6)...")
     
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
         log("   ✅ No pending matches to verify.")
         return
 
-    # 1. TIME-LOCK (65 Minutes)
+    # 1. TIME-LOCK (65m)
     safe_matches = []
     now_utc = datetime.now(timezone.utc)
     for pm in pending_matches:
         try:
             created_at_str = pm['created_at'].replace('Z', '+00:00')
             created_at = datetime.fromisoformat(created_at_str)
-            minutes_since_start = (now_utc - created_at).total_seconds() / 60
-            if minutes_since_start > 65: 
+            if (now_utc - created_at).total_seconds() / 60 > 65: 
                 safe_matches.append(pm)
         except: continue
 
     if not safe_matches:
-        log("   ⏳ All matches are currently running (Time-Locked). Waiting...")
+        log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
         return
+
+    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
 
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
@@ -249,69 +250,70 @@ async def update_past_results():
                         if i+1 < len(rows):
                             next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower()
                         
+                        # MATCH FINDER
                         match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                       (p2_last in row_text and p1_last in next_row_text) or \
                                       (p1_last in row_text and p2_last in row_text)
                         
                         if match_found:
+                            log(f"   🎯 MATCH ROW FOUND: {p1_last} vs {p2_last}")
+                            
                             try:
-                                # IGNORE Start Times (e.g. "14:30") without result indicators
-                                if re.search(r'\d{2}:\d{2}', row_text) and not "ret." in row_text and not re.search(r'\d-\d', row_text):
-                                    continue 
-
+                                # FIX: Kein aggressiver Time-Check mehr!
+                                # Wir vertrauen jetzt der Score-Extraction.
                                 is_retirement = "ret." in row_text or "w.o." in row_text
 
-                                # EXTRACT RAW SCORES (e.g. [6, 6] vs [2, 1])
-                                cols1 = row.find_all('td', class_='score')
-                                cols2 = rows[i+1].find_all('td', class_='score') if i+1 < len(rows) else []
+                                # EXTRACT SCORES (All Columns)
+                                cols1 = row.find_all('td')
+                                cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                                 
-                                def extract_scores(columns):
+                                def extract_scores_aggressive(columns):
                                     scores = []
                                     for col in columns:
                                         txt = col.get_text(strip=True)
-                                        # Clean tiebreaks "7(5)" -> "7"
-                                        if '(' in txt: txt = txt.split('(')[0]
-                                        if txt.isdigit(): scores.append(int(txt))
+                                        if len(txt) > 4: continue # Skip names
+                                        if '(' in txt: txt = txt.split('(')[0] # Clean tiebreak
+                                        
+                                        # Nur reine Tennis-Scores (0-7)
+                                        if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
+                                            scores.append(int(txt))
                                     return scores
 
-                                p1_scores = extract_scores(cols1)
-                                p2_scores = extract_scores(cols2)
+                                p1_scores = extract_scores_aggressive(cols1)
+                                p2_scores = extract_scores_aggressive(cols2)
                                 
-                                # DERIVE SET WINNERS
-                                p1_sets = 0
-                                p2_sets = 0
-                                
-                                # Compare index by index
+                                log(f"      -> Scores Detected: {p1_scores} vs {p2_scores}")
+
+                                # DERIVE WINNER
+                                p1_sets = 0; p2_sets = 0
                                 for k in range(min(len(p1_scores), len(p2_scores))):
                                     if p1_scores[k] > p2_scores[k]: p1_sets += 1
                                     elif p2_scores[k] > p1_scores[k]: p2_sets += 1
                                 
                                 winner_name = None
                                 
-                                # WINNER LOGIC:
-                                # Normal: >= 2 Sets AND More sets than opponent
-                                # Retirement: Just need to have more sets (e.g. 1-0 ret.)
-                                
-                                # Case 1: P1 (Top Row) Wins
+                                # CHECK P1 (Top Row)
                                 if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
                                     if p1_last in row_text: winner_name = pm['player1_name']
                                     elif p2_last in row_text: winner_name = pm['player2_name']
                                 
-                                # Case 2: P2 (Bottom Row) Wins
+                                # CHECK P2 (Bottom Row)
                                 elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_retirement and p2_sets > p1_sets):
                                     if p1_last in next_row_text: winner_name = pm['player1_name']
                                     elif p2_last in next_row_text: winner_name = pm['player2_name']
                                 
                                 if winner_name:
                                     supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
-                                    log(f"   🎉 Result VERIFIED: {winner_name} won ({p1_sets}:{p2_sets})")
+                                    log(f"   ✅ WINNER SETTLED: {winner_name}")
                                     safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
-                                    
+                                else:
+                                    log(f"      ⚠️ No winner derived (Sets: {p1_sets}-{p2_sets})")
+
                             except Exception as e:
-                                pass
+                                log(f"      ❌ Parsing Error: {e}")
 
             except Exception as e:
-                log(f"   ⚠️ Parsing Error: {e}")
+                log(f"   ⚠️ Page Error: {e}")
                 await browser.close()
 
 # =================================================================
@@ -405,7 +407,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v80.4 (Idempotent Engine) Starting...")
+    log(f"🚀 Neural Scout v80.6 (Idempotent Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
