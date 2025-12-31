@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V80.7 - Value Scanner Sync Fix)...")
+log("🔌 Initialisiere Neural Scout (V80.8 - Immutable History Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -423,7 +423,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v80.7 (ISO-8601 Date Fix) Starting...")
+    log(f"🚀 Neural Scout v80.8 (Immutable History Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -449,21 +449,30 @@ async def run_pipeline():
                     m_odds1 = m['odds1']
                     m_odds2 = m['odds2']
                     
-                    # --- CONSTRUCT PROPER ISO DATETIME (CRITICAL FOR SCANNER) ---
-                    # Combine Scrape Date (YYYY-MM-DD) + Match Time (HH:MM)
+                    # --- CONSTRUCT PROPER ISO DATETIME ---
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
-                    # --- SILICON VALLEY IDEMPOTENCY ---
-                    # Check existing (Order agnostic)
-                    existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
+                    # --- CHECK EXISTING ---
+                    # We fetch 'actual_winner_name' too!
+                    existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                     
-                    # UPDATE EXISTING
                     if existing.data:
-                        match_id = existing.data[0]['id']
+                        match_data = existing.data[0]
+                        match_id = match_data['id']
+                        winner_set = match_data.get('actual_winner_name')
+
+                        # --- CRITICAL FIX: IMMUTABILITY CHECK ---
+                        # If a winner is already set, THIS MATCH IS FINISHED.
+                        # Do NOT update its time or odds anymore.
+                        if winner_set:
+                            log(f"🔒 Locked (Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                            continue 
+
+                        # Update only if ACTIVE (no winner yet)
                         update_payload = {
                             "odds1": m_odds1, 
                             "odds2": m_odds2, 
-                            "match_time": iso_timestamp # Update Time/Date
+                            "match_time": iso_timestamp 
                         }
                         supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
                         log(f"🔄 Updated: {p1_obj['last_name']} vs {p2_obj['last_name']} ({iso_timestamp})")
@@ -495,7 +504,7 @@ async def run_pipeline():
                         "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 0.99 else 99,
                         "ai_analysis_text": ai_meta.get('ai_text', 'No analysis'),
                         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "match_time": iso_timestamp # Save Explicit Date
+                        "match_time": iso_timestamp 
                     }
                     supabase.table("market_odds").insert(entry).execute()
                     log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']}")
