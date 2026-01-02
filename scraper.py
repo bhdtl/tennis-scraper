@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V89.0 - Dirty Data Sanitization)...")
+log("🔌 Initialisiere Neural Scout (V90.0 - Pivot-Based Search)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -45,7 +45,7 @@ ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
 # =================================================================
-# HELPER FUNCTIONS (SANITIZATION LAYER)
+# HELPER FUNCTIONS
 # =================================================================
 def to_float(val, default=50.0):
     if val is None: return default
@@ -57,47 +57,28 @@ def normalize_text(text):
 
 def clean_player_name(raw): 
     if not raw: return ""
-    # Entferne (USA), (FRA) etc. und Wettanbieter-Spam
     raw = re.sub(r'\(.*?\)', '', raw) 
     raw = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     return raw.replace('|', '').strip()
 
 def get_normalized_last_name(full_name):
-    """
-    Extrahiert den echten Nachnamen.
-    Behandelt: "Baez S." -> "baez" (Ignoriert das Initial am Ende)
-    Behandelt: "Sebastian Baez" -> "baez"
-    """
     if not full_name: return ""
-    clean = re.sub(r'^\b[A-Z]\.\s*', '', full_name).strip() # Entferne Initiale am Anfang
+    clean = re.sub(r'^\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
-    
     if not parts: return ""
-    
-    # Wenn das letzte Teil ein Initial ist (1 Buchstabe oder 1 Buchstabe mit Punkt), nimm das davor
     last_part = parts[-1].replace('.', '')
     if len(last_part) == 1 and len(parts) > 1:
         return parts[-2].lower()
-    
     return parts[-1].lower()
 
 def sanitize_timestamp(dirty_ts):
-    """
-    Rettet Zeitstempel, die durch Scraping-Müll korrupt sind.
-    Input: '2026-01-06T07:30Live streams1xBet:00+00:00'
-    Output: datetime object
-    """
     if not dirty_ts: return None
     try:
-        # Versuch 1: Standard ISO
         return datetime.fromisoformat(dirty_ts.replace('Z', '+00:00'))
     except:
-        # Versuch 2: Regex Extraction für YYYY-MM-DDTHH:MM
-        # Wir suchen nach dem Muster: 4Digits-2Digits-2Digits T 2Digits:2Digits
         match = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', dirty_ts)
         if match:
             clean_str = match.group(1)
-            # Fügen wir Sekunden und UTC an, falls sie fehlen
             return datetime.fromisoformat(clean_str + ":00+00:00")
         return None
 
@@ -152,21 +133,18 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return 0.5 
 
 # =================================================================
-#  VETERAN RESULT VERIFICATION V89.0 (Sanitization + Matching)
+#  VETERAN RESULT VERIFICATION V90.0 (Pivot-Search)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Sanitization Active)...")
+    log("🏆 Checking for Match Results (Pivot-Search)...")
     
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    
     if not pending_matches:
         log("   ✅ No pending matches found.")
         return
 
-    # 1. GROUP BY DATE (With Sanitization)
     matches_by_date = defaultdict(list)
     failed_count = 0
-    
     for pm in pending_matches:
         ts = sanitize_timestamp(pm.get('match_time'))
         if ts:
@@ -174,10 +152,8 @@ async def update_past_results():
             matches_by_date[date_key].append(pm)
         else:
             failed_count += 1
-            # Optional: Wir könnten hier den Eintrag in der DB löschen oder flaggen, da er kaputt ist.
-            log(f"   ⚠️ Fatal Timestamp Error (Unrecoverable): {pm.get('id')}")
 
-    log(f"   🔎 Targeting {len(matches_by_date)} unique dates ({len(pending_matches)} matches, {failed_count} failed parses)...")
+    log(f"   🔎 Targeting {len(matches_by_date)} unique dates ({len(pending_matches)} matches)...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -185,7 +161,6 @@ async def update_past_results():
         for (year, month, day), match_list in matches_by_date.items():
             page = await browser.new_page()
             try:
-                # URL Construction
                 url = f"https://www.tennisexplorer.com/results/?type=all&year={year}&month={month}&day={day}"
                 log(f"   📅 Visiting: {day}.{month}.{year} (Seeking {len(match_list)} matches)")
                 
@@ -198,52 +173,62 @@ async def update_past_results():
                     log("      ⚠️ No result tables found.")
                     await page.close(); continue
 
-                # Flatten rows
-                rows = []
-                for t in tables: rows.extend(t.find_all('tr'))
+                # Collect all rows
+                all_rows = []
+                for t in tables: all_rows.extend(t.find_all('tr'))
+
+                # DEBUG: Print first few rows to see what scraper sees
+                for d_idx, d_row in enumerate(all_rows[:3]):
+                    d_text = normalize_text(d_row.get_text(separator=" ", strip=True))
+                    log(f"      👀 [DEBUG Row {d_idx}]: {d_text[:50]}...")
 
                 processed_ids = set()
-                i = 0
-                while i < len(rows) - 1:
-                    row1 = rows[i]
-                    row2 = rows[i+1]
+                
+                # PIVOT SEARCH: Iterate every row. If it matches a Player 1 or Player 2, check the NEXT row.
+                for i in range(len(all_rows) - 1):
+                    row_pivot = all_rows[i]
+                    # Skip Headers
+                    if 'head' in row_pivot.get('class', []) or 'bott' in row_pivot.get('class', []): continue
+
+                    pivot_text = normalize_text(row_pivot.get_text(separator=" ")).lower()
                     
-                    if 'head' in row1.get('class', []) or 'bott' in row1.get('class', []):
-                        i += 1; continue
-                        
-                    p1_text = normalize_text(row1.get_text(separator=" ")).lower()
-                    p2_text = normalize_text(row2.get_text(separator=" ")).lower()
-                    
-                    # 2. ROBUST MATCHING
-                    matched_entry = None
+                    # Check if this row contains ANY player from our target list
+                    possible_matches = []
                     for pm in match_list:
                         if pm['id'] in processed_ids: continue
-                        
-                        # Nutze den verbesserten Namens-Extractor
                         l1 = get_normalized_last_name(pm['player1_name'])
                         l2 = get_normalized_last_name(pm['player2_name'])
                         
-                        # Prüfen ob die Nachnamen im Text enthalten sind
-                        p1_has_l1 = l1 in p1_text
-                        p1_has_l2 = l2 in p1_text
-                        p2_has_l1 = l1 in p2_text
-                        p2_has_l2 = l2 in p2_text
-                        
-                        if (p1_has_l1 and p2_has_l2) or (p1_has_l2 and p2_has_l1):
-                            matched_entry = pm
-                            break
+                        if l1 in pivot_text or l2 in pivot_text:
+                            possible_matches.append(pm)
                     
-                    if matched_entry:
-                        log(f"      🎯 FOUND ROW: {matched_entry['player1_name']} vs {matched_entry['player2_name']}")
+                    if not possible_matches: continue
+
+                    # We found a potential player. Now check the NEXT row for the opponent.
+                    row_partner = all_rows[i+1]
+                    partner_text = normalize_text(row_partner.get_text(separator=" ")).lower()
+                    
+                    confirmed_match = None
+                    for pm in possible_matches:
+                        l1 = get_normalized_last_name(pm['player1_name'])
+                        l2 = get_normalized_last_name(pm['player2_name'])
                         
-                        cols1 = row1.find_all('td')
-                        cols2 = row2.find_all('td')
+                        # Case 1: Pivot is P1, Partner is P2
+                        if (l1 in pivot_text and l2 in partner_text):
+                            confirmed_match = pm; break
+                        # Case 2: Pivot is P2, Partner is P1
+                        if (l2 in pivot_text and l1 in partner_text):
+                            confirmed_match = pm; break
+                            
+                    if confirmed_match:
+                        log(f"      🎯 MATCH IDENTIFIED: {confirmed_match['player1_name']} vs {confirmed_match['player2_name']}")
+                        
+                        # SCORING LOGIC
+                        cols1 = row_pivot.find_all('td')
+                        cols2 = row_partner.find_all('td')
                         winner = None
                         
                         try:
-                            # 3. SCORE PARSING (Visual Logic)
-                            # Finde die erste Zahl <= 3 (Sätze). Ignoriere alles davor (Zeit, Flags)
-                            
                             def get_sets_won(columns):
                                 for col in columns:
                                     txt = col.get_text(strip=True)
@@ -252,59 +237,51 @@ async def update_past_results():
                                         if val <= 3: return val
                                 return -1
 
-                            # Wir starten bei Index 2 um Zeit/Flaggen zu überspringen, die oft Zahlen enthalten können
-                            # Falls die Tabelle anders ist, fallback auf alle Spalten.
+                            # Skip first 2 columns (often flag/name)
                             s1 = get_sets_won(cols1[2:]) 
                             s2 = get_sets_won(cols2[2:])
                             
+                            # Fallback scan all
                             if s1 == -1: s1 = get_sets_won(cols1)
                             if s2 == -1: s2 = get_sets_won(cols2)
                             
-                            # Logik
-                            valid_score = (s1 != -1 and s2 != -1 and s1 != s2)
-                            
-                            if valid_score:
-                                # Determine Row Winner
-                                row1_wins = s1 > s2
+                            if s1 != -1 and s2 != -1 and s1 != s2:
+                                # Who won this specific pairing?
+                                pivot_won = s1 > s2
                                 
-                                # Map Row to Player Name
-                                l1 = get_normalized_last_name(matched_entry['player1_name'])
+                                # Map back to DB names
+                                l1 = get_normalized_last_name(confirmed_match['player1_name'])
                                 
-                                if row1_wins:
-                                    # Row 1 hat gewonnen. Ist Row 1 Player 1?
-                                    if l1 in p1_text: winner = matched_entry['player1_name']
-                                    else: winner = matched_entry['player2_name']
+                                if pivot_won:
+                                    # The Pivot Row won. Is Pivot P1 or P2?
+                                    if l1 in pivot_text: winner = confirmed_match['player1_name']
+                                    else: winner = confirmed_match['player2_name']
                                 else:
-                                    # Row 2 hat gewonnen.
-                                    if l1 in p2_text: winner = matched_entry['player1_name']
-                                    else: winner = matched_entry['player2_name']
+                                    # The Partner Row won.
+                                    if l1 in partner_text: winner = confirmed_match['player1_name']
+                                    else: winner = confirmed_match['player2_name']
                             
-                            # Fallback: Retirement
-                            if not winner and ("ret." in p1_text or "ret." in p2_text or "wo." in p1_text):
+                            # Retirement Check
+                            if not winner and ("ret." in pivot_text or "ret." in partner_text):
                                 log("         ⚠️ Retirement detected.")
-                                l1 = get_normalized_last_name(matched_entry['player1_name'])
-                                
-                                # Wer hat NICHT aufgegeben?
-                                if "ret." in p2_text: # P2 (Row 2) gab auf -> Row 1 gewinnt
-                                    if l1 in p1_text: winner = matched_entry['player1_name']
-                                    else: winner = matched_entry['player2_name']
-                                elif "ret." in p1_text: # P1 (Row 1) gab auf -> Row 2 gewinnt
-                                    if l1 in p2_text: winner = matched_entry['player1_name']
-                                    else: winner = matched_entry['player2_name']
+                                l1 = get_normalized_last_name(confirmed_match['player1_name'])
+                                if "ret." in partner_text: # Partner retired -> Pivot won
+                                    if l1 in pivot_text: winner = confirmed_match['player1_name']
+                                    else: winner = confirmed_match['player2_name']
+                                elif "ret." in pivot_text: # Pivot retired -> Partner won
+                                    if l1 in partner_text: winner = confirmed_match['player1_name']
+                                    else: winner = confirmed_match['player2_name']
 
                             if winner:
-                                log(f"      ✅ WINNER CONFIRMED: {winner}")
-                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_entry['id']).execute()
-                                processed_ids.add(matched_entry['id'])
+                                log(f"      ✅ WINNER FOUND: {winner}")
+                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", confirmed_match['id']).execute()
+                                processed_ids.add(confirmed_match['id'])
                             else:
-                                log(f"      ❌ Ambiguous Result (Sets: {s1}-{s2})")
+                                log(f"      ❌ Score Ambiguous ({s1}-{s2})")
 
                         except Exception as e:
-                            log(f"      ❌ Score Parse Error: {e}")
+                            log(f"      ❌ Parse Error: {e}")
 
-                        i += 2 
-                    else:
-                        i += 1
             except Exception as e:
                 log(f"   ❌ Page Loop Error: {e}")
                 await page.close()
@@ -341,7 +318,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     d = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5}
-    return d # Placeholder for brevity
+    return d
 
 async def scrape_tennis_odds_for_date(target_date):
     async with async_playwright() as p:
@@ -374,16 +351,12 @@ def parse_matches_locally(html, p_names):
                 continue
             
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
-            
-            # CLEAN TIME EXTRACTION (Fixing the root cause for future data)
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
-                # Clean extracting: Just take the first 5 chars if they look like time
                 raw_time = first_col.get_text(strip=True)
                 match = re.search(r'(\d{2}:\d{2})', raw_time)
-                if match:
-                    match_time_str = match.group(1)
+                if match: match_time_str = match.group(1)
 
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
@@ -421,7 +394,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v89.0 Starting...")
+    log(f"🚀 Neural Scout v90.0 Starting...")
     
     await update_past_results()
     
