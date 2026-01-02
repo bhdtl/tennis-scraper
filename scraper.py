@@ -35,14 +35,14 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVIC
 MODEL_NAME = 'gemini-2.5-pro'
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("❌ CRITICAL: Secrets missing! Check environment variables.")
+    logger.critical("❌ CRITICAL: Secrets fehlen! Prüfe GitHub Secrets.")
     sys.exit(1)
 
 # Initialize Global DB Instance
 db_manager = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
-# 2. MATH CORE (HIERARCHICAL MARKOV MODELS - O'MALLEY)
+# 2. MATH CORE (HIERARCHICAL MARKOV MODELS)
 # =================================================================
 class QuantumMathEngine:
     """
@@ -104,14 +104,26 @@ class QuantumMathEngine:
         return inv1/margin, inv2/margin
 
 # =================================================================
-# 3. UTILITIES & DATA PROCESSING
+# 3. UTILITIES & HELPER FUNCTIONS
 # =================================================================
+def to_float(val, default=50.0):
+    if val is None: return default
+    try: return float(val)
+    except: return default
+
 def normalize_text(text: str) -> str:
     if not text: return ""
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn')
 
 def clean_player_name(raw: str) -> str:
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(\d+\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
+
+def get_last_name(full_name):
+    """Extracts last name for robust comparison."""
+    if not full_name: return ""
+    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
+    parts = clean.split()
+    return parts[-1].lower() if parts else ""
 
 def validate_market(odds1: float, odds2: float) -> bool:
     """Sanity Check: Do these odds make sense? Filters bad data."""
@@ -122,7 +134,7 @@ def validate_market(odds1: float, odds2: float) -> bool:
     return 0.85 < margin < 1.30
 
 # =================================================================
-# 4. AI ENGINE (CONTEXT-AWARE RAG)
+# 4. AI ENGINE (RAG-LITE & DEEP ANALYSIS)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
@@ -307,9 +319,9 @@ async def fetch_elo_ratings_optimized(bot: ScraperBot):
                     name = normalize_text(cols[0].get_text(strip=True)).lower()
                     try:
                         ELO_CACHE[tour][name] = {
-                            'Hard': float(cols[3].get_text(strip=True) or 1500), 
-                            'Clay': float(cols[4].get_text(strip=True) or 1500), 
-                            'Grass': float(cols[5].get_text(strip=True) or 1500)
+                            'Hard': to_float(cols[3].get_text(strip=True), 1500), 
+                            'Clay': to_float(cols[4].get_text(strip=True), 1500), 
+                            'Grass': to_float(cols[5].get_text(strip=True), 1500)
                         }
                     except: continue
 
@@ -325,7 +337,6 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
 
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
-    
     current_tour_name = "Unknown"
     
     for table in tables:
@@ -380,20 +391,14 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                 # --- 3. WORKFLOW LOGIC ---
                 iso_time = f"{target_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
                 
-                # Use raw SQL-like query for ID check (avoiding complex OR syntax issues)
-                # We fetch all matches and filter in memory for robustness here, or refine query
-                # For speed/simplicity in snippet: we assume check_existing works or use a direct select
-                
-                existing = await asyncio.to_thread(lambda: db_manager.table("market_odds").select("id, actual_winner_name").eq("player1_name", p1['last_name']).eq("player2_name", p2['last_name']).execute().data)
-                if not existing:
-                     # Check reverse
-                     existing = await asyncio.to_thread(lambda: db_manager.table("market_odds").select("id, actual_winner_name").eq("player1_name", p2['last_name']).eq("player2_name", p1['last_name']).execute().data)
+                # Check Existing ID
+                existing = db_manager.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1['last_name']},player2_name.eq.{p2['last_name']}),and(player1_name.eq.{p2['last_name']},player2_name.eq.{p1['last_name']})").execute()
 
-                if existing:
-                    if existing[0].get('actual_winner_name'): continue # Finished
+                if existing.data:
+                    if existing.data[0].get('actual_winner_name'): continue # Finished
                     
                     # Update odds/time
-                    await asyncio.to_thread(lambda: db_manager.table("market_odds").update({"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2}).eq("id", existing[0]['id']).execute())
+                    db_manager.table("market_odds").update({"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
                     continue
 
                 if is_finished: continue
@@ -449,7 +454,7 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                     "match_time": iso_time
                 }
                 
-                await asyncio.to_thread(lambda: db_manager.table("market_odds").insert(entry).execute())
+                db_manager.table("market_odds").insert(entry).execute()
                 logger.info(f"   💾 Saved. Edge: {(prob-market_p1)*100:.1f}%")
 
 # =================================================================
@@ -464,19 +469,21 @@ async def run_pipeline():
     try:
         await fetch_elo_ratings_optimized(bot)
         
-        # Load Context
-        data = await db_manager.fetch_all_context_data()
-        players, skills_list, reports, tournaments, _ = data
+        # Load Context (Parallel)
+        p_data = db_manager.table("players").select("*").execute().data
+        s_data = db_manager.table("player_skills").select("*").execute().data
+        r_data = db_manager.table("scouting_reports").select("*").execute().data
+        t_data = db_manager.table("tournaments").select("*").execute().data
         
-        if not players: return
+        if not p_data: return
         
-        skills_map = {s['player_id']: s for s in skills_list}
-        resolver = ContextResolver(tournaments)
+        skills_map = {s['player_id']: s for s in s_data}
+        resolver = ContextResolver(t_data)
         
         # 14 Day Loop
         today = datetime.now()
         for i in range(14):
-            await process_day_url(bot, today + timedelta(days=i), players, skills_map, reports, resolver)
+            await process_day_url(bot, today + timedelta(days=i), p_data, skills_map, r_data, resolver)
             await asyncio.sleep(2)
 
     except Exception as e: logger.critical(f"🔥 CRASH: {e}", exc_info=True)
