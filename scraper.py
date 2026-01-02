@@ -21,7 +21,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V82.2 - Hybrid Power)...")
+log("🔌 Initialisiere Neural Scout (V83.1 - The Score Master)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -47,7 +47,7 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(.\)', '', raw, flags=re.IGNORECASE)
+    clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(.\)|ret\.', '', raw, flags=re.IGNORECASE)
     return clean.replace('|', '').strip()
 
 def get_last_name(full_name):
@@ -56,7 +56,7 @@ def get_last_name(full_name):
     return clean.split()[-1].lower() if clean else ""
 
 # =================================================================
-# ENGINE: GEMINI & ODDS
+# ODDS & PHYSICS ENGINE (1:1 V81.0)
 # =================================================================
 async def call_gemini(prompt):
     await asyncio.sleep(0.5) 
@@ -116,7 +116,49 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final
 
 # =================================================================
-# SCRAPING ENGINE (V82.2 - HYBRID ROBUST/PARALLEL)
+# RESULT LOGIC (IMPORTED FROM OLD CODE)
+# =================================================================
+def extract_scores_aggressive(columns):
+    """Extrahiert Tennis-Scores aus Tabellenzellen (Alter Code Logic)."""
+    scores = []
+    for col in columns:
+        txt = col.get_text(strip=True)
+        if len(txt) > 4: continue 
+        if '(' in txt: txt = txt.split('(')[0]
+        if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
+            scores.append(int(txt))
+    return scores
+
+def determine_winner_from_scores(p1_name, p2_name, row1, row2):
+    """Analysiert Scores, um den Gewinner zu finden."""
+    try:
+        cols1 = row1.find_all('td')
+        cols2 = row2.find_all('td') if row2 else []
+        
+        s1 = extract_scores_aggressive(cols1)
+        s2 = extract_scores_aggressive(cols2)
+        
+        if not s1 or not s2: return None
+
+        p1_sets = 0
+        p2_sets = 0
+        for k in range(min(len(s1), len(s2))):
+            if s1[k] > s2[k]: p1_sets += 1
+            elif s2[k] > s1[k]: p2_sets += 1
+        
+        # Check Retirement
+        row_text = row1.get_text(strip=True).lower() + (row2.get_text(strip=True).lower() if row2 else "")
+        is_ret = "ret." in row_text or "w.o." in row_text
+
+        if (p1_sets >= 2 and p1_sets > p2_sets) or (is_ret and p1_sets > p2_sets):
+            return p1_name
+        elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_ret and p2_sets > p1_sets):
+            return p2_name
+    except: pass
+    return None
+
+# =================================================================
+# SCRAPING ENGINE (V83.1 - HYBRID)
 # =================================================================
 async def fetch_elo_ratings():
     log("📊 Lade ELO...")
@@ -137,16 +179,17 @@ async def fetch_elo_ratings():
         await browser.close()
 
 async def scrape_single_date(browser, target_date):
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-    # HYBRID: Allow Scripts, Block Media (Speed + Compat)
-    await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
+    # Robust Context
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+    await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
+    
     page = await context.new_page()
     try:
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        # WAITER: Ensure table exists
-        try: await page.wait_for_selector("table.result", timeout=5000)
-        except: pass 
+        await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+        try: await page.wait_for_selector(".result", timeout=5000)
+        except: pass
+        
         content = await page.content()
         await context.close()
         return (target_date, content)
@@ -184,7 +227,11 @@ def parse_matches_locally(html, p_names):
             if not (any(tp in p1_name.lower() for tp in target_players) and any(tp in p2_name.lower() for tp in target_players)):
                 continue
 
-            # Odds Extraction (Surgical)
+            # --- RESULT DETECTION (THE FIX) ---
+            # Wir nutzen die alte Score-Logic HIER, direkt beim Parsen.
+            winner_detected = determine_winner_from_scores(p1_name, p2_name, row, row2)
+
+            # --- ODDS EXTRACTION ---
             o1, o2 = 0.0, 0.0
             c1 = row.find('td', class_='course')
             c2 = row2.find('td', class_='course')
@@ -199,10 +246,11 @@ def parse_matches_locally(html, p_names):
             time_col = row.find('td', class_='first')
             m_time = time_col.get_text(strip=True) if time_col and 'time' in time_col.get('class', []) else "00:00"
 
-            if o1 > 1.0 and o2 > 1.0:
+            if (o1 > 1.0 and o2 > 1.0) or winner_detected:
                 found.append({
                     "p1": p1_name, "p2": p2_name, "tour": current_tour, 
-                    "time": m_time, "odds1": o1, "odds2": o2
+                    "time": m_time, "odds1": o1, "odds2": o2,
+                    "winner": winner_detected
                 })
     return found
 
@@ -253,7 +301,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     except: return d
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v82.2 (Hybrid Power) Starting...")
+    log(f"🚀 Neural Scout v83.1 (The Score Master) Starting...")
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
@@ -261,17 +309,18 @@ async def run_pipeline():
     current_date = datetime.now()
     p_names = [p['last_name'] for p in players]
     
-    # PARALLEL SCRAPING
+    # 1. PARALLEL SCRAPING
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--disable-gpu', '--no-sandbox'])
         tasks = [scrape_single_date(browser, current_date + timedelta(days=i)) for i in range(14)]
         results = await asyncio.gather(*tasks)
         await browser.close()
 
+    # 2. PROCESSING
     for date, html in results:
         if not html: continue
         matches = parse_matches_locally(html, p_names)
-        log(f"🔍 {date.strftime('%d.%m')}: {len(matches)} Matches")
+        if matches: log(f"🔍 {date.strftime('%d.%m')}: Found {len(matches)} Matches")
         
         for m in matches:
             try:
@@ -282,20 +331,37 @@ async def run_pipeline():
                 iso_time = f"{date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                 
                 # DB Check
-                existing = supabase.table("market_odds").select("*").or_(f"and(player1_name.eq.{p1['last_name']},player2_name.eq.{p2['last_name']}),and(player1_name.eq.{p2['last_name']},player2_name.eq.{p1['last_name']})").execute()
+                existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1['last_name']},player2_name.eq.{p2['last_name']}),and(player1_name.eq.{p2['last_name']},player2_name.eq.{p1['last_name']})").execute()
                 
                 if existing.data:
                     row = existing.data[0]
-                    if row.get('actual_winner_name'): continue # Locked
-                    supabase.table("market_odds").update({"odds1": m['odds1'], "odds2": m['odds2'], "match_time": iso_time}).eq("id", row['id']).execute()
-                    log(f"🔄 Updated: {p1['last_name']} vs {p2['last_name']}")
+                    
+                    # CASE A: WINNER DETECTED? -> CLOSE MATCH!
+                    if m['winner']:
+                        if row.get('actual_winner_name') != m['winner']:
+                            log(f"🏆 RESULT FOUND: {m['winner']} won! Updating DB.")
+                            supabase.table("market_odds").update({
+                                "actual_winner_name": m['winner']
+                            }).eq("id", row['id']).execute()
+                        continue # Done.
+
+                    # CASE B: MATCH LOCKED? -> SKIP
+                    if row.get('actual_winner_name'): 
+                        continue
+                    
+                    # CASE C: UPDATE ODDS (If plausible)
+                    if m['odds1'] > 1.0 and m['odds2'] > 1.0:
+                        supabase.table("market_odds").update({
+                            "odds1": m['odds1'], "odds2": m['odds2'], "match_time": iso_time
+                        }).eq("id", row['id']).execute()
+                        log(f"🔄 Updated Odds: {p1['last_name']} vs {p2['last_name']}")
                 else:
-                    # New Entry
+                    # NEW INSERT
+                    if m['odds1'] <= 1.0: continue
+
                     s1, s2 = all_skills.get(p1['id'], {}), all_skills.get(p2['id'], {})
-                    r1 = next((r for r in all_reports if r['player_id'] == p1['id']), {})
-                    r2 = next((r for r in all_reports if r['player_id'] == p2['id']), {})
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1['last_name'], p2['last_name'])
-                    ai_meta = await analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surf, bsi, notes)
+                    ai_meta = await analyze_match_with_ai(p1, p2, s1, s2, {}, {}, surf, bsi, notes)
                     
                     prob = calculate_physics_fair_odds(p1['last_name'], p2['last_name'], s1, s2, bsi, surf, ai_meta, m['odds1'], m['odds2'])
                     
@@ -304,8 +370,9 @@ async def run_pipeline():
                         "tournament": m['tour'], "odds1": m['odds1'], "odds2": m['odds2'],
                         "ai_fair_odds1": round(1/prob, 2) if prob > 0.01 else 99,
                         "ai_fair_odds2": round(1/(1-prob), 2) if prob < 0.99 else 99,
-                        "ai_analysis_text": ai_meta.get('ai_text', 'Pending'), "created_at": datetime.now(timezone.utc).isoformat(),
-                        "match_time": iso_time
+                        "ai_analysis_text": "Live Analysis", "created_at": datetime.now(timezone.utc).isoformat(),
+                        "match_time": iso_time,
+                        "actual_winner_name": m['winner'] # If scraped finished
                     }).execute()
                     log(f"💾 Saved: {p1['last_name']} vs {p2['last_name']}")
 
