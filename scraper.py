@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V90.0 - Pivot-Based Search)...")
+log("🔌 Initialisiere Neural Scout (V91.0 - Token-Based Matching)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -53,7 +53,10 @@ def to_float(val, default=50.0):
     except: return default
 
 def normalize_text(text): 
-    return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
+    # Normalisiert Text: entfernt Akzente, lowercase
+    if not text: return ""
+    norm = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode("utf-8")
+    return norm.lower()
 
 def clean_player_name(raw): 
     if not raw: return ""
@@ -61,15 +64,37 @@ def clean_player_name(raw):
     raw = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     return raw.replace('|', '').strip()
 
-def get_normalized_last_name(full_name):
-    if not full_name: return ""
-    clean = re.sub(r'^\b[A-Z]\.\s*', '', full_name).strip() 
+def get_name_tokens(full_name):
+    """
+    Zerlegt einen Namen in seine Bestandteile (Tokens).
+    Filtert kurze Füllwörter (außer bei kurzen asiatischen Namen).
+    'Bouzas Maneiro' -> {'bouzas', 'maneiro'}
+    'Sierra' -> {'sierra'}
+    """
+    if not full_name: return set()
+    # Entferne Satzzeichen und mache lowercase
+    clean = normalize_text(full_name)
+    clean = re.sub(r'[^\w\s]', '', clean)
     parts = clean.split()
-    if not parts: return ""
-    last_part = parts[-1].replace('.', '')
-    if len(last_part) == 1 and len(parts) > 1:
-        return parts[-2].lower()
-    return parts[-1].lower()
+    
+    # Filter Tokens: Wir behalten Tokens, die > 2 Zeichen sind, ODER wenn der Name sehr kurz ist.
+    tokens = set()
+    for p in parts:
+        if len(p) > 2 or (len(parts) == 1): 
+            tokens.add(p)
+    return tokens
+
+def names_match(db_name_tokens, scraped_text):
+    """
+    Prüft, ob signifikante Teile des DB-Namens im gescrapeten Text vorkommen.
+    """
+    scraped_clean = normalize_text(scraped_text)
+    # Check if ANY significant token from DB name exists in scraped text as a whole word
+    for token in db_name_tokens:
+        # Regex suche nach Word Boundary, damit "Li" nicht in "Live" matcht
+        if re.search(r'\b' + re.escape(token) + r'\b', scraped_clean):
+            return True
+    return False
 
 def sanitize_timestamp(dirty_ts):
     if not dirty_ts: return None
@@ -133,10 +158,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return 0.5 
 
 # =================================================================
-#  VETERAN RESULT VERIFICATION V90.0 (Pivot-Search)
+#  VETERAN RESULT VERIFICATION V91.0 (Token-Matching)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Pivot-Search)...")
+    log("🏆 Checking for Match Results (Token-Based Matching)...")
     
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
@@ -173,62 +198,56 @@ async def update_past_results():
                     log("      ⚠️ No result tables found.")
                     await page.close(); continue
 
-                # Collect all rows
                 all_rows = []
                 for t in tables: all_rows.extend(t.find_all('tr'))
 
-                # DEBUG: Print first few rows to see what scraper sees
-                for d_idx, d_row in enumerate(all_rows[:3]):
-                    d_text = normalize_text(d_row.get_text(separator=" ", strip=True))
-                    log(f"      👀 [DEBUG Row {d_idx}]: {d_text[:50]}...")
-
                 processed_ids = set()
                 
-                # PIVOT SEARCH: Iterate every row. If it matches a Player 1 or Player 2, check the NEXT row.
-                for i in range(len(all_rows) - 1):
-                    row_pivot = all_rows[i]
-                    # Skip Headers
-                    if 'head' in row_pivot.get('class', []) or 'bott' in row_pivot.get('class', []): continue
-
-                    pivot_text = normalize_text(row_pivot.get_text(separator=" ")).lower()
+                # Iteration über Zeilen-Paare (besser für Performance)
+                i = 0
+                while i < len(all_rows) - 1:
+                    row1 = all_rows[i]
+                    row2 = all_rows[i+1]
                     
-                    # Check if this row contains ANY player from our target list
-                    possible_matches = []
+                    # Cleanup check
+                    if 'head' in row1.get('class', []) or 'bott' in row1.get('class', []):
+                        i += 1; continue
+
+                    t1_text = normalize_text(row1.get_text(separator=" ", strip=True))
+                    t2_text = normalize_text(row2.get_text(separator=" ", strip=True))
+                    
+                    matched_entry = None
+                    
+                    # Suche in unserer Match-Liste für diesen Tag
                     for pm in match_list:
                         if pm['id'] in processed_ids: continue
-                        l1 = get_normalized_last_name(pm['player1_name'])
-                        l2 = get_normalized_last_name(pm['player2_name'])
                         
-                        if l1 in pivot_text or l2 in pivot_text:
-                            possible_matches.append(pm)
+                        # Hole Tokens
+                        tok_p1 = get_name_tokens(pm['player1_name'])
+                        tok_p2 = get_name_tokens(pm['player2_name'])
+                        
+                        # MATCH LOGIC:
+                        # Fall A: Zeile 1 = P1, Zeile 2 = P2
+                        match_a = names_match(tok_p1, t1_text) and names_match(tok_p2, t2_text)
+                        
+                        # Fall B: Zeile 1 = P2, Zeile 2 = P1 (Umgekehrte Reihenfolge)
+                        match_b = names_match(tok_p2, t1_text) and names_match(tok_p1, t2_text)
+                        
+                        if match_a or match_b:
+                            matched_entry = pm
+                            # Extra Info für Debugging
+                            log(f"      🎯 MATCH HIT: '{pm['player1_name']}' vs '{pm['player2_name']}'")
+                            log(f"         Html Row 1: {t1_text[:30]}...")
+                            log(f"         Html Row 2: {t2_text[:30]}...")
+                            break
                     
-                    if not possible_matches: continue
-
-                    # We found a potential player. Now check the NEXT row for the opponent.
-                    row_partner = all_rows[i+1]
-                    partner_text = normalize_text(row_partner.get_text(separator=" ")).lower()
-                    
-                    confirmed_match = None
-                    for pm in possible_matches:
-                        l1 = get_normalized_last_name(pm['player1_name'])
-                        l2 = get_normalized_last_name(pm['player2_name'])
-                        
-                        # Case 1: Pivot is P1, Partner is P2
-                        if (l1 in pivot_text and l2 in partner_text):
-                            confirmed_match = pm; break
-                        # Case 2: Pivot is P2, Partner is P1
-                        if (l2 in pivot_text and l1 in partner_text):
-                            confirmed_match = pm; break
-                            
-                    if confirmed_match:
-                        log(f"      🎯 MATCH IDENTIFIED: {confirmed_match['player1_name']} vs {confirmed_match['player2_name']}")
-                        
-                        # SCORING LOGIC
-                        cols1 = row_pivot.find_all('td')
-                        cols2 = row_partner.find_all('td')
+                    if matched_entry:
+                        cols1 = row1.find_all('td')
+                        cols2 = row2.find_all('td')
                         winner = None
                         
                         try:
+                            # 3. SCORE PARSING (Visual Logic)
                             def get_sets_won(columns):
                                 for col in columns:
                                     txt = col.get_text(strip=True)
@@ -237,51 +256,56 @@ async def update_past_results():
                                         if val <= 3: return val
                                 return -1
 
-                            # Skip first 2 columns (often flag/name)
-                            s1 = get_sets_won(cols1[2:]) 
+                            s1 = get_sets_won(cols1[2:]) # Skip Time/Flag
                             s2 = get_sets_won(cols2[2:])
                             
-                            # Fallback scan all
                             if s1 == -1: s1 = get_sets_won(cols1)
                             if s2 == -1: s2 = get_sets_won(cols2)
                             
-                            if s1 != -1 and s2 != -1 and s1 != s2:
-                                # Who won this specific pairing?
-                                pivot_won = s1 > s2
-                                
-                                # Map back to DB names
-                                l1 = get_normalized_last_name(confirmed_match['player1_name'])
-                                
-                                if pivot_won:
-                                    # The Pivot Row won. Is Pivot P1 or P2?
-                                    if l1 in pivot_text: winner = confirmed_match['player1_name']
-                                    else: winner = confirmed_match['player2_name']
-                                else:
-                                    # The Partner Row won.
-                                    if l1 in partner_text: winner = confirmed_match['player1_name']
-                                    else: winner = confirmed_match['player2_name']
+                            valid_score = (s1 != -1 and s2 != -1 and s1 != s2)
                             
-                            # Retirement Check
-                            if not winner and ("ret." in pivot_text or "ret." in partner_text):
+                            if valid_score:
+                                # Wer hat in der Tabelle gewonnen?
+                                r1_wins = s1 > s2
+                                
+                                # Wir müssen wissen, wer in Zeile 1 steht
+                                tok_p1 = get_name_tokens(matched_entry['player1_name'])
+                                row1_is_p1 = names_match(tok_p1, t1_text)
+                                
+                                if r1_wins:
+                                    # Zeile 1 hat gewonnen.
+                                    if row1_is_p1: winner = matched_entry['player1_name']
+                                    else: winner = matched_entry['player2_name']
+                                else:
+                                    # Zeile 2 hat gewonnen.
+                                    if row1_is_p1: winner = matched_entry['player2_name'] # Wenn R1 P1 ist, dann hat P2 (R2) gewonnen
+                                    else: winner = matched_entry['player1_name']
+                            
+                            # Fallback Retirement
+                            if not winner and ("ret." in t1_text or "ret." in t2_text):
                                 log("         ⚠️ Retirement detected.")
-                                l1 = get_normalized_last_name(confirmed_match['player1_name'])
-                                if "ret." in partner_text: # Partner retired -> Pivot won
-                                    if l1 in pivot_text: winner = confirmed_match['player1_name']
-                                    else: winner = confirmed_match['player2_name']
-                                elif "ret." in pivot_text: # Pivot retired -> Partner won
-                                    if l1 in partner_text: winner = confirmed_match['player1_name']
-                                    else: winner = confirmed_match['player2_name']
+                                tok_p1 = get_name_tokens(matched_entry['player1_name'])
+                                row1_is_p1 = names_match(tok_p1, t1_text)
+                                
+                                # Wer "ret." hat, hat verloren.
+                                if "ret." in t2_text: # R2 retired -> R1 gewinnt
+                                    winner = matched_entry['player1_name'] if row1_is_p1 else matched_entry['player2_name']
+                                elif "ret." in t1_text: # R1 retired -> R2 gewinnt
+                                    winner = matched_entry['player2_name'] if row1_is_p1 else matched_entry['player1_name']
 
                             if winner:
-                                log(f"      ✅ WINNER FOUND: {winner}")
-                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", confirmed_match['id']).execute()
-                                processed_ids.add(confirmed_match['id'])
+                                log(f"      ✅ WINNER CONFIRMED: {winner} ({s1}-{s2})")
+                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_entry['id']).execute()
+                                processed_ids.add(matched_entry['id'])
                             else:
-                                log(f"      ❌ Score Ambiguous ({s1}-{s2})")
+                                log(f"      ❌ Match found but ambiguous result ({s1}-{s2})")
 
                         except Exception as e:
-                            log(f"      ❌ Parse Error: {e}")
+                            log(f"      ❌ Error evaluating winner: {e}")
 
+                        i += 2 # Match bearbeitet, springe 2 Zeilen weiter
+                    else:
+                        i += 1 # Nächste Zeile prüfen
             except Exception as e:
                 log(f"   ❌ Page Loop Error: {e}")
                 await page.close()
@@ -394,7 +418,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v90.0 Starting...")
+    log(f"🚀 Neural Scout v91.0 Starting...")
     
     await update_past_results()
     
