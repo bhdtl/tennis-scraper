@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V87.0 - Self-Validating Score Engine)...")
+log("🔌 Initialisiere Neural Scout (V88.0 - Force Result Extraction)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -57,8 +57,9 @@ def normalize_text(text):
 
 def clean_player_name(raw): 
     if not raw: return ""
-    raw = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
+    # Entferne (USA), (FRA) etc. und Wettanbieter
     raw = re.sub(r'\(.*?\)', '', raw) 
+    raw = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     return raw.replace('|', '').strip()
 
 def get_last_name(full_name):
@@ -130,30 +131,36 @@ def get_dynamic_court_weights(bsi, surface):
     return w
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
-    return 0.5 # Placeholder logic kept intact
+    # Minimal implementation for context
+    return 0.5
 
 # =================================================================
-#  VETERAN RESULT VERIFICATION V87.0 (Score Validation Logic)
+#  VETERAN RESULT VERIFICATION V88.0 (No-Safe-Mode)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Self-Validating Logic)...")
+    log("🏆 Checking for Match Results (Safety Protocols DISABLED)...")
     
+    # 1. Hole ALLE Matches ohne Ergebnis
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches:
-        log("   ✅ No matches ready for result verification.")
+        log("   ✅ No pending matches found in DB.")
         return
 
+    # 2. Gruppiere nach Datum (DATE-DRIVEN TARGETING)
     matches_by_date = defaultdict(list)
     for pm in pending_matches:
         try:
+            # Wir parsen das Datum strikt aus der DB.
+            # CRITICAL FIX: Wir ignorieren "now()", wir vertrauen der DB.
+            # Wenn DB sagt 2026, dann ist es 2026.
             match_time = datetime.fromisoformat(pm['match_time'].replace('Z', '+00:00'))
             date_key = (match_time.year, match_time.month, match_time.day)
             matches_by_date[date_key].append(pm)
         except Exception as e:
             log(f"   ⚠️ Date Parse Error for {pm.get('id')}: {e}")
 
-    log(f"   🔎 Scanning {len(matches_by_date)} unique dates for {len(pending_matches)} matches...")
+    log(f"   🔎 Targeting {len(matches_by_date)} unique dates for {len(pending_matches)} matches...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -161,18 +168,23 @@ async def update_past_results():
         for (year, month, day), match_list in matches_by_date.items():
             page = await browser.new_page()
             try:
-                # VETERAN FIX: Use the specific date from DB
+                # URL Construction - Force the specific date
                 url = f"https://www.tennisexplorer.com/results/?type=all&year={year}&month={month}&day={day}"
-                log(f"   📅 Visiting: {day}.{month}.{year} for {len(match_list)} matches...")
+                log(f"   📅 Visiting: {day}.{month}.{year} (Seeking {len(match_list)} matches)")
                 
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
                 
+                # Finde Tabellen
                 tables = soup.find_all('table', class_='result')
                 if not tables:
+                    # Manchmal ist es auf der "Next" Seite, wenn es zukünftig ist, aber Ergebnisse eingetragen wurden?
+                    # Nein, Result page ist besser für Ergebnisse.
+                    log("      ⚠️ No result tables found.")
                     await page.close(); continue
 
+                # Flatten rows
                 rows = []
                 for t in tables: rows.extend(t.find_all('tr'))
 
@@ -182,94 +194,88 @@ async def update_past_results():
                     row1 = rows[i]
                     row2 = rows[i+1]
                     
+                    # Skip garbage headers
                     if 'head' in row1.get('class', []) or 'bott' in row1.get('class', []):
                         i += 1; continue
                         
                     p1_text = normalize_text(row1.get_text(separator=" ")).lower()
                     p2_text = normalize_text(row2.get_text(separator=" ")).lower()
                     
+                    # Match Finding
                     matched_entry = None
                     for pm in match_list:
                         if pm['id'] in processed_ids: continue
                         l1 = get_last_name(pm['player1_name'])
                         l2 = get_last_name(pm['player2_name'])
+                        
+                        # Strict Cross-Check
                         if (l1 in p1_text and l2 in p2_text) or (l2 in p1_text and l1 in p2_text):
                             matched_entry = pm
                             break
                     
                     if matched_entry:
+                        log(f"      🎯 FOUND ROW: {matched_entry['player1_name']} vs {matched_entry['player2_name']}")
+                        
                         cols1 = row1.find_all('td')
                         cols2 = row2.find_all('td')
                         winner = None
                         
                         try:
-                            # 1. EXTRACT ALL NUMBERS (The Veteran Way)
-                            # Wir holen ALLE Zahlen aus der Zeile.
-                            # Struktur ist normalerweise: [SetsWon, Set1, Set2, Set3...]
+                            # 🧠 SILICON VALLEY SCORE PARSER
+                            # Strategie: Finde die erste Zahl <= 3 in der Zeile. Das sind die Sätze.
                             
-                            def get_numeric_sequence(cols):
-                                seq = []
-                                for c in cols:
-                                    txt = c.get_text(strip=True)
-                                    if txt.isdigit(): seq.append(int(txt))
-                                return seq
+                            def get_sets_won(columns):
+                                for col in columns:
+                                    txt = col.get_text(strip=True)
+                                    if txt.isdigit():
+                                        val = int(txt)
+                                        # Satz-Sicherheit: Max 3 Gewinnsätze bei GS. 
+                                        # Wenn > 5, ist es ein Game, keine Sätze.
+                                        if val <= 3: return val
+                                return -1 # Nicht gefunden
 
-                            # Skip first 2 cols usually (Name, Flag)
-                            # Manchmal ist Flagge col[0], Name col[1]. Manchmal anders.
-                            # Wir nehmen einfach alles ab Index 2 und filtern.
-                            seq1 = get_numeric_sequence(cols1[1:]) 
-                            seq2 = get_numeric_sequence(cols2[1:])
+                            # Wir skippen die ersten Spalten (Zeit, Flagge), suchen ab Spalte 2
+                            s1 = get_sets_won(cols1[1:]) 
+                            s2 = get_sets_won(cols2[1:])
                             
-                            if seq1 and seq2:
-                                # Erste Zahl ist "S" (Sets Won)
-                                s1_sets = seq1[0]
-                                s2_sets = seq2[0]
-                                
-                                # VALIDATION: Ist das plausibel?
-                                # Best of 3: Gewinner hat 2 Sätze.
-                                # Best of 5 (Grand Slam): Gewinner hat 3 Sätze.
-                                # Retirement: Gewinner hat weniger als vollen Satz (z.B. 1:0).
-                                
-                                # Wir prüfen, wer mehr "Sets" hat.
-                                # Das funktioniert für Best of 3 UND Best of 5.
-                                # 2 > 0 (Standard Sieg)
-                                # 3 > 1 (Grand Slam Sieg)
-                                
-                                # Sicherstellen, dass die Werte im "Satz"-Bereich liegen (0-3)
-                                # Wenn die erste Zahl z.B. 6 ist, haben wir die S-Spalte verpasst (oder sie fehlt).
-                                # Aber bei TennisExplorer ist S fast immer die erste Ziffernspalte.
-                                
-                                if s1_sets <= 3 and s2_sets <= 3 and s1_sets != s2_sets:
-                                    if s1_sets > s2_sets:
-                                        # Row 1 Winner
-                                        if get_last_name(matched_entry['player1_name']) in p1_text:
-                                            winner = matched_entry['player1_name']
-                                        else: winner = matched_entry['player2_name']
-                                    elif s2_sets > s1_sets:
-                                        # Row 2 Winner
-                                        if get_last_name(matched_entry['player1_name']) in p2_text:
-                                            winner = matched_entry['player1_name']
-                                        else: winner = matched_entry['player2_name']
+                            # Wenn wir nichts finden, suchen wir aggressiv in der ganzen Zeile
+                            if s1 == -1: s1 = get_sets_won(cols1)
+                            if s2 == -1: s2 = get_sets_won(cols2)
                             
-                            # Fallback: Retirement (Manchmal steht 1-0 in Sätzen)
+                            log(f"         🔢 Sets Detected: {s1} - {s2}")
+
+                            # Decision Logic
+                            if s1 != -1 and s2 != -1 and s1 != s2:
+                                if s1 > s2:
+                                    # Row 1 wins
+                                    if get_last_name(matched_entry['player1_name']) in p1_text:
+                                        winner = matched_entry['player1_name']
+                                    else: winner = matched_entry['player2_name']
+                                else:
+                                    # Row 2 wins
+                                    if get_last_name(matched_entry['player1_name']) in p2_text:
+                                        winner = matched_entry['player1_name']
+                                    else: winner = matched_entry['player2_name']
+                            
+                            # Fallback: Retirement (Text check)
                             if not winner and ("ret." in p1_text or "ret." in p2_text or "wo." in p1_text):
-                                log("      ⚠️ Retirement detected.")
+                                log("         ⚠️ Retirement flag detected.")
                                 if "ret." in p2_text: 
                                     winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p1_text else matched_entry['player2_name']
                                 elif "ret." in p1_text:
                                     winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p2_text else matched_entry['player2_name']
 
                             if winner:
-                                log(f"      ✅ WINNER DETECTED: {winner} (Score: {seq1} vs {seq2})")
+                                log(f"      ✅ WINNER CONFIRMED: {winner}")
                                 supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_entry['id']).execute()
                                 processed_ids.add(matched_entry['id'])
                             else:
-                                log(f"      ⚠️ Match found, ambiguous result: {seq1} vs {seq2}")
+                                log(f"      ❌ Ambiguous Result (Score: {s1}-{s2})")
 
                         except Exception as e:
-                            log(f"      ❌ Parse Error: {e}")
+                            log(f"      ❌ Score Parse Error: {e}")
 
-                        i += 2
+                        i += 2 # Skip partner row
                     else:
                         i += 1
             except Exception as e:
@@ -391,10 +397,12 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v87.0 Starting...")
+    log(f"🚀 Neural Scout v88.0 Starting...")
     
+    # 1. ERGEBNIS CHECK (PRIO 1)
     await update_past_results()
     
+    # 2. ODSS SCAN (PRIO 2)
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
