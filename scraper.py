@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Tuple
 
 # Third-party imports
 from playwright.async_api import async_playwright, Browser, BrowserContext
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 from supabase import create_client, Client
 import httpx
 
@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_Workflow")
+logger = logging.getLogger("NeuralScout_v87")
 
 # Environment Variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -77,7 +77,7 @@ class DatabaseManager:
 db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
-# 3. UTILITIES & CONTEXT
+# 3. UTILITIES
 # =================================================================
 def normalize_text(text: str) -> str:
     if not text: return ""
@@ -93,50 +93,43 @@ def validate_market(odds1: float, odds2: float) -> bool:
     margin = (1/odds1) + (1/odds2)
     return 0.85 < margin < 1.30
 
-class ContextResolver:
-    """
-    Resolves Tournament Names to Database Entities.
-    """
-    def __init__(self, db_tournaments: List[Dict]):
-        self.db_tournaments = db_tournaments
-        self.name_map = {t['name'].lower(): t for t in db_tournaments}
-        self.lookup_keys = list(self.name_map.keys())
-
-    def resolve_court(self, scraped_tour_name: str, p1_country: str = None, p2_country: str = None) -> Tuple[Optional[Dict], str]:
-        s_clean = scraped_tour_name.lower().replace("atp", "").replace("wta", "").strip()
-        
-        # United Cup Logic
-        if "united cup" in s_clean:
-            if "sydney" in s_clean: return self._find_exact("Sydney"), "Explicit (Sydney)"
-            if "perth" in s_clean: return self._find_exact("Perth"), "Explicit (Perth)"
-            generic = self._find_fuzzy("United Cup")
-            return (generic, "Generic United Cup") if generic else (None, "Missing")
-
-        # Standard Matching
-        if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
-        matches = difflib.get_close_matches(s_clean, self.lookup_keys, n=1, cutoff=0.6)
-        if matches: return self.name_map[matches[0]], f"Fuzzy ({matches[0]})"
-        for key in self.lookup_keys:
-            if key in s_clean or s_clean in key: return self.name_map[key], f"Substring ({key})"
-        return None, "Fail"
-
-    def _find_exact(self, name_part):
-        for key, val in self.name_map.items():
-            if name_part.lower() in key: return val
-        return None
-    
-    def _find_fuzzy(self, name_part):
-        matches = difflib.get_close_matches(name_part.lower(), self.lookup_keys, n=1, cutoff=0.5)
-        return self.name_map[matches[0]] if matches else None
-
 # =================================================================
-# 4. DEEP AI ENGINE
+# 4. AI ENGINE (LOCATION SCOUT & ANALYSIS)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
         self.semaphore = asyncio.Semaphore(4) 
+
+    async def resolve_united_cup_venue(self, p1_name: str, p2_name: str) -> str:
+        """
+        Special Agent: Asks Gemini where a specific United Cup match is played.
+        Returns: 'Perth' or 'Sydney' (defaults to Perth if unsure).
+        """
+        prompt = f"""
+        TASK: Identification of Match Venue.
+        EVENT: United Cup Tennis 2026.
+        MATCH: {p1_name} vs {p2_name}.
+        QUESTION: Is this match being played in 'Perth' or 'Sydney'? 
+        Based on the group stage allocation or finals schedule for these players/countries.
+        
+        OUTPUT JSON ONLY:
+        {{ "city": "Perth" }} or {{ "city": "Sydney" }}
+        """
+        async with self.semaphore:
+            await asyncio.sleep(0.5)
+            try:
+                async with httpx.AsyncClient() as client:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10.0)
+                    if resp.status_code != 200: return "Perth"
+                    
+                    raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                    data = json.loads(raw.replace("```json", "").replace("```", "").strip())
+                    return data.get("city", "Perth")
+            except:
+                return "Perth" # Fallback
 
     async def analyze_matchup_deep(self, p1: Dict, p2: Dict, s1: Dict, s2: Dict, r1: Dict, r2: Dict, court: Dict) -> Dict:
         """
@@ -182,7 +175,59 @@ class AIEngine:
 ai_engine = AIEngine(GEMINI_API_KEY, MODEL_NAME)
 
 # =================================================================
-# 5. MATH CORE
+# 5. CONTEXT RESOLVER (UPDATED)
+# =================================================================
+class ContextResolver:
+    """
+    Resolves Tournament Names to Database Entities.
+    Includes AI-based United Cup resolution.
+    """
+    def __init__(self, db_tournaments: List[Dict]):
+        self.db_tournaments = db_tournaments
+        self.name_map = {t['name'].lower(): t for t in db_tournaments}
+        self.lookup_keys = list(self.name_map.keys())
+
+    async def resolve_court_smart(self, scraped_tour_name: str, p1_name: str, p2_name: str) -> Tuple[Optional[Dict], str]:
+        s_clean = scraped_tour_name.lower().replace("atp", "").replace("wta", "").strip()
+        
+        # --- UNITED CUP AI LOGIC ---
+        if "united cup" in s_clean:
+            # 1. Ask AI for the city
+            city = await ai_engine.resolve_united_cup_venue(p1_name, p2_name)
+            logger.info(f"   🤖 AI Location Scout: {p1_name} vs {p2_name} -> {city}")
+            
+            # 2. Match city to DB
+            if "sydney" in city.lower():
+                return self._find_exact("Sydney"), "AI (Sydney)"
+            if "perth" in city.lower():
+                return self._find_exact("Perth"), "AI (Perth)"
+            
+            # 3. Generic Fallback
+            generic = self._find_fuzzy("United Cup")
+            return (generic, "Generic United Cup") if generic else (None, "Missing")
+
+        # --- STANDARD MATCHING ---
+        if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
+        
+        matches = difflib.get_close_matches(s_clean, self.lookup_keys, n=1, cutoff=0.6)
+        if matches: return self.name_map[matches[0]], f"Fuzzy ({matches[0]})"
+        
+        for key in self.lookup_keys:
+            if key in s_clean or s_clean in key: return self.name_map[key], f"Substring ({key})"
+            
+        return None, "Fail"
+
+    def _find_exact(self, name_part):
+        for key, val in self.name_map.items():
+            if name_part.lower() in key: return val
+        return None
+    
+    def _find_fuzzy(self, name_part):
+        matches = difflib.get_close_matches(name_part.lower(), self.lookup_keys, n=1, cutoff=0.5)
+        return self.name_map[matches[0]] if matches else None
+
+# =================================================================
+# 6. MATH CORE
 # =================================================================
 class QuantumMathEngine:
     @staticmethod
@@ -197,6 +242,7 @@ class QuantumMathEngine:
         p_hold_1 = prob_game(p_serve_1)
         p_hold_2 = prob_game(p_serve_2)
         diff = p_hold_1 - p_hold_2
+        # Sensitivity 12.0
         p_set_1 = 1.0 / (1.0 + math.exp(-12.0 * diff))
         return (p_set_1**2) + (2 * (p_set_1**2) * (1.0 - p_set_1))
 
@@ -211,7 +257,7 @@ class QuantumMathEngine:
         return inv1/(inv1+inv2), inv2/(inv1+inv2)
 
 # =================================================================
-# 6. SCRAPER
+# 7. SCRAPER
 # =================================================================
 class ScraperBot:
     def __init__(self):
@@ -259,7 +305,7 @@ async def fetch_elo_ratings_optimized(bot: ScraperBot):
                     except: continue
 
 # =================================================================
-# 8. PROCESS DAY (RESULT & TOURNAMENT AWARE)
+# 8. PROCESS DAY
 # =================================================================
 async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[Dict], skills_map: Dict, reports: List[Dict], resolver: ContextResolver):
     url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
@@ -305,7 +351,6 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
             if p1 and p2:
                 # --- 3. RESULT DETECTION ---
                 is_finished = False
-                # If Score string detected (e.g. "6-4" or "2 : 0")
                 if re.search(r'\b[0-7]-[0-7]\b', row_text): is_finished = True
 
                 # --- 4. ODDS ---
@@ -332,27 +377,24 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                 existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
                 if existing:
-                    # UPDATE LOGIC:
-                    # 1. If winner already set in DB, skip (immutable).
                     if existing[0].get('actual_winner_name'): continue
-                    
-                    # 2. If finished in Scrape, maybe log it, but don't overwrite winner blindly.
                     if is_finished:
-                        logger.info(f"   🏁 Match finished on scrape: {p1['last_name']} vs {p2['last_name']}")
+                        # logger.info(f"   🏁 Match finished on scrape: {p1['last_name']} vs {p2['last_name']}")
                         continue 
-
-                    # 3. Otherwise, UPDATE ODDS & TIME
                     await db_manager.update_match(existing[0]['id'], {"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2})
                     continue
 
-                # NEW ANALYSIS (Only if not finished)
                 if is_finished: continue
 
                 logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {current_tour_name}")
                 
-                court_db, _ = resolver.resolve_court(current_tour_name)
-                if not court_db: court_db = {'name': current_tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
+                # --- NEW: ASYNC COURT RESOLUTION (AI) ---
+                court_db, method = await resolver.resolve_court_smart(current_tour_name, p1['last_name'], p2['last_name'])
                 
+                if not court_db: 
+                    court_db = {'name': current_tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
+                    logger.warning(f"   ⚠️ Default Court used for {current_tour_name}")
+
                 s1 = skills_map.get(p1['id'], {})
                 s2 = skills_map.get(p2['id'], {})
                 r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
@@ -364,9 +406,18 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                 elo_key = 'Hard'
                 if 'clay' in court_db.get('surface','').lower(): elo_key = 'Clay'
                 
-                e1 = ELO_CACHE.get("ATP", {}).get(p1['last_name'].lower(), {}).get(elo_key, 1500)
-                e2 = ELO_CACHE.get("ATP", {}).get(p2['last_name'].lower(), {}).get(elo_key, 1500)
+                # --- ELO FETCH WITH FALLBACK (Fix for 1.16 Odds Bug) ---
+                e1 = ELO_CACHE.get("ATP", {}).get(p1['last_name'].lower(), {}).get(elo_key)
+                e2 = ELO_CACHE.get("ATP", {}).get(p2['last_name'].lower(), {}).get(elo_key)
                 
+                # Fallback to DB Skill Rating if Elo missing
+                if not e1:
+                    e1 = (float(s1.get('overall_rating', 50)) * 15) + 500
+                if not e2:
+                    e2 = (float(s2.get('overall_rating', 50)) * 15) + 500
+                
+                logger.info(f"   📊 Ratings: {p1['last_name']}({e1}) vs {p2['last_name']}({e2})")
+
                 p1_srv = QuantumMathEngine.get_elo_based_p_serve(e1, e2, 0.64) + ai_data.get('p1_serve_adjust', 0.0)
                 p2_srv = QuantumMathEngine.get_elo_based_p_serve(e2, e1, 0.64) + ai_data.get('p2_serve_adjust', 0.0)
                 
@@ -383,7 +434,8 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                         "edge": f"{(prob-m_p1)*100:.1f}%",
                         "verdict": ai_data.get("final_verdict"),
                         "physics": ai_data.get("physics_analysis"),
-                        "tactics": ai_data.get("tactical_analysis")
+                        "tactics": ai_data.get("tactical_analysis"),
+                        "ratings_used": f"{e1:.0f} vs {e2:.0f}"
                     }),
                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "match_time": iso_time
@@ -394,10 +446,10 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
     logger.info(f"✅ Day {target_date.strftime('%d.%m')} finished: {matches_processed} matches checked.")
 
 # =================================================================
-# 9. RUNNER (ONE-SHOT FOR WORKFLOW)
+# 9. RUNNER (WORKFLOW EDITION)
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v86.2 (Workflow Edition) STARTING...")
+    logger.info("🚀 Neural Scout v87.0 (Workflow Edition) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
