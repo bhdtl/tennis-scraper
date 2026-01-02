@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v91")
+logger = logging.getLogger("NeuralScout_v91_1")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -37,11 +37,50 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     logger.critical("❌ CRITICAL: Secrets fehlen! Prüfe Environment Variables.")
     sys.exit(1)
 
-# Initialize Global DB Instance
-db_manager = create_client(SUPABASE_URL, SUPABASE_KEY)
+# =================================================================
+# 2. DATABASE MANAGER (RESTORED WRAPPER CLASS)
+# =================================================================
+class DatabaseManager:
+    """
+    Wrapper for Supabase Client to handle async operations cleanly.
+    FIXED: Contains custom methods like fetch_all_context_data.
+    """
+    def __init__(self, url: str, key: str):
+        self.client: Client = create_client(url, key)
+
+    async def fetch_all_context_data(self):
+        """Fetches all critical context data in parallel."""
+        logger.info("📡 Fetching Database Context (Parallel)...")
+        return await asyncio.gather(
+            asyncio.to_thread(lambda: self.client.table("players").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("player_skills").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("scouting_reports").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("tournaments").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data)
+        )
+
+    async def check_existing_match(self, p1_name: str, p2_name: str) -> List[Dict]:
+        """Checks if match exists to allow UPSERT logic."""
+        def _query():
+            return self.client.table("market_odds").select("id, actual_winner_name").or_(
+                f"and(player1_name.eq.{p1_name},player2_name.eq.{p2_name}),and(player1_name.eq.{p2_name},player2_name.eq.{p1_name})"
+            ).execute().data
+        return await asyncio.to_thread(_query)
+
+    async def insert_match(self, payload: Dict):
+        await asyncio.to_thread(lambda: self.client.table("market_odds").insert(payload).execute())
+
+    async def update_match(self, match_id: int, payload: Dict):
+        await asyncio.to_thread(lambda: self.client.table("market_odds").update(payload).eq("id", match_id).execute())
+
+# Initialize Global DB Manager Instance (Correctly this time)
+db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
+
+ELO_CACHE = {"ATP": {}, "WTA": {}}
+TOURNAMENT_LOC_CACHE = {} 
 
 # =================================================================
-# 2. MATH CORE (WEIGHTED HYBRID MODEL)
+# 3. MATH CORE (WEIGHTED HYBRID MODEL)
 # =================================================================
 class QuantumMathEngine:
     """
@@ -68,20 +107,17 @@ class QuantumMathEngine:
     ) -> float:
         
         # 1. AI Matchup (40%)
-        # Input is already probability-like from AI (e.g. 0.60 for P1)
         prob_ai = ai_tactical_p1
         
         # 2. Skills (25%)
-        # Diff of overall ratings. Sensitivity 0.15 means 10 points diff ~ 80% win prob.
+        # Diff of overall ratings. Sensitivity 0.12 means 10 points diff ~ strong advantage.
         skill_diff = skill_p1 - skill_p2
         prob_skills = QuantumMathEngine.sigmoid(skill_diff, sensitivity=0.12)
         
         # 3. Court Physics (20%)
-        # AI determines who fits the court better (0.0 - 1.0)
         prob_physics = ai_physics_p1
         
         # 4. Elo (15%)
-        # Standard Elo Formula
         prob_elo = 1 / (1 + 10 ** ((elo_p2 - elo_p1) / 400))
         
         # WEIGHTED SUM
@@ -92,7 +128,7 @@ class QuantumMathEngine:
             (prob_elo * 0.15)
         )
         
-        # Clamp to avoid 1.0 or 0.0 (Implies infinite odds)
+        # Clamp to avoid extreme odds
         return max(0.05, min(0.95, final_prob))
 
     @staticmethod
@@ -104,7 +140,7 @@ class QuantumMathEngine:
         return inv1/margin, inv2/margin
 
 # =================================================================
-# 3. UTILITIES
+# 4. UTILITIES
 # =================================================================
 def to_float(val, default=50.0):
     if val is None: return default
@@ -125,7 +161,7 @@ def validate_market(odds1: float, odds2: float) -> bool:
     return 0.85 < margin < 1.30
 
 # =================================================================
-# 4. AI ENGINE (DEEP ANALYSIS & SCORING)
+# 5. AI ENGINE (DEEP ANALYSIS & SCORING)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
@@ -195,9 +231,9 @@ class AIEngine:
 
         OUTPUT JSON ONLY:
         {{
-            "tactical_score_p1": 55,  // P1 has slight tactical edge
-            "physics_score_p1": 45,   // Court slightly favors P2
-            "analysis_detail": "Detailed breakdown of why P1's forehand dominates P2's backhand despite the court speed..."
+            "tactical_score_p1": 55,  
+            "physics_score_p1": 45,   
+            "analysis_detail": "Detailed breakdown..."
         }}
         """
         return await self._call_gemini(prompt, timeout=60.0) or {
@@ -207,7 +243,7 @@ class AIEngine:
 ai_engine = AIEngine(GEMINI_API_KEY, MODEL_NAME)
 
 # =================================================================
-# 5. CONTEXT RESOLVER
+# 6. CONTEXT RESOLVER
 # =================================================================
 class ContextResolver:
     def __init__(self, db_tournaments):
@@ -218,8 +254,10 @@ class ContextResolver:
     async def resolve_court_rag(self, scraped_name, p1_name, p2_name):
         s_clean = scraped_name.lower().replace("atp", "").replace("wta", "").strip()
         
+        # 1. Exact Match
         if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
 
+        # 2. Candidates
         candidates = []
         fuzzy = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
         for fn in fuzzy: 
@@ -229,6 +267,7 @@ class ContextResolver:
             for t in self.db_tournaments:
                 if "united cup" in t['name'].lower() and t not in candidates: candidates.append(t)
         
+        # 3. AI Selection
         if candidates:
             selected = await ai_engine.select_best_court(scraped_name, p1_name, p2_name, candidates)
             if selected: return selected, "AI-RAG"
@@ -237,7 +276,7 @@ class ContextResolver:
         return {'name': scraped_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium', 'notes': 'Fallback'}, "Default"
 
 # =================================================================
-# 6. SCRAPER & ELO
+# 7. SCRAPER & ELO
 # =================================================================
 class ScraperBot:
     def __init__(self):
@@ -262,8 +301,6 @@ class ScraperBot:
             return await page.content()
         except: return None
 
-ELO_CACHE = {"ATP": {}, "WTA": {}}
-
 async def fetch_elo_ratings_optimized(bot):
     logger.info("📊 Updating Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
@@ -286,7 +323,7 @@ async def fetch_elo_ratings_optimized(bot):
                     except: continue
 
 # =================================================================
-# 7. MAIN LOGIC (WEIGHTED CALCULATION)
+# 8. MAIN LOGIC (WEIGHTED CALCULATION & WORKFLOW FIX)
 # =================================================================
 async def process_day_url(bot, target_date, players, skills_map, reports, resolver):
     url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
@@ -348,13 +385,13 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
 
                 iso_time = f"{target_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
                 
-                # Check Existing
-                existing = db_manager.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1['last_name']},player2_name.eq.{p2['last_name']}),and(player1_name.eq.{p2['last_name']},player2_name.eq.{p1['last_name']})").execute()
+                # Check Existing ID using DB Manager
+                existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
-                if existing.data:
-                    if existing.data[0].get('actual_winner_name'): continue 
+                if existing:
+                    if existing[0].get('actual_winner_name'): continue 
                     if is_finished: continue 
-                    db_manager.table("market_odds").update({"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
+                    await db_manager.update_match(existing[0]['id'], {"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2})
                     continue
 
                 if is_finished: continue
@@ -418,14 +455,14 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                     "match_time": iso_time
                 }
                 
-                db_manager.table("market_odds").insert(entry).execute()
-                logger.info(f"   💾 Saved. Edge: {(prob-market_p1)*100:.1f}%") # Edge calc for log
+                await db_manager.insert_match(entry)
+                logger.info(f"   💾 Saved. Edge: {(prob-market_p1)*100:.1f}%")
 
 # =================================================================
-# 8. RUNNER
+# 9. RUNNER
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v91.0 (Weighted Hybrid) STARTING...")
+    logger.info("🚀 Neural Scout v91.1 (Weighted Hybrid Fixed) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
