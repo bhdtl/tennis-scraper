@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.0 - Deep Score Verification)...")
+log("🔌 Initialisiere Neural Scout (V84.0 - Dynamic Header Mapping)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -58,13 +58,12 @@ def normalize_text(text):
 def clean_player_name(raw): 
     if not raw: return ""
     raw = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'\(.*?\)', '', raw) # Remove (FRA), (USA) etc
+    raw = re.sub(r'\(.*?\)', '', raw) 
     return raw.replace('|', '').strip()
 
 def get_last_name(full_name):
     """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
-    # Entferne Initiale wie "A." am Anfang, aber behalte Namen wie "De Minaur"
     clean = re.sub(r'^\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
     return parts[-1].lower() if parts else ""
@@ -90,7 +89,7 @@ async def call_gemini(prompt):
         except: return None
 
 # =================================================================
-# CORE LOGIC
+# CORE LOGIC & DATA FETCHING
 # =================================================================
 async def fetch_elo_ratings():
     log("📊 Lade Surface-Specific Elo Ratings...")
@@ -142,7 +141,7 @@ async def get_db_data():
     except: return [], {}, [], []
 
 # =================================================================
-# QUANTITATIVE FAIR ODDS ENGINE V81.0
+# ODDS ENGINE
 # =================================================================
 def sigmoid(x, k=1.0):
     return 1 / (1 + math.exp(-k * x))
@@ -150,22 +149,14 @@ def sigmoid(x, k=1.0):
 def get_dynamic_court_weights(bsi, surface):
     bsi = float(bsi)
     w = {'serve': 1.0, 'power': 1.0, 'rally': 1.0, 'movement': 1.0, 'mental': 0.8, 'volley': 0.5}
-
     if bsi >= 7.0: 
         speed_factor = (bsi - 5.0) * 0.35 
-        w['serve'] += speed_factor * 1.5
-        w['power'] += speed_factor * 1.2
-        w['volley'] += speed_factor * 1.0 
-        w['rally'] -= speed_factor * 0.5 
-        w['movement'] -= speed_factor * 0.3 
-
+        w['serve'] += speed_factor * 1.5; w['power'] += speed_factor * 1.2; w['volley'] += speed_factor * 1.0 
+        w['rally'] -= speed_factor * 0.5; w['movement'] -= speed_factor * 0.3 
     elif bsi <= 4.0: 
         slow_factor = (5.0 - bsi) * 0.4
-        w['serve'] -= slow_factor * 0.8
-        w['power'] -= slow_factor * 0.5 
-        w['rally'] += slow_factor * 1.2 
-        w['movement'] += slow_factor * 1.5 
-        w['volley'] -= slow_factor * 0.5
+        w['serve'] -= slow_factor * 0.8; w['power'] -= slow_factor * 0.5 
+        w['rally'] += slow_factor * 1.2; w['movement'] += slow_factor * 1.5; w['volley'] -= slow_factor * 0.5
     return w
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
@@ -221,34 +212,33 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# ROBUST RESULT VERIFICATION V83.0 (Score Logic Fix)
+#  VETERAN RESULT VERIFICATION V84.0 (Dynamic Header Mapping)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Score-Based Logic)...")
+    log("🏆 Checking for Match Results (Header-Aware Mapping)...")
     
-    # 1. Fetch pending matches
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
-    # Filter: Nur Matches, die wahrscheinlich vorbei sind (>3h seit Start)
     safe_matches = []
     now_utc = datetime.now(timezone.utc)
     for pm in pending_matches:
         try:
             created_at = datetime.fromisoformat(pm['match_time'].replace('Z', '+00:00'))
-            if (now_utc - created_at).total_seconds() > (3 * 3600): # 3 Stunden Puffer
+            # Wenn Match vor mehr als 2.5 Stunden war, sollte ein Ergebnis da sein
+            if (now_utc - created_at).total_seconds() > (2.5 * 3600): 
                 safe_matches.append(pm)
         except: continue
 
     if not safe_matches:
-        log("   ✅ No pending matches ready for result check.")
+        log("   ✅ No matches ready for result verification.")
         return
 
-    log(f"   🔎 Scanning for {len(safe_matches)} pending results...")
+    log(f"   🔎 Scanning results for {len(safe_matches)} matches...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        # Scan 4 days back to cover timezone diffs
-        for day_offset in range(4): 
+        # Scan 3 days back to be safe
+        for day_offset in range(3): 
             target_date = datetime.now() - timedelta(days=day_offset)
             page = await browser.new_page()
             
@@ -258,144 +248,170 @@ async def update_past_results():
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
                 
+                # Wir suchen die Haupt-Ergebnistabelle
                 tables = soup.find_all('table', class_='result')
                 
                 for table in tables:
                     rows = table.find_all('tr')
                     
+                    # -------------------------------------------------------------
+                    # STATE MACHINE: Header Tracking
+                    # -------------------------------------------------------------
+                    # Wir müssen wissen, an welchem Index 'S' (Sets) steht.
+                    # Default ist Index 2 (0=Flag/Info, 1=Name, 2=S), aber das kann variieren.
+                    
+                    current_s_index = -1 
+                    
                     i = 0
-                    while i < len(rows) - 1:
+                    while i < len(rows):
+                        row = rows[i]
+                        
+                        # 1. HEADER DETECTION
+                        # TennisExplorer hat 'class="head"' für Turnier-Header
+                        # Hier stehen die Spalten: "S | 1 | 2 | 3..."
+                        if 'head' in row.get('class', []):
+                            cols = row.find_all('td')
+                            found_s = False
+                            for idx, cell in enumerate(cols):
+                                txt = cell.get_text(strip=True)
+                                if txt == 'S':
+                                    current_s_index = idx
+                                    found_s = True
+                                    # log(f"      📍 Header Found: 'S' at column {idx}")
+                                    break
+                            if not found_s:
+                                # Fallback für mobile view oder komische Tabellen
+                                current_s_index = -1
+                            i += 1
+                            continue
+
+                        # Skip Datum/Flags/Werbung
+                        if 'flags' in str(row) or 'bott' in str(row):
+                            i += 1
+                            continue
+                        
+                        # Wenn wir keine Spieler-Paar haben (benötigt i+1), weiter
+                        if i + 1 >= len(rows): break
+                        
                         row1 = rows[i]
                         row2 = rows[i+1]
-                        i += 1 
-
-                        # Skip Header/Ads
-                        if 'flags' in str(row1) or 'head' in str(row1) or 'bott' in str(row1): continue
                         
-                        cols1 = row1.find_all('td')
-                        cols2 = row2.find_all('td')
-                        if len(cols1) < 2 or len(cols2) < 2: continue
-
-                        # TEXT EXTRACTION
+                        # 2. MATCH MATCHING
                         p1_text = normalize_text(row1.get_text(separator=" ")).lower()
                         p2_text = normalize_text(row2.get_text(separator=" ")).lower()
                         
-                        # MATCHING
-                        matched_db_entry = None
+                        matched_entry = None
                         for pm in safe_matches:
-                            last1 = get_last_name(pm['player1_name'])
-                            last2 = get_last_name(pm['player2_name'])
+                            l1 = get_last_name(pm['player1_name'])
+                            l2 = get_last_name(pm['player2_name'])
                             
-                            # Check strict contains
-                            found_p1 = (last1 in p1_text)
-                            found_p2 = (last2 in p2_text)
-                            found_p1_rev = (last2 in p1_text)
-                            found_p2_rev = (last1 in p2_text)
-
-                            if (found_p1 and found_p2) or (found_p1_rev and found_p2_rev):
-                                matched_db_entry = pm
+                            # Double check direction
+                            match_fwd = (l1 in p1_text and l2 in p2_text)
+                            match_rev = (l2 in p1_text and l1 in p2_text)
+                            
+                            if match_fwd or match_rev:
+                                matched_entry = pm
                                 break
                         
-                        if matched_db_entry:
-                            log(f"   🎯 Match gefunden im HTML: {matched_db_entry['player1_name']} vs {matched_db_entry['player2_name']}")
+                        if matched_entry:
+                            i += 2 # Skip these two rows next iteration
                             
-                            try:
-                                # DEEP SCORE ANALYSIS
-                                # Wir suchen alle Zahlen in der Reihe. 
-                                # Ein Set ist gewöhnlich 6 oder 7 (oder <6 bei Aufgabe).
-                                # Wir zählen, wer mehr Sets gewonnen hat.
-                                
-                                def extract_scores_from_row(row_elem):
-                                    # Hole nur Text aus TDs, die keine Namen sind
-                                    raw_nums = []
-                                    for td in row_elem.find_all('td'):
-                                        txt = td.get_text(strip=True)
-                                        # Namen filtern (Zahlen sind kurz, meist < 2 Zeichen, außer Tiebreak 7-6)
-                                        if txt.isdigit():
-                                            val = int(txt)
-                                            # Filter: Keine Quoten (die sind meist floats oder > 20)
-                                            if val <= 7: raw_nums.append(val)
-                                    return raw_nums
-
-                                scores1 = extract_scores_from_row(row1)
-                                scores2 = extract_scores_from_row(row2)
-
-                                # Calculate Sets Won
-                                # Wir vergleichen Spalte für Spalte der extrahierten Zahlen (rückwärts ist oft sicherer, aber vorwärts geht auch)
-                                # Ignoriere die erste Zahl, wenn sie sehr klein ist (Sets Score), oder berechne sie selbst.
-                                
-                                p1_sets = 0
-                                p2_sets = 0
-                                
-                                # Logik: Wir vergleichen die gefundenen Scores (6, 4) vs (4, 6)
-                                # Ignoriere Indizes wo beide 0 sind oder unplausibel.
-                                limit = min(len(scores1), len(scores2))
-                                
-                                # Wir nehmen die letzten N zahlen, da diese die Sets sind.
-                                # Ein Match hat max 5 Sets.
-                                relevant_s1 = scores1[-limit:] if limit > 0 else []
-                                relevant_s2 = scores2[-limit:] if limit > 0 else []
-
-                                for k in range(limit):
-                                    val1 = relevant_s1[k]
-                                    val2 = relevant_s2[k]
+                            # 3. EXTRACTION STRATEGY
+                            # Wenn wir einen gültigen Header Index haben, nutzen wir ihn.
+                            # Sonst Fallback auf "Score Counting".
+                            
+                            winner = None
+                            
+                            cols1 = row1.find_all('td')
+                            cols2 = row2.find_all('td')
+                            
+                            # A) HEADER MAPPING STRATEGY (The Precise Way)
+                            if current_s_index != -1 and len(cols1) > current_s_index and len(cols2) > current_s_index:
+                                try:
+                                    # "S" column content (usually "2", "0", "3", "1" etc.)
+                                    s1_raw = cols1[current_s_index].get_text(strip=True)
+                                    s2_raw = cols2[current_s_index].get_text(strip=True)
                                     
-                                    # Set Logic: Wer hat 6 oder 7?
-                                    if val1 > val2 and (val1 >= 6 or (val1 >= 4 and "ret" in p2_text)): 
-                                        p1_sets += 1
-                                    elif val2 > val1 and (val2 >= 6 or (val2 >= 4 and "ret" in p1_text)):
-                                        p2_sets += 1
+                                    if s1_raw.isdigit() and s2_raw.isdigit():
+                                        s1 = int(s1_raw)
+                                        s2 = int(s2_raw)
+                                        
+                                        if s1 > s2:
+                                            # Row 1 wins
+                                            winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p1_text else matched_entry['player2_name']
+                                        elif s2 > s1:
+                                            # Row 2 wins
+                                            winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p2_text else matched_entry['player2_name']
+                                            
+                                        if winner:
+                                            log(f"   🎯 RESULT (Header-Map): {winner} won (Score: {s1}-{s2})")
+                                except: pass
 
-                                # Check Retirement explicitly if score is weird
-                                is_ret = "ret." in p1_text or "ret." in p2_text or "wo." in p1_text
+                            # B) FALLBACK: DEEP SCORE SCAN (The Bruteforce Way)
+                            # Falls Header Mapping fehlschlug (z.B. Index falsch oder leer), zählen wir die Sätze manuell.
+                            if not winner:
+                                try:
+                                    def get_sets(r_elem):
+                                        cnt = 0
+                                        # Suche nach TDs mit Zahlen >= 6 (Gewinnsätze) oder Tiebreaks
+                                        # Aber Vorsicht: Die "S" Spalte hat kleine zahlen. Die Satz-Spalten große (6, 7).
+                                        # Wir zählen: Wie viele Sätze hat der Spieler gewonnen?
+                                        vals = []
+                                        for c in r_elem.find_all('td'):
+                                            t = c.get_text(strip=True)
+                                            if t.isdigit(): vals.append(int(t))
+                                        
+                                        # Heuristik: Letzte Werte in der Reihe sind meist die Sätze.
+                                        # Wir brauchen den direkten Vergleich Spalte für Spalte.
+                                        return vals
 
-                                winner = None
-                                
-                                # Decision
-                                if p1_sets > p2_sets:
-                                    # Row 1 Won
-                                    if get_last_name(matched_db_entry['player1_name']) in p1_text:
-                                        winner = matched_db_entry['player1_name']
-                                    else: winner = matched_db_entry['player2_name']
-                                elif p2_sets > p1_sets:
-                                    # Row 2 Won
-                                    if get_last_name(matched_db_entry['player1_name']) in p2_text:
-                                        winner = matched_db_entry['player1_name']
-                                    else: winner = matched_db_entry['player2_name']
-                                
-                                # Fallback: Simple "Bold" check (Winner is often bolded in some views) or 'S' column check
-                                if not winner:
-                                    # Try finding the explicit 'S' column again but looser
-                                    # Usually the first single digit number in the row
-                                    def find_set_score(sc_list):
-                                        for x in sc_list:
-                                            if x in [0,1,2,3]: return x # Grand Slams up to 3
-                                        return 0
+                                    v1 = get_sets(row1)
+                                    v2 = get_sets(row2)
                                     
-                                    s1_direct = find_set_score(scores1)
-                                    s2_direct = find_set_score(scores2)
+                                    # Normalerweise: Score ist die Zahl ganz links (S), Sätze rechts.
+                                    # Wenn wir Score Mapping oben verpasst haben, schauen wir ob eine "kleine Zahl" (0-3) am Anfang steht.
                                     
-                                    if s1_direct > s2_direct:
-                                        if get_last_name(matched_db_entry['player1_name']) in p1_text: winner = matched_db_entry['player1_name']
-                                        else: winner = matched_db_entry['player2_name']
-                                    elif s2_direct > s1_direct:
-                                        if get_last_name(matched_db_entry['player1_name']) in p2_text: winner = matched_db_entry['player1_name']
-                                        else: winner = matched_db_entry['player2_name']
+                                    # Let's simple check who won more sets based on common logic (6>4)
+                                    sets_p1 = 0
+                                    sets_p2 = 0
+                                    min_len = min(len(v1), len(v2))
+                                    # Iterate backwards (sets are at the end)
+                                    for k in range(1, min_len + 1):
+                                        val1 = v1[-k]
+                                        val2 = v2[-k]
+                                        # Skip total score if it looks like one (small num < 4 while others are > 5)
+                                        if val1 < 4 and val2 < 4 and k == min_len: continue 
 
-                                if winner:
-                                    log(f"   ✅ RESULT CONFIRMED: {winner} won.")
-                                    supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_db_entry['id']).execute()
-                                    safe_matches = [x for x in safe_matches if x['id'] != matched_db_entry['id']]
-                                    i += 1
-                                else:
-                                    log(f"   ⚠️ Ambiguous score for {matched_db_entry['player1_name']}: {scores1} vs {scores2}")
+                                        if val1 > val2: sets_p1 += 1
+                                        elif val2 > val1: sets_p2 += 1
+                                    
+                                    if sets_p1 > sets_p2:
+                                        winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p1_text else matched_entry['player2_name']
+                                    elif sets_p2 > sets_p1:
+                                        winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p2_text else matched_entry['player2_name']
+                                except: pass
 
-                            except Exception as ex:
-                                log(f"   ⚠️ Score Parse Error: {ex}")
+                            # C) RETIREMENT CHECK
+                            if not winner and ("ret." in p1_text or "ret." in p2_text):
+                                # The one NOT retiring wins
+                                if "ret." in p2_text: 
+                                    winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p1_text else matched_entry['player2_name']
+                                elif "ret." in p1_text:
+                                    winner = matched_entry['player1_name'] if get_last_name(matched_entry['player1_name']) in p2_text else matched_entry['player2_name']
+
+                            # EXECUTE UPDATE
+                            if winner:
+                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_entry['id']).execute()
+                                # Remove from safe_matches list
+                                safe_matches = [x for x in safe_matches if x['id'] != matched_entry['id']]
+                            
+                        else:
+                            i += 1 # No match, next row
 
             except Exception as e:
-                log(f"   ❌ Page Loop Error: {e}")
+                log(f"   ❌ Page Error: {e}")
                 await page.close()
+            
             await page.close()
         await browser.close()
 
@@ -512,7 +528,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v83.0 Starting...")
+    log(f"🚀 Neural Scout v84.0 Starting...")
     
     await update_past_results()
     
@@ -540,7 +556,6 @@ async def run_pipeline():
                     m_odds1 = m['odds1']; m_odds2 = m['odds2']
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                     
-                    # DB Logic (Update or Insert)
                     existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                     
                     match_exists = False
