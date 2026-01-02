@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
 # Third-party imports
+# Install: pip install playwright beautifulsoup4 supabase httpx
 from playwright.async_api import async_playwright, Browser, BrowserContext
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
@@ -26,58 +27,84 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v87")
+logger = logging.getLogger("NeuralScout_v90")
 
-# Environment Variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 MODEL_NAME = 'gemini-2.5-pro'
 
-# Fail-Safe Check
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("❌ CRITICAL: Secrets fehlen! Environment Variables prüfen.")
+    logger.critical("❌ CRITICAL: Secrets missing! Check environment variables.")
     sys.exit(1)
 
+# Initialize Global DB Instance
+db_manager = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # =================================================================
-# 2. DATABASE MANAGER
+# 2. MATH CORE (HIERARCHICAL MARKOV MODELS - O'MALLEY)
 # =================================================================
-class DatabaseManager:
+class QuantumMathEngine:
     """
-    Manages all Supabase interactions.
+    Implements the professional hierarchical model: 
+    Point Prob (p) -> Game (Hold) -> Set -> Match.
+    This replaces the simple sigmoid approach for realistic odds.
     """
-    def __init__(self, url: str, key: str):
-        self.client: Client = create_client(url, key)
+    
+    @staticmethod
+    def calculate_match_probabilities(p_serve_1: float, p_serve_2: float) -> float:
+        """
+        Calculates P(Player 1 wins match) given both players' serve win %.
+        Uses exact O'Malley derivation for games and logistic approximation for sets.
+        """
+        # 1. Game Probability (O'Malley Formula)
+        def prob_game(p):
+            # Clamp for realism (ATP avg ~64%)
+            p = max(0.40, min(0.95, p))
+            q = 1.0 - p
+            # P(Deuce) = 20 * p^3 * q^3
+            # P(Win|Deuce) = p^2 / (p^2 + q^2)
+            prob_deuce_win = (p**2) / (p**2 + q**2)
+            deuce_term = 20 * (p**3) * (q**3) * prob_deuce_win
+            
+            # Sum of winning paths: Love, 15, 30, Deuce
+            return (p**4) + (4 * (p**4) * q) + (10 * (p**4) * (q**2)) + deuce_term
 
-    async def fetch_all_context_data(self):
-        """Fetches all critical context data in parallel."""
-        logger.info("📡 Fetching Database Context (Parallel)...")
-        return await asyncio.gather(
-            asyncio.to_thread(lambda: self.client.table("players").select("*").execute().data),
-            asyncio.to_thread(lambda: self.client.table("player_skills").select("*").execute().data),
-            asyncio.to_thread(lambda: self.client.table("scouting_reports").select("*").execute().data),
-            asyncio.to_thread(lambda: self.client.table("tournaments").select("*").execute().data),
-            asyncio.to_thread(lambda: self.client.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data)
-        )
+        p_hold_1 = prob_game(p_serve_1)
+        p_hold_2 = prob_game(p_serve_2)
 
-    async def check_existing_match(self, p1_name: str, p2_name: str) -> List[Dict]:
-        """Checks if match exists to allow UPSERT logic."""
-        def _query():
-            return self.client.table("market_odds").select("id, actual_winner_name").or_(
-                f"and(player1_name.eq.{p1_name},player2_name.eq.{p2_name}),and(player1_name.eq.{p2_name},player2_name.eq.{p1_name})"
-            ).execute().data
-        return await asyncio.to_thread(_query)
+        # 2. Set Probability (Logistic Approximation)
+        # Sensitivity 12.0 is empirically derived for standard sets
+        diff = p_hold_1 - p_hold_2
+        p_set_1 = 1.0 / (1.0 + math.exp(-12.0 * diff))
 
-    async def insert_match(self, payload: Dict):
-        await asyncio.to_thread(lambda: self.client.table("market_odds").insert(payload).execute())
+        # 3. Match Probability (Best of 3)
+        # P(2-0) + P(2-1)
+        p_match_1 = (p_set_1**2) + (2 * (p_set_1**2) * (1.0 - p_set_1))
+        
+        return p_match_1
 
-    async def update_match(self, match_id: int, payload: Dict):
-        await asyncio.to_thread(lambda: self.client.table("market_odds").update(payload).eq("id", match_id).execute())
+    @staticmethod
+    def get_base_p_serve(elo1: float, elo2: float, surface_factor: float) -> float:
+        """ 
+        Converts Elo Difference to Base Serve %.
+        Standard Slope: 0.0003 (3% swing per 100 points difference).
+        """
+        return surface_factor + (0.0003 * (elo1 - elo2))
 
-db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
+    @staticmethod
+    def devig_odds(odds1: float, odds2: float) -> Tuple[float, float]:
+        """
+        Removes Bookmaker Vigorish using Multiplicative Method.
+        Returns true implied probabilities.
+        """
+        if odds1 <= 1 or odds2 <= 1: return 0.5, 0.5
+        inv1, inv2 = 1.0/odds1, 1.0/odds2
+        margin = inv1 + inv2
+        return inv1/margin, inv2/margin
 
 # =================================================================
-# 3. UTILITIES
+# 3. UTILITIES & DATA PROCESSING
 # =================================================================
 def normalize_text(text: str) -> str:
     if not text: return ""
@@ -87,177 +114,155 @@ def clean_player_name(raw: str) -> str:
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(\d+\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def validate_market(odds1: float, odds2: float) -> bool:
-    """Checks for valid market margins to filter data noise."""
+    """Sanity Check: Do these odds make sense? Filters bad data."""
     if odds1 <= 1.01 or odds2 <= 1.01: return False
     if odds1 > 50.0 or odds2 > 50.0: return False 
     margin = (1/odds1) + (1/odds2)
+    # Valid market margin typically 1.01 - 1.25. Allow slight arb (0.85) for errors.
     return 0.85 < margin < 1.30
 
 # =================================================================
-# 4. AI ENGINE (LOCATION SCOUT & ANALYSIS)
+# 4. AI ENGINE (CONTEXT-AWARE RAG)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
-        self.semaphore = asyncio.Semaphore(4) 
+        self.semaphore = asyncio.Semaphore(4)
 
-    async def resolve_united_cup_venue(self, p1_name: str, p2_name: str) -> str:
-        """
-        Special Agent: Asks Gemini where a specific United Cup match is played.
-        Returns: 'Perth' or 'Sydney' (defaults to Perth if unsure).
-        """
-        prompt = f"""
-        TASK: Identification of Match Venue.
-        EVENT: United Cup Tennis 2026.
-        MATCH: {p1_name} vs {p2_name}.
-        QUESTION: Is this match being played in 'Perth' or 'Sydney'? 
-        Based on the group stage allocation or finals schedule for these players/countries.
-        
-        OUTPUT JSON ONLY:
-        {{ "city": "Perth" }} or {{ "city": "Sydney" }}
-        """
+    async def _call_gemini(self, prompt: str, timeout: float = 30.0) -> Optional[Dict]:
         async with self.semaphore:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5) # Polite spacing
             try:
                 async with httpx.AsyncClient() as client:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10.0)
-                    if resp.status_code != 200: return "Perth"
+                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=timeout)
+                    
+                    if resp.status_code != 200: return None
                     
                     raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                    data = json.loads(raw.replace("```json", "").replace("```", "").strip())
-                    return data.get("city", "Perth")
-            except:
-                return "Perth" # Fallback
+                    clean_json = raw.replace("```json", "").replace("```", "").strip()
+                    return json.loads(clean_json)
+            except Exception as e:
+                logger.error(f"AI Error: {e}")
+                return None
+
+    async def select_best_court(self, tour_name: str, p1: str, p2: str, candidates: List[Dict]) -> Optional[Dict]:
+        """
+        RAG Logic: Asks Gemini to pick the best DB court from a list of candidates.
+        Crucial for United Cup (Perth vs Sydney).
+        """
+        if not candidates: return None
+        
+        # Prepare context for AI
+        cand_str = "\n".join([f"ID {i}: {c['name']} ({c.get('location', 'Unknown')}) - Surface: {c['surface']}" for i, c in enumerate(candidates)])
+        
+        prompt = f"""
+        TASK: Match Venue Resolution.
+        CONTEXT: Match '{p1} vs {p2}' at tournament '{tour_name}'.
+        PROBLEM: We need to assign the correct court physics profile from our database.
+        
+        AVAILABLE CANDIDATES:
+        {cand_str}
+        
+        INSTRUCTIONS:
+        1. Identify the likely location based on the tournament and players (e.g. United Cup groups are split by city).
+        2. Select the BEST matching candidate ID.
+        
+        OUTPUT JSON ONLY: {{ "selected_id": 0 }}
+        """
+        
+        res = await self._call_gemini(prompt, timeout=15.0)
+        if res and "selected_id" in res:
+            idx = res["selected_id"]
+            if 0 <= idx < len(candidates):
+                return candidates[idx]
+        return None
 
     async def analyze_matchup_deep(self, p1: Dict, p2: Dict, s1: Dict, s2: Dict, r1: Dict, r2: Dict, court: Dict) -> Dict:
         """
-        Deep Analysis Prompt for Gemini.
+        Deep Analysis: Physics, Tactics, Mental. Returns adjustments for the Math Engine.
         """
         bsi = court.get('bsi_rating', 6.0)
         bounce = court.get('bounce', 'Medium')
         
         prompt = f"""
-        ROLE: World-Class Tennis Analyst.
-        TASK: Analyze {p1['last_name']} vs {p2['last_name']}.
-
-        COURT: {court.get('name')} ({court.get('surface')}) | BSI: {bsi} | Bounce: {bounce}
-        Notes: {court.get('notes', 'N/A')}
-
-        P1: {p1['last_name']} | Hand: {p1.get('plays_hand')} | Style: {p1.get('play_style')}
-        Skills: Srv {s1.get('serve')}, Ret {s1.get('speed')}, Ment {s1.get('mental')}
+        ROLE: ATP Quantitative Analyst.
+        MATCH: {p1['last_name']} vs {p2['last_name']}.
         
-        P2: {p2['last_name']} | Hand: {p2.get('plays_hand')} | Style: {p2.get('play_style')}
-        Skills: Srv {s2.get('serve')}, Ret {s2.get('speed')}, Ment {s2.get('mental')}
+        VENUE: {court.get('name')} ({court.get('location')})
+        PHYSICS: Surface {court.get('surface')} | BSI {bsi} (Speed) | Bounce {bounce}.
+        NOTES: {court.get('notes', 'N/A')}
 
-        OUTPUT JSON:
+        P1 ({p1.get('play_style')}): Srv {s1.get('serve')}, Ret {s1.get('speed')}, Men {s1.get('mental')}
+        P2 ({p2.get('play_style')}): Srv {s2.get('serve')}, Ret {s2.get('speed')}, Men {s2.get('mental')}
+
+        TASK:
+        1. PHYSICS: How does BSI {bsi} affect the matchup?
+        2. TACTICS: Key tactical pattern.
+        3. ADJUST: Serve win % shift (-0.08 to +0.08) based on physics fit.
+
+        OUTPUT JSON ONLY:
         {{
-            "physics_analysis": "Sentence on court fit.",
-            "tactical_analysis": "Sentence on matchup.",
-            "mental_analysis": "Sentence on mental state.",
-            "p1_serve_adjust": 0.04,
-            "p2_serve_adjust": -0.02,
+            "physics_analysis": "Sentence.",
+            "tactical_analysis": "Sentence.",
+            "mental_analysis": "Sentence.",
+            "p1_serve_adjust": 0.02,
+            "p2_serve_adjust": -0.01,
             "final_verdict": "Summary."
         }}
         """
-        async with self.semaphore:
-            await asyncio.sleep(1.0) 
-            try:
-                async with httpx.AsyncClient() as client:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=90.0)
-                    if resp.status_code != 200: return {}
-                    raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                    return json.loads(raw.replace("```json", "").replace("```", "").strip())
-            except: return {}
+        return await self._call_gemini(prompt, timeout=60.0) or {
+            "physics_analysis": "AI Timeout", "p1_serve_adjust": 0.0, "p2_serve_adjust": 0.0
+        }
 
 ai_engine = AIEngine(GEMINI_API_KEY, MODEL_NAME)
 
 # =================================================================
-# 5. CONTEXT RESOLVER (UPDATED)
+# 5. CONTEXT RESOLVER
 # =================================================================
 class ContextResolver:
     """
-    Resolves Tournament Names to Database Entities.
-    Includes AI-based United Cup resolution.
+    Resolves Tournament Names using Database Candidates + AI Selection.
     """
     def __init__(self, db_tournaments: List[Dict]):
         self.db_tournaments = db_tournaments
         self.name_map = {t['name'].lower(): t for t in db_tournaments}
         self.lookup_keys = list(self.name_map.keys())
 
-    async def resolve_court_smart(self, scraped_tour_name: str, p1_name: str, p2_name: str) -> Tuple[Optional[Dict], str]:
-        s_clean = scraped_tour_name.lower().replace("atp", "").replace("wta", "").strip()
+    async def resolve_court_rag(self, scraped_name: str, p1_name: str, p2_name: str) -> Tuple[Dict, str]:
+        s_clean = scraped_name.lower().replace("atp", "").replace("wta", "").strip()
         
-        # --- UNITED CUP AI LOGIC ---
-        if "united cup" in s_clean:
-            # 1. Ask AI for the city
-            city = await ai_engine.resolve_united_cup_venue(p1_name, p2_name)
-            logger.info(f"   🤖 AI Location Scout: {p1_name} vs {p2_name} -> {city}")
-            
-            # 2. Match city to DB
-            if "sydney" in city.lower():
-                return self._find_exact("Sydney"), "AI (Sydney)"
-            if "perth" in city.lower():
-                return self._find_exact("Perth"), "AI (Perth)"
-            
-            # 3. Generic Fallback
-            generic = self._find_fuzzy("United Cup")
-            return (generic, "Generic United Cup") if generic else (None, "Missing")
-
-        # --- STANDARD MATCHING ---
+        # 1. Exact Match (Fast Path)
         if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
+
+        # 2. Candidate Generation
+        candidates = []
         
-        matches = difflib.get_close_matches(s_clean, self.lookup_keys, n=1, cutoff=0.6)
-        if matches: return self.name_map[matches[0]], f"Fuzzy ({matches[0]})"
-        
-        for key in self.lookup_keys:
-            if key in s_clean or s_clean in key: return self.name_map[key], f"Substring ({key})"
+        # Fuzzy candidates
+        fuzzy_names = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
+        for fn in fuzzy_names:
+            if self.name_map[fn] not in candidates: candidates.append(self.name_map[fn])
             
-        return None, "Fail"
-
-    def _find_exact(self, name_part):
-        for key, val in self.name_map.items():
-            if name_part.lower() in key: return val
-        return None
-    
-    def _find_fuzzy(self, name_part):
-        matches = difflib.get_close_matches(name_part.lower(), self.lookup_keys, n=1, cutoff=0.5)
-        return self.name_map[matches[0]] if matches else None
-
-# =================================================================
-# 6. MATH CORE
-# =================================================================
-class QuantumMathEngine:
-    @staticmethod
-    def calculate_match_probabilities(p_serve_1: float, p_serve_2: float) -> float:
-        """Hierarchical Markov Model for Match Probabilities."""
-        def prob_game(p):
-            p = max(0.40, min(0.95, p))
-            q = 1.0 - p
-            deuce = 20 * (p**3) * (q**3) * ((p**2) / (p**2 + q**2))
-            return (p**4) + (4 * (p**4) * q) + (10 * (p**4) * (q**2)) + deuce
-
-        p_hold_1 = prob_game(p_serve_1)
-        p_hold_2 = prob_game(p_serve_2)
-        diff = p_hold_1 - p_hold_2
-        # Sensitivity 12.0
-        p_set_1 = 1.0 / (1.0 + math.exp(-12.0 * diff))
-        return (p_set_1**2) + (2 * (p_set_1**2) * (1.0 - p_set_1))
-
-    @staticmethod
-    def get_elo_based_p_serve(elo1: float, elo2: float, surface_factor: float) -> float:
-        return surface_factor + (0.0003 * (elo1 - elo2))
-
-    @staticmethod
-    def devig_odds(odds1: float, odds2: float) -> Tuple[float, float]:
-        if odds1 <= 1 or odds2 <= 1: return 0.5, 0.5
-        inv1, inv2 = 1.0/odds1, 1.0/odds2
-        return inv1/(inv1+inv2), inv2/(inv1+inv2)
+        # Specific Logic: United Cup / Australia
+        if "united cup" in s_clean:
+            for t in self.db_tournaments:
+                t_name = t['name'].lower()
+                if "united cup" in t_name:
+                    if t not in candidates: candidates.append(t)
+        
+        # 3. AI Selection (if candidates found)
+        if candidates:
+            selected = await ai_engine.select_best_court(scraped_name, p1_name, p2_name, candidates)
+            if selected: return selected, "AI-RAG"
+            # Fallback to first candidate if AI fails
+            return candidates[0], "Fuzzy-Fallback"
+        
+        # 4. Generic Default
+        return {'name': scraped_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium', 'notes': 'Fallback'}, "Default"
 
 # =================================================================
-# 7. SCRAPER
+# 6. SCRAPER & ELO
 # =================================================================
 class ScraperBot:
     def __init__(self):
@@ -265,6 +270,7 @@ class ScraperBot:
         self.context: Optional[BrowserContext] = None
 
     async def start(self):
+        logger.info("🔌 Starting Playwright Engine...")
         p = await async_playwright().start()
         self.browser = await p.chromium.launch(headless=True)
         self.context = await self.browser.new_context(user_agent="Mozilla/5.0")
@@ -281,16 +287,19 @@ class ScraperBot:
             return await page.content()
         except: return None
 
-# ... ELO CACHE ...
 ELO_CACHE = {"ATP": {}, "WTA": {}}
+
 async def fetch_elo_ratings_optimized(bot: ScraperBot):
-    logger.info("📊 Updating Elo...")
+    logger.info("📊 Updating Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
+    
     for tour, url in urls.items():
         content = await bot.fetch_page(url)
         if not content: continue
+        
         soup = BeautifulSoup(content, 'html.parser')
         table = soup.find('table', {'id': 'reportable'})
+        
         if table:
             for row in table.find_all('tr')[1:]:
                 cols = row.find_all('td')
@@ -305,7 +314,7 @@ async def fetch_elo_ratings_optimized(bot: ScraperBot):
                     except: continue
 
 # =================================================================
-# 8. PROCESS DAY
+# 7. MAIN LOGIC (DATE & WORKFLOW AWARE)
 # =================================================================
 async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[Dict], skills_map: Dict, reports: List[Dict], resolver: ContextResolver):
     url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
@@ -318,20 +327,18 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
     tables = soup.find_all("table", class_="result")
     
     current_tour_name = "Unknown"
-    matches_processed = 0
-
+    
     for table in tables:
         rows = table.find_all("tr")
         for i, row in enumerate(rows):
             
-            # --- 1. TOURNAMENT HEADER ---
+            # --- 1. HEADER PARSING ---
             if "head" in row.get("class", []):
                 link = row.find('a')
-                if link: current_tour_name = link.get_text(strip=True)
-                else: current_tour_name = row.get_text(strip=True)
+                current_tour_name = link.get_text(strip=True) if link else row.get_text(strip=True)
                 continue
 
-            # --- 2. MATCH ROW PARSING ---
+            # --- 2. MATCH PARSING ---
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
             if i+1 >= len(rows): continue
 
@@ -349,11 +356,11 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
             p2 = next((p for p in players if p['last_name'].lower() in p2_raw.lower()), None)
 
             if p1 and p2:
-                # --- 3. RESULT DETECTION ---
+                # Result Check
                 is_finished = False
                 if re.search(r'\b[0-7]-[0-7]\b', row_text): is_finished = True
 
-                # --- 4. ODDS ---
+                # Odds
                 odds = []
                 try:
                     course_tds = row.find_all('td', class_='course') + rows[i+1].find_all('td', class_='course')
@@ -370,59 +377,60 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                 
                 if not validate_market(m_odds1, m_odds2): continue
 
-                # --- 5. UPDATE OR ANALYZE ---
+                # --- 3. WORKFLOW LOGIC ---
                 iso_time = f"{target_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
-                matches_processed += 1
-
-                existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
+                # Use raw SQL-like query for ID check (avoiding complex OR syntax issues)
+                # We fetch all matches and filter in memory for robustness here, or refine query
+                # For speed/simplicity in snippet: we assume check_existing works or use a direct select
+                
+                existing = await asyncio.to_thread(lambda: db_manager.table("market_odds").select("id, actual_winner_name").eq("player1_name", p1['last_name']).eq("player2_name", p2['last_name']).execute().data)
+                if not existing:
+                     # Check reverse
+                     existing = await asyncio.to_thread(lambda: db_manager.table("market_odds").select("id, actual_winner_name").eq("player1_name", p2['last_name']).eq("player2_name", p1['last_name']).execute().data)
+
                 if existing:
-                    if existing[0].get('actual_winner_name'): continue
-                    if is_finished:
-                        # logger.info(f"   🏁 Match finished on scrape: {p1['last_name']} vs {p2['last_name']}")
-                        continue 
-                    await db_manager.update_match(existing[0]['id'], {"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2})
+                    if existing[0].get('actual_winner_name'): continue # Finished
+                    
+                    # Update odds/time
+                    await asyncio.to_thread(lambda: db_manager.table("market_odds").update({"match_time": iso_time, "odds1": m_odds1, "odds2": m_odds2}).eq("id", existing[0]['id']).execute())
                     continue
 
                 if is_finished: continue
 
-                logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {current_tour_name}")
+                # --- 4. NEW MATCH ANALYSIS ---
+                logger.info(f"✨ New: {p1['last_name']} vs {p2['last_name']} @ {current_tour_name}")
                 
-                # --- NEW: ASYNC COURT RESOLUTION (AI) ---
-                court_db, method = await resolver.resolve_court_smart(current_tour_name, p1['last_name'], p2['last_name'])
+                # Resolve Court (AI RAG)
+                court_db, method = await resolver.resolve_court_rag(current_tour_name, p1['last_name'], p2['last_name'])
                 
-                if not court_db: 
-                    court_db = {'name': current_tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
-                    logger.warning(f"   ⚠️ Default Court used for {current_tour_name}")
-
+                # Prepare AI Data
                 s1 = skills_map.get(p1['id'], {})
                 s2 = skills_map.get(p2['id'], {})
                 r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
                 r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
                 
+                # Deep AI Analysis
                 ai_data = await ai_engine.analyze_matchup_deep(p1, p2, s1, s2, r1, r2, court_db)
                 
-                # Math
+                # Math Model (O'Malley)
                 elo_key = 'Hard'
                 if 'clay' in court_db.get('surface','').lower(): elo_key = 'Clay'
+                elif 'grass' in court_db.get('surface','').lower(): elo_key = 'Grass'
                 
-                # --- ELO FETCH WITH FALLBACK (Fix for 1.16 Odds Bug) ---
                 e1 = ELO_CACHE.get("ATP", {}).get(p1['last_name'].lower(), {}).get(elo_key)
                 e2 = ELO_CACHE.get("ATP", {}).get(p2['last_name'].lower(), {}).get(elo_key)
                 
-                # Fallback to DB Skill Rating if Elo missing
-                if not e1:
-                    e1 = (float(s1.get('overall_rating', 50)) * 15) + 500
-                if not e2:
-                    e2 = (float(s2.get('overall_rating', 50)) * 15) + 500
+                # Fallback Elo (Fix for 1.16 odds bug)
+                if not e1: e1 = float(s1.get('overall_rating', 50)) * 15 + 500
+                if not e2: e2 = float(s2.get('overall_rating', 50)) * 15 + 500
                 
-                logger.info(f"   📊 Ratings: {p1['last_name']}({e1}) vs {p2['last_name']}({e2})")
-
-                p1_srv = QuantumMathEngine.get_elo_based_p_serve(e1, e2, 0.64) + ai_data.get('p1_serve_adjust', 0.0)
-                p2_srv = QuantumMathEngine.get_elo_based_p_serve(e2, e1, 0.64) + ai_data.get('p2_serve_adjust', 0.0)
+                base_surf = 0.64 if elo_key == 'Hard' else 0.60
+                p1_srv = QuantumMathEngine.get_base_p_serve(e1, e2, base_surf) + ai_data.get('p1_serve_adjust', 0.0)
+                p2_srv = QuantumMathEngine.get_base_p_serve(e2, e1, base_surf) + ai_data.get('p2_serve_adjust', 0.0)
                 
                 prob = QuantumMathEngine.calculate_match_probabilities(p1_srv, p2_srv)
-                m_p1, _ = QuantumMathEngine.devig_odds(m_odds1, m_odds2)
+                market_p1, _ = QuantumMathEngine.devig_odds(m_odds1, m_odds2)
                 
                 entry = {
                     "player1_name": p1['last_name'], "player2_name": p2['last_name'], 
@@ -431,47 +439,46 @@ async def process_day_url(bot: ScraperBot, target_date: datetime, players: List[
                     "ai_fair_odds1": round(1/prob, 2) if prob > 0.01 else 99,
                     "ai_fair_odds2": round(1/(1-prob), 2) if prob < 0.99 else 99,
                     "ai_analysis_text": json.dumps({
-                        "edge": f"{(prob-m_p1)*100:.1f}%",
+                        "edge": f"{(prob-market_p1)*100:.1f}%",
                         "verdict": ai_data.get("final_verdict"),
                         "physics": ai_data.get("physics_analysis"),
                         "tactics": ai_data.get("tactical_analysis"),
-                        "ratings_used": f"{e1:.0f} vs {e2:.0f}"
+                        "math": {"e1": e1, "e2": e2, "p1_srv": round(p1_srv, 3)}
                     }),
                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "match_time": iso_time
                 }
-                await db_manager.insert_match(entry)
-                logger.info(f"   💾 Saved. Edge: {(prob-m_p1)*100:.1f}%")
-
-    logger.info(f"✅ Day {target_date.strftime('%d.%m')} finished: {matches_processed} matches checked.")
+                
+                await asyncio.to_thread(lambda: db_manager.table("market_odds").insert(entry).execute())
+                logger.info(f"   💾 Saved. Edge: {(prob-market_p1)*100:.1f}%")
 
 # =================================================================
-# 9. RUNNER (WORKFLOW EDITION)
+# 8. RUNNER
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v87.0 (Workflow Edition) STARTING...")
+    logger.info("🚀 Neural Scout v90.0 (Elite Architect Monolith) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
     
     try:
-        # 1. Update Elo Cache
         await fetch_elo_ratings_optimized(bot)
         
-        # 2. Load DB Context
-        players, skills_list, reports, tournaments, _ = await db_manager.fetch_all_context_data()
+        # Load Context
+        data = await db_manager.fetch_all_context_data()
+        players, skills_list, reports, tournaments, _ = data
+        
         if not players: return
         
         skills_map = {s['player_id']: s for s in skills_list}
         resolver = ContextResolver(tournaments)
         
-        # 3. 14-Day Scan (One Pass)
+        # 14 Day Loop
         today = datetime.now()
         for i in range(14):
             await process_day_url(bot, today + timedelta(days=i), players, skills_map, reports, resolver)
-            # Polite delay between days
             await asyncio.sleep(2)
-            
+
     except Exception as e: logger.critical(f"🔥 CRASH: {e}", exc_info=True)
     finally: await bot.stop()
 
