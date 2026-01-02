@@ -21,7 +21,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V82.2 - Hybrid Speed Engine)...")
+log("🔌 Initialisiere Neural Scout (V82.2 - Hybrid Power)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -116,19 +116,15 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final
 
 # =================================================================
-# SCRAPING ENGINE (V82.2 - HYBRID SPEED)
+# SCRAPING ENGINE (V82.2 - HYBRID ROBUST/PARALLEL)
 # =================================================================
 async def fetch_elo_ratings():
     log("📊 Lade ELO...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        # SPEED: Reuse context + minimal blocking
-        context = await browser.new_context()
-        await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-        
-        page = await context.new_page()
+        page = await browser.new_page()
         try:
-            await page.goto("https://tennisabstract.com/reports/atp_elo_ratings.html", timeout=45000)
+            await page.goto("https://tennisabstract.com/reports/atp_elo_ratings.html", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             rows = soup.find('table', {'id': 'reportable'}).find_all('tr')[1:]
             for row in rows:
@@ -141,28 +137,20 @@ async def fetch_elo_ratings():
         await browser.close()
 
 async def scrape_single_date(browser, target_date):
-    # SPEED: User Agent spoofing against blockers
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    # SPEED: ALLOW SCRIPTS (Crucial fix for 0 matches), BLOCK ONLY MEDIA
-    await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font"] else route.continue_())
-    
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    # HYBRID: Allow Scripts, Block Media (Speed + Compat)
+    await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font", "media"] else route.continue_())
     page = await context.new_page()
     try:
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-        
-        # SPEED: Domcontentloaded is usually enough if scripts run async
         await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-        
-        # SAFETY: Wait for table explicitly (max 5s), if not found assume empty day
+        # WAITER: Ensure table exists
         try: await page.wait_for_selector("table.result", timeout=5000)
         except: pass 
-        
         content = await page.content()
         await context.close()
         return (target_date, content)
-    except Exception as e:
-        log(f"⚠️ Fail {target_date.strftime('%d.%m')}: {e}")
+    except:
         await context.close()
         return (target_date, None)
 
@@ -172,7 +160,6 @@ def parse_matches_locally(html, p_names):
     found = []
     target_players = set(p.lower() for p in p_names)
     
-    # Surgical Parsing V82.0 Logic integrated
     for table in soup.find_all("table", class_="result"):
         rows = table.find_all("tr")
         current_tour = "Unknown"
@@ -197,7 +184,7 @@ def parse_matches_locally(html, p_names):
             if not (any(tp in p1_name.lower() for tp in target_players) and any(tp in p2_name.lower() for tp in target_players)):
                 continue
 
-            # Odds Extraction (Surgical Position)
+            # Odds Extraction (Surgical)
             o1, o2 = 0.0, 0.0
             c1 = row.find('td', class_='course')
             c2 = row2.find('td', class_='course')
@@ -248,7 +235,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
-    
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
@@ -259,78 +245,15 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    prompt = f"""
-    ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
-    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
-    """
+    prompt = f"ROLE: Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}. CTX: {surface} (BSI {bsi}). JSON: {{ \"p1_tactical_score\": 7, \"p2_tactical_score\": 5, \"ai_text\": \"...\" }}"
     res = await call_gemini(prompt)
-    d = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
+    d = {'p1_tactical_score': 5, 'p2_tactical_score': 5}
     if not res: return d
     try: return json.loads(res.replace("```json", "").replace("```", "").strip())
     except: return d
 
-async def update_past_results():
-    log("🏆 Checking for Results (Parallel Scan)...")
-    pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    if not pending: return
-
-    # Filter Time-Locked (Older than 2h)
-    safe = []
-    now = datetime.now(timezone.utc)
-    for pm in pending:
-        try:
-            ts = datetime.fromisoformat(pm['match_time'].replace('Z', '+00:00'))
-            if (now - ts).total_seconds() > 7200: safe.append(pm)
-        except: continue
-    
-    if not safe: return
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        # SPEED: Result Scan last 3 days
-        tasks = [scrape_single_date(browser, datetime.now() - timedelta(days=i)) for i in range(3)]
-        results = await asyncio.gather(*tasks)
-        await browser.close()
-
-        for date, html in results:
-            if not html: continue
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            for row in soup.find_all("tr"):
-                txt = row.get_text(strip=True).lower()
-                for pm in safe:
-                    n1 = get_last_name(pm['player1_name'])
-                    n2 = get_last_name(pm['player2_name'])
-                    
-                    if n1 in txt and n2 in txt:
-                        # V82.0 RESULT EXTRACTION LOGIC
-                        # Simple Heuristic: If we find the row in 'results' page and it has scores
-                        # Try to detect bold winner
-                        cols = row.find_all('td', class_='t-name')
-                        winner = None
-                        
-                        # 1. Bold Check (TennisExplorer standard)
-                        for col in cols:
-                            if col.find('a', style=lambda s: s and 'font-weight:bold' in s) or 'result' in row.get('class', []):
-                                # If the link is not bold, maybe row is?
-                                pass
-                        
-                        # 2. Score Check (Regex)
-                        try:
-                            # Extract scores, count sets
-                            pass # (Simplified for speed, assumes Manual Fix for corrupted data first)
-                        except: pass
-
-                        # If found:
-                        if winner:
-                            supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", pm['id']).execute()
-                            log(f"   ✅ Winner Found: {winner}")
-
 async def run_pipeline():
-    log(f"🚀 Neural Scout v82.2 (Hybrid Speed) Starting...")
-    await update_past_results() 
+    log(f"🚀 Neural Scout v82.2 (Hybrid Power) Starting...")
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
@@ -338,9 +261,9 @@ async def run_pipeline():
     current_date = datetime.now()
     p_names = [p['last_name'] for p in players]
     
+    # PARALLEL SCRAPING
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=['--disable-gpu', '--no-sandbox'])
-        # SPEED: 14 days is enough for Value Scanner
         tasks = [scrape_single_date(browser, current_date + timedelta(days=i)) for i in range(14)]
         results = await asyncio.gather(*tasks)
         await browser.close()
@@ -358,38 +281,30 @@ async def run_pipeline():
 
                 iso_time = f"{date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                 
+                # DB Check
                 existing = supabase.table("market_odds").select("*").or_(f"and(player1_name.eq.{p1['last_name']},player2_name.eq.{p2['last_name']}),and(player1_name.eq.{p2['last_name']},player2_name.eq.{p1['last_name']})").execute()
                 
                 if existing.data:
                     row = existing.data[0]
-                    # IMMUTABLE CHECK
-                    if row.get('actual_winner_name'): 
-                        continue
-                    
-                    # Update Odds & Time
-                    supabase.table("market_odds").update({
-                        "odds1": m['odds1'], "odds2": m['odds2'], "match_time": iso_time
-                    }).eq("id", row['id']).execute()
+                    if row.get('actual_winner_name'): continue # Locked
+                    supabase.table("market_odds").update({"odds1": m['odds1'], "odds2": m['odds2'], "match_time": iso_time}).eq("id", row['id']).execute()
                     log(f"🔄 Updated: {p1['last_name']} vs {p2['last_name']}")
                 else:
                     # New Entry
                     s1, s2 = all_skills.get(p1['id'], {}), all_skills.get(p2['id'], {})
-                    
-                    # AI Analysis
                     r1 = next((r for r in all_reports if r['player_id'] == p1['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2['id']), {})
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1['last_name'], p2['last_name'])
                     ai_meta = await analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surf, bsi, notes)
-
-                    prob = calculate_physics_fair_odds(p1['last_name'], p2['last_name'], s1, s2, 5.0, "Hard", ai_meta, m['odds1'], m['odds2'])
+                    
+                    prob = calculate_physics_fair_odds(p1['last_name'], p2['last_name'], s1, s2, bsi, surf, ai_meta, m['odds1'], m['odds2'])
                     
                     supabase.table("market_odds").insert({
                         "player1_name": p1['last_name'], "player2_name": p2['last_name'],
                         "tournament": m['tour'], "odds1": m['odds1'], "odds2": m['odds2'],
                         "ai_fair_odds1": round(1/prob, 2) if prob > 0.01 else 99,
                         "ai_fair_odds2": round(1/(1-prob), 2) if prob < 0.99 else 99,
-                        "ai_analysis_text": ai_meta.get('ai_text', 'Analysed'), 
-                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "ai_analysis_text": ai_meta.get('ai_text', 'Pending'), "created_at": datetime.now(timezone.utc).isoformat(),
                         "match_time": iso_time
                     }).execute()
                     log(f"💾 Saved: {p1['last_name']} vs {p2['last_name']}")
