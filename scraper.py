@@ -29,7 +29,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V92.1 - Clean Input Protocol)...")
+log("🔌 Initialisiere Neural Scout (V93.0 - Robust Recovery Mode)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -46,7 +46,7 @@ ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
 # =================================================================
-# HELPER FUNCTIONS (Sanitization & Matching)
+# HELPER FUNCTIONS
 # =================================================================
 def to_float(val, default=50.0):
     if val is None: return default
@@ -54,7 +54,6 @@ def to_float(val, default=50.0):
     except: return default
 
 def normalize_text(text): 
-    # Normalisiert Text: entfernt Akzente, lowercase
     if not text: return ""
     norm = unicodedata.normalize('NFD', text).encode('ascii', 'ignore').decode("utf-8")
     return norm.lower()
@@ -66,16 +65,9 @@ def clean_player_name(raw):
     return raw.replace('|', '').strip()
 
 def clean_tournament_name(raw):
-    """
-    Entfernt den Tabellen-Müll (S 1 2 3 H2H...) aus dem Turniernamen.
-    Input: 'United CupS12345H2HHA'
-    Output: 'United Cup'
-    """
+    """Entfernt Header-Müll wie 'S 1 2 3...'"""
     if not raw: return ""
-    # Entferne alles ab dem Muster 'S' gefolgt von Zahlen (Sets Headers)
-    # TennisExplorer Header sind oft: Tournament Name + "S 1 2 3..."
     clean = re.sub(r'S\s*\d.*', '', raw) 
-    # Falls das 'S' Pattern nicht greift, versuche H2H oder Bwin noise
     clean = re.sub(r'H2H.*', '', clean)
     return clean.strip()
 
@@ -92,21 +84,18 @@ def get_name_tokens(full_name):
     parts = clean.split()
     tokens = set()
     for p in parts:
-        if len(p) > 2 or (len(parts) == 1): 
-            tokens.add(p)
+        if len(p) > 2 or (len(parts) == 1): tokens.add(p)
     return tokens
 
 def names_match(db_name_tokens, scraped_text):
     scraped_clean = normalize_text(scraped_text)
     for token in db_name_tokens:
-        if re.search(r'\b' + re.escape(token) + r'\b', scraped_clean):
-            return True
+        if re.search(r'\b' + re.escape(token) + r'\b', scraped_clean): return True
     return False
 
 def sanitize_timestamp(dirty_ts):
     if not dirty_ts: return None
-    try:
-        return datetime.fromisoformat(dirty_ts.replace('Z', '+00:00'))
+    try: return datetime.fromisoformat(dirty_ts.replace('Z', '+00:00'))
     except:
         match = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', dirty_ts)
         if match:
@@ -140,13 +129,10 @@ async def fetch_elo_ratings():
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
-        await context.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font"] else route.continue_())
-        
         for tour, url in urls.items():
             try:
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page = await browser.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 content = await page.content()
                 soup = BeautifulSoup(content, 'html.parser')
                 table = soup.find('table', {'id': 'reportable'})
@@ -156,17 +142,14 @@ async def fetch_elo_ratings():
                         cols = row.find_all('td')
                         if len(cols) > 4:
                             name = normalize_text(cols[0].get_text(strip=True)).lower()
-                            try:
-                                ELO_CACHE[tour][name] = {
-                                    'Hard': to_float(cols[3].get_text(strip=True), 1500), 
-                                    'Clay': to_float(cols[4].get_text(strip=True), 1500), 
-                                    'Grass': to_float(cols[5].get_text(strip=True), 1500)
-                                }
-                            except: continue
-                    log(f"   ✅ {tour} Elo Ratings geladen: {len(ELO_CACHE[tour])} Spieler.")
+                            ELO_CACHE[tour][name] = {
+                                'Hard': to_float(cols[3].get_text(strip=True), 1500), 
+                                'Clay': to_float(cols[4].get_text(strip=True), 1500), 
+                                'Grass': to_float(cols[5].get_text(strip=True), 1500)
+                            }
+                    log(f"   ✅ {tour} Elo Ratings geladen.")
                 await page.close()
-            except Exception as e:
-                log(f"   ⚠️ Elo Fetch Warning ({tour}): {e}")
+            except Exception as e: log(f"   ⚠️ Elo Warning: {e}")
         await browser.close()
 
 async def get_db_data():
@@ -186,27 +169,20 @@ async def get_db_data():
                     'mental': to_float(entry.get('mental')), 'volley': to_float(entry.get('volley'))
                 }
         return players, clean_skills, reports, tournaments
-    except Exception as e:
-        log(f"❌ DB Load Error: {e}")
-        return [], {}, [], []
+    except: return [], {}, [], []
 
 # =================================================================
 # INTELLIGENT COURT RESOLUTION
 # =================================================================
 async def resolve_venue_with_ai(p1, p2, tour_name, candidates):
-    """Fragt AI, welcher Court für dieses Matchup genutzt wird."""
     cache_key = f"{tour_name}_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[cache_key]
 
-    candidates_str = "\n".join([f"- ID: {c['id']}, Name: {c['name']}, City: {c.get('city', 'Unknown')}" for c in candidates])
-    
+    candidates_str = "\n".join([f"- ID: {c['id']}, Name: {c['name']}" for c in candidates])
     prompt = f"""
-    ROLE: Tennis Data Engineer. TASK: Identify specific venue.
-    MATCH: {p1} vs {p2} | TOURNAMENT: {tour_name}
-    CANDIDATES:
-    {candidates_str}
-    INSTRUCTION: Pick the ID where this match is most likely played based on players/groups.
-    RETURN JSON: {{ "selected_id": "uuid" }}
+    TASK: Identify venue. MATCH: {p1} vs {p2} | TOUR: {tour_name}
+    CANDIDATES: {candidates_str}
+    JSON: {{ "selected_id": "uuid" }}
     """
     try:
         res = await call_gemini(prompt)
@@ -218,35 +194,28 @@ async def resolve_venue_with_ai(p1, p2, tour_name, candidates):
     except: return candidates[0]
 
 async def find_best_court_match_smart(scraped_tour_name, db_tours, p1_name, p2_name):
-    """Findet den exakten Court (beachtet Multi-Venues wie United Cup)."""
-    # 1. CLEANING: Entferne "S123..." Müll
+    # 1. Cleaning the Name to fix "United CupS123..." error
     s_clean = clean_tournament_name(scraped_tour_name)
     s_low = s_clean.lower()
     
-    # 2. Broad Search
     candidates = []
     for t in db_tours:
         db_name = t['name'].lower()
-        # Prüfen ob cleaned Name im DB-Namen ist ODER umgekehrt
         if s_low in db_name or db_name in s_low:
             candidates.append(t)
     
     selected_court = None
     if not candidates:
-        log(f"   ⚠️ Unknown Tournament: '{s_clean}' (Raw: '{scraped_tour_name}'). Using fallback.")
         surface = "Hard"
         if "clay" in s_low: surface = "Red Clay"
         elif "grass" in s_low: surface = "Grass"
         elif "indoor" in s_low: surface = "Indoor Hard"
-        return surface, 5.0, "Generic Fallback"
+        return surface, 5.0, "Fallback"
 
     elif len(candidates) == 1:
         selected_court = candidates[0]
     else:
-        # 3. AI Disambiguation (z.B. United Cup Perth vs Sydney)
-        log(f"   🤔 Ambiguous Venue for '{s_clean}' ({len(candidates)} candidates). Asking AI...")
         selected_court = await resolve_venue_with_ai(p1_name, p2_name, s_clean, candidates)
-        log(f"   🤖 AI Selected: {selected_court['name']}")
 
     bsi = to_float(selected_court.get('bsi_rating'), 5.0)
     surf = selected_court.get('surface', 'Hard')
@@ -259,7 +228,6 @@ def solve_shin_probabilities(o1, o2):
     if o1 <= 1 or o2 <= 1: return 0.5, 0.5
     ip1, ip2 = 1.0/o1, 1.0/o2
     if ip1 + ip2 <= 1.0: return ip1/(ip1+ip2), ip2/(ip1+ip2)
-    
     low, high, k = 1.0, 10.0, 1.0
     for _ in range(20):
         mid = (low + high) / 2
@@ -267,10 +235,9 @@ def solve_shin_probabilities(o1, o2):
         if abs(s - 1.0) < 1e-6: k = mid; break
         if s > 1.0: low = mid
         else: high = mid
-            
     p1, p2 = pow(ip1, k), pow(ip2, k)
     s_final = p1 + p2
-    return p1 / s_final, p2 / s_final
+    return p1/s_final, p2/s_final
 
 def sigmoid(x, k=1.0): return 1 / (1 + math.exp(-k * x))
 
@@ -338,7 +305,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# SCAPING & VERIFICATION (V92.1 Logic)
+# SCAPING & VERIFICATION (V93.0 - FIX: PERMISSIVE PARSING)
 # =================================================================
 async def scrape_single_date(browser, target_date):
     try:
@@ -361,14 +328,15 @@ def parse_matches_locally(html, p_names):
     found = []
     target_players = set(p.lower() for p in p_names)
     current_tour = "Unknown"
+    
     for table in tables:
         rows = table.find_all("tr")
         for i in range(len(rows)):
             row = rows[i]
             if "head" in row.get("class", []): 
-                # CLEAN THE TOURNAMENT NAME HERE
-                raw_tour = row.get_text(strip=True)
-                current_tour = clean_tournament_name(raw_tour)
+                # WICHTIG: Hier den Namen säubern!
+                raw_name = row.get_text(strip=True)
+                current_tour = clean_tournament_name(raw_name)
                 continue
             
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
@@ -381,31 +349,40 @@ def parse_matches_locally(html, p_names):
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
                 p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
+                
                 if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                     odds = []
+                    # ----------------------------------------------------
+                    # FIX V93.0: PERMISSIVE ODDS EXTRACTION (Regex "Staubsauger")
+                    # ----------------------------------------------------
                     try:
-                        def extract_odds(r):
-                            found_o = []
-                            for c in r.find_all('td'):
-                                txt = c.get_text(strip=True)
-                                if (re.match(r'^\d+\.\d{2}$', txt)) and 1.0 < float(txt) < 50.0:
-                                    found_o.append(float(txt))
-                            return found_o
+                        # Suche alle Zahlen wie 1.50, 1.2, 12.0 in BEIDEN Zeilen
+                        full_text = row_text + " " + normalize_text(rows[i+1].get_text(separator=' ', strip=True))
+                        nums = re.findall(r'\d+\.\d+', full_text)
                         
-                        row1_odds = extract_odds(row)
-                        row2_odds = extract_odds(rows[i+1])
-                        if row1_odds and row2_odds: odds = [row1_odds[0], row2_odds[0]]
-                        else:
-                            nums = re.findall(r'\d+\.\d{2}', row_text + " " + rows[i+1].get_text())
-                            valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
-                            if len(valid) >= 2: odds = valid[:2]
+                        # Filter: Nur logische Wettquoten (1.01 bis 50.0)
+                        valid_odds = []
+                        for n in nums:
+                            try:
+                                val = float(n)
+                                if 1.0 < val < 50.0: valid_odds.append(val)
+                            except: pass
+                        
+                        # Wir brauchen mindestens 2 Quoten
+                        if len(valid_odds) >= 2:
+                            odds = [valid_odds[0], valid_odds[1]]
                     except: pass
                     
-                    found.append({"p1": p1_raw, "p2": p2_raw, "tour": current_tour, "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0})
+                    if len(odds) >= 2:
+                        found.append({
+                            "p1": p1_raw, "p2": p2_raw, 
+                            "tour": current_tour, "time": match_time_str, 
+                            "odds1": odds[0], "odds2": odds[1]
+                        })
     return found
 
 async def update_past_results():
-    log("🏆 Checking for Results (V92 Token-Match)...")
+    log("🏆 Checking for Results (V93 Pivot-Match)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending: return
 
@@ -428,24 +405,26 @@ async def update_past_results():
                 processed = set()
                 i = 0
                 while i < len(rows) - 1:
-                    r1, r2 = rows[i], rows[i+1]
+                    r1 = rows[i]; r2 = rows[i+1]
                     if 'head' in r1.get('class', []) or 'bott' in r1.get('class', []): i+=1; continue
                     
                     t1 = normalize_text(r1.get_text(separator=" ", strip=True))
                     t2 = normalize_text(r2.get_text(separator=" ", strip=True))
                     
+                    # Pivot Search Logic
                     matched = None
                     for pm in match_list:
                         if pm['id'] in processed: continue
                         tok1 = get_name_tokens(pm['player1_name'])
                         tok2 = get_name_tokens(pm['player2_name'])
                         
-                        match_a = names_match(tok1, t1) and names_match(tok2, t2)
-                        match_b = names_match(tok2, t1) and names_match(tok1, t2)
+                        # Check Pivot (r1) then Partner (r2)
+                        p1_in_r1 = names_match(tok1, t1); p2_in_r1 = names_match(tok2, t1)
+                        p1_in_r2 = names_match(tok1, t2); p2_in_r2 = names_match(tok2, t2)
                         
-                        if match_a or match_b:
+                        if (p1_in_r1 and p2_in_r2) or (p2_in_r1 and p1_in_r2):
                             matched = pm; break
-                    
+                            
                     if matched:
                         c1 = r1.find_all('td'); c2 = r2.find_all('td')
                         winner = None
@@ -454,15 +433,17 @@ async def update_past_results():
                             for c in cols:
                                 txt = c.get_text(strip=True)
                                 if txt.isdigit():
-                                    v = int(txt)
-                                    if v <= 3: return v
+                                    val = int(txt)
+                                    if val <= 3: return val
                             return -1
                         
+                        # Permissive Set Search
                         s1 = get_sets(c1[2:]) if len(c1)>2 else get_sets(c1)
                         s2 = get_sets(c2[2:]) if len(c2)>2 else get_sets(c2)
                         
                         if s1 != -1 and s2 != -1 and s1 != s2:
                             r1_wins = s1 > s2
+                            # Identify who is in Row 1
                             tok_p1 = get_name_tokens(matched['player1_name'])
                             row1_is_p1 = names_match(tok_p1, t1)
                             
@@ -476,7 +457,7 @@ async def update_past_results():
                             elif "ret." in t1: winner = matched['player2_name'] if row1_is_p1 else matched['player1_name']
 
                         if winner:
-                            log(f"   ✅ Result: {winner} ({s1}-{s2})")
+                            log(f"   ✅ Result: {winner}")
                             supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched['id']).execute()
                             processed.add(matched['id'])
                         i+=2
@@ -499,7 +480,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     except: return d
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v92.1 (Cleaned) Starting...")
+    log(f"🚀 Neural Scout v93.0 Starting...")
     await update_past_results() 
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
