@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v91_1")
+logger = logging.getLogger("NeuralScout_v91_2")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -38,12 +38,11 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 # =================================================================
-# 2. DATABASE MANAGER (RESTORED WRAPPER CLASS)
+# 2. DATABASE MANAGER (WRAPPER CLASS)
 # =================================================================
 class DatabaseManager:
     """
     Wrapper for Supabase Client to handle async operations cleanly.
-    FIXED: Contains custom methods like fetch_all_context_data.
     """
     def __init__(self, url: str, key: str):
         self.client: Client = create_client(url, key)
@@ -73,7 +72,7 @@ class DatabaseManager:
     async def update_match(self, match_id: int, payload: Dict):
         await asyncio.to_thread(lambda: self.client.table("market_odds").update(payload).eq("id", match_id).execute())
 
-# Initialize Global DB Manager Instance (Correctly this time)
+# Initialize Global DB Manager Instance
 db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
@@ -176,11 +175,13 @@ class AIEngine:
                 async with httpx.AsyncClient() as client:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
                     resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=timeout)
-                    if resp.status_code != 200: return None
+                    if resp.status_code != 200:
+                        logger.error(f"AI API Status: {resp.status_code}")
+                        return None
                     raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
                     return json.loads(raw.replace("```json", "").replace("```", "").strip())
             except Exception as e:
-                logger.error(f"AI Error: {e}")
+                logger.error(f"AI Connection Error: {e}")
                 return None
 
     async def select_best_court(self, tour_name: str, p1: str, p2: str, candidates: List[Dict]) -> Optional[Dict]:
@@ -231,9 +232,9 @@ class AIEngine:
 
         OUTPUT JSON ONLY:
         {{
-            "tactical_score_p1": 55,  
-            "physics_score_p1": 45,   
-            "analysis_detail": "Detailed breakdown..."
+            "tactical_score_p1": 55,  // P1 has slight tactical edge
+            "physics_score_p1": 45,   // Court slightly favors P2
+            "analysis_detail": "Detailed breakdown of why P1's forehand dominates P2's backhand despite the court speed..."
         }}
         """
         return await self._call_gemini(prompt, timeout=60.0) or {
@@ -254,10 +255,8 @@ class ContextResolver:
     async def resolve_court_rag(self, scraped_name, p1_name, p2_name):
         s_clean = scraped_name.lower().replace("atp", "").replace("wta", "").strip()
         
-        # 1. Exact Match
         if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
 
-        # 2. Candidates
         candidates = []
         fuzzy = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
         for fn in fuzzy: 
@@ -267,7 +266,6 @@ class ContextResolver:
             for t in self.db_tournaments:
                 if "united cup" in t['name'].lower() and t not in candidates: candidates.append(t)
         
-        # 3. AI Selection
         if candidates:
             selected = await ai_engine.select_best_court(scraped_name, p1_name, p2_name, candidates)
             if selected: return selected, "AI-RAG"
@@ -385,7 +383,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
 
                 iso_time = f"{target_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
                 
-                # Check Existing ID using DB Manager
+                # Check Existing
                 existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
                 if existing:
@@ -409,17 +407,12 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 ai_data = await ai_engine.analyze_matchup_weighted(p1, p2, s1, s2, r1, r2, court_db)
                 
                 # Retrieve Inputs for Weights
-                # A. Tactical Score (AI 40%) -> 0-100 to 0.0-1.0
                 ai_tac_prob = ai_data.get('tactical_score_p1', 50) / 100.0
-                
-                # B. Physics Score (AI 20%)
                 ai_phy_prob = ai_data.get('physics_score_p1', 50) / 100.0
                 
-                # C. Skills (25%)
                 skill1 = to_float(s1.get('overall_rating', 50))
                 skill2 = to_float(s2.get('overall_rating', 50))
                 
-                # D. Elo (15%)
                 elo_key = 'Hard'
                 if 'clay' in court_db.get('surface','').lower(): elo_key = 'Clay'
                 elif 'grass' in court_db.get('surface','').lower(): elo_key = 'Grass'
@@ -456,13 +449,14 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 }
                 
                 await db_manager.insert_match(entry)
-                logger.info(f"   💾 Saved. Edge: {(prob-market_p1)*100:.1f}%")
+                # FIXED: Correct variable name prob_final
+                logger.info(f"   💾 Saved. Edge: {(prob_final-market_p1)*100:.1f}%")
 
 # =================================================================
 # 9. RUNNER
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v91.1 (Weighted Hybrid Fixed) STARTING...")
+    logger.info("🚀 Neural Scout v91.2 (Weighted Hybrid Fixed) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
