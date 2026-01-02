@@ -7,8 +7,6 @@ import unicodedata
 import math
 import logging
 import sys
-import difflib  # NEU: Für intelligenten BSI-Abgleich
-from collections import defaultdict # NEU: Für Datums-Gruppierung
 from datetime import datetime, timezone, timedelta
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -22,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V92.0 - Integrated Fixes)...")
+log("🔌 Initialisiere Neural Scout (V80.8 - Immutable History Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -33,7 +31,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.0-flash-exp' 
+MODEL_NAME = 'gemini-2.5-pro' 
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
@@ -47,10 +45,10 @@ def to_float(val, default=50.0):
     except: return default
 
 def normalize_text(text): 
-    return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn').lower() if text else ""
+    return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(.*\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
+    return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def get_last_name(full_name):
     """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
@@ -58,33 +56,6 @@ def get_last_name(full_name):
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
     return parts[-1].lower() if parts else ""
-
-# --- NEU: TOKEN MATCHING FÜR ROBUSTE ERGEBNISSE ---
-def get_name_tokens(full_name):
-    if not full_name: return set()
-    clean = re.sub(r'[^\w\s]', '', normalize_text(full_name))
-    parts = clean.split()
-    # Behalte Teile die länger als 2 Zeichen sind oder wenn der Name sehr kurz ist
-    return set(p for p in parts if len(p) > 2 or len(parts) == 1)
-
-def names_match(db_name_tokens, scraped_text):
-    scraped_clean = normalize_text(scraped_text)
-    for token in db_name_tokens:
-        # Sucht nach dem Wort im Text (Word Boundary)
-        if re.search(r'\b' + re.escape(token) + r'\b', scraped_clean):
-            return True
-    return False
-
-def sanitize_timestamp(dirty_ts):
-    """Reinigt kaputte Zeitstempel aus der DB."""
-    if not dirty_ts: return None
-    try:
-        return datetime.fromisoformat(dirty_ts.replace('Z', '+00:00'))
-    except:
-        match = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})', dirty_ts)
-        if match:
-            return datetime.fromisoformat(match.group(1) + ":00+00:00")
-        return None
 
 # =================================================================
 # GEMINI ENGINE
@@ -216,143 +187,134 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
-      
+     
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION ENGINE (V92.0 - TOKEN & DATE DRIVEN)
+# RESULT VERIFICATION ENGINE (V80.6 - FIXED PARSER)
 # =================================================================
 async def update_past_results():
-    log("🏆 Checking for Match Results (Smart Token & Date Logic)...")
+    log("🏆 Checking for Match Results (Deep Scan V6)...")
     
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
         log("   ✅ No pending matches to verify.")
         return
 
-    # GRUPPIERE NACH DATUM (FIX FÜR 2026 MATCHES)
-    matches_by_date = defaultdict(list)
-    
+    # 1. TIME-LOCK (65m)
+    safe_matches = []
+    now_utc = datetime.now(timezone.utc)
     for pm in pending_matches:
-        ts = sanitize_timestamp(pm.get('match_time'))
-        if ts:
-            # Wir speichern es als Key (Jahr, Monat, Tag)
-            date_key = (ts.year, ts.month, ts.day)
-            matches_by_date[date_key].append(pm)
+        try:
+            created_at_str = pm['created_at'].replace('Z', '+00:00')
+            created_at = datetime.fromisoformat(created_at_str)
+            if (now_utc - created_at).total_seconds() / 60 > 65: 
+                safe_matches.append(pm)
+        except: continue
 
-    log(f"   🔎 Targeting {len(matches_by_date)} unique dates for {len(pending_matches)} matches...")
+    if not safe_matches:
+        log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
+        return
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
+
+    for day_offset in range(3): 
+        target_date = datetime.now() - timedelta(days=day_offset)
         
-        # Iteriere über die exakten Daten aus der DB
-        for (year, month, day), match_list in matches_by_date.items():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             try:
-                # Baue die URL für genau dieses Datum
-                url = f"https://www.tennisexplorer.com/results/?type=all&year={year}&month={month}&day={day}"
-                log(f"   📅 Visiting: {day}.{month}.{year} (Checking {len(match_list)} matches)")
-                
+                url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 content = await page.content()
-                soup = BeautifulSoup(content, 'html.parser')
+                await browser.close()
                 
-                tables = soup.find_all('table', class_='result')
-                if not tables:
-                    await page.close(); continue
+                soup = BeautifulSoup(content, 'html.parser')
+                table = soup.find('table', class_='result')
+                if not table: continue
 
-                all_rows = []
-                for t in tables: all_rows.extend(t.find_all('tr'))
+                rows = table.find_all('tr')
+                
+                for i in range(len(rows)):
+                    row = rows[i]
+                    if 'flags' in str(row) or 'head' in str(row): continue
 
-                processed_ids = set()
-                i = 0
-                while i < len(all_rows) - 1:
-                    row1 = all_rows[i]
-                    row2 = all_rows[i+1]
-                    
-                    if 'head' in row1.get('class', []) or 'bott' in row1.get('class', []):
-                        i += 1; continue
-
-                    t1_text = normalize_text(row1.get_text(separator=" "))
-                    t2_text = normalize_text(row2.get_text(separator=" "))
-                    
-                    matched_entry = None
-                    for pm in match_list:
-                        if pm['id'] in processed_ids: continue
+                    for pm in safe_matches:
+                        p1_last = get_last_name(pm['player1_name'])
+                        p2_last = get_last_name(pm['player2_name'])
                         
-                        # TOKEN MATCHING (Sierra vs Sierra S.)
-                        tok_p1 = get_name_tokens(pm['player1_name'])
-                        tok_p2 = get_name_tokens(pm['player2_name'])
+                        row_text = row.get_text(separator=" ", strip=True).lower()
+                        next_row_text = ""
+                        if i+1 < len(rows):
+                            next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower()
                         
-                        # Check: Sind die Namen in den Zeilen?
-                        match_a = names_match(tok_p1, t1_text) and names_match(tok_p2, t2_text)
-                        match_b = names_match(tok_p2, t1_text) and names_match(tok_p1, t2_text)
+                        # MATCH FINDER
+                        match_found = (p1_last in row_text and p2_last in next_row_text) or \
+                                      (p2_last in row_text and p1_last in next_row_text) or \
+                                      (p1_last in row_text and p2_last in row_text)
                         
-                        if match_a or match_b:
-                            matched_entry = pm
-                            break
-                    
-                    if matched_entry:
-                        log(f"      🎯 FOUND: {matched_entry['player1_name']} vs {matched_entry['player2_name']}")
-                        
-                        cols1 = row1.find_all('td')
-                        cols2 = row2.find_all('td')
-                        winner = None
-                        
-                        try:
-                            # SCORE EXTRACTION: Finde erste Zahl <= 3 (Sätze)
-                            def get_sets(columns):
-                                for col in columns:
-                                    t = col.get_text(strip=True)
-                                    if t.isdigit() and int(t) <= 3: return int(t)
-                                return -1
-
-                            # Skip Zeit/Flaggen am Anfang
-                            s1 = get_sets(cols1[2:]) 
-                            s2 = get_sets(cols2[2:])
+                        if match_found:
+                            log(f"   🎯 MATCH ROW FOUND: {p1_last} vs {p2_last}")
                             
-                            # Fallback
-                            if s1 == -1: s1 = get_sets(cols1)
-                            if s2 == -1: s2 = get_sets(cols2)
-                            
-                            if s1 != -1 and s2 != -1 and s1 != s2:
-                                row1_won = s1 > s2
-                                # Mappe Zeile 1 auf Spieler
-                                tok_p1 = get_name_tokens(matched_entry['player1_name'])
-                                row1_is_p1 = names_match(tok_p1, t1_text)
+                            try:
+                                # FIX: Kein aggressiver Time-Check mehr!
+                                # Wir vertrauen jetzt der Score-Extraction.
+                                is_retirement = "ret." in row_text or "w.o." in row_text
+
+                                # EXTRACT SCORES (All Columns)
+                                cols1 = row.find_all('td')
+                                cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                                 
-                                if row1_won:
-                                    winner = matched_entry['player1_name'] if row1_is_p1 else matched_entry['player2_name']
+                                def extract_scores_aggressive(columns):
+                                    scores = []
+                                    for col in columns:
+                                        txt = col.get_text(strip=True)
+                                        if len(txt) > 4: continue # Skip names
+                                        if '(' in txt: txt = txt.split('(')[0] # Clean tiebreak
+                                        
+                                        # Nur reine Tennis-Scores (0-7)
+                                        if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
+                                            scores.append(int(txt))
+                                    return scores
+
+                                p1_scores = extract_scores_aggressive(cols1)
+                                p2_scores = extract_scores_aggressive(cols2)
+                                
+                                log(f"      -> Scores Detected: {p1_scores} vs {p2_scores}")
+
+                                # DERIVE WINNER
+                                p1_sets = 0; p2_sets = 0
+                                for k in range(min(len(p1_scores), len(p2_scores))):
+                                    if p1_scores[k] > p2_scores[k]: p1_sets += 1
+                                    elif p2_scores[k] > p1_scores[k]: p2_sets += 1
+                                
+                                winner_name = None
+                                
+                                # CHECK P1 (Top Row)
+                                if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
+                                    if p1_last in row_text: winner_name = pm['player1_name']
+                                    elif p2_last in row_text: winner_name = pm['player2_name']
+                                
+                                # CHECK P2 (Bottom Row)
+                                elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_retirement and p2_sets > p1_sets):
+                                    if p1_last in next_row_text: winner_name = pm['player1_name']
+                                    elif p2_last in next_row_text: winner_name = pm['player2_name']
+                                
+                                if winner_name:
+                                    supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
+                                    log(f"   ✅ WINNER SETTLED: {winner_name}")
+                                    safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
                                 else:
-                                    winner = matched_entry['player2_name'] if row1_is_p1 else matched_entry['player1_name']
-                            
-                            # Retirement Check
-                            if not winner and ("ret." in t1_text or "ret." in t2_text):
-                                tok_p1 = get_name_tokens(matched_entry['player1_name'])
-                                row1_is_p1 = names_match(tok_p1, t1_text)
-                                # Wer ret. hat, verliert
-                                if "ret." in t2_text: 
-                                    winner = matched_entry['player1_name'] if row1_is_p1 else matched_entry['player2_name']
-                                elif "ret." in t1_text:
-                                    winner = matched_entry['player2_name'] if row1_is_p1 else matched_entry['player1_name']
+                                    log(f"      ⚠️ No winner derived (Sets: {p1_sets}-{p2_sets})")
 
-                            if winner:
-                                log(f"      ✅ WINNER: {winner}")
-                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_entry['id']).execute()
-                                processed_ids.add(matched_entry['id'])
-                            
-                        except Exception as e:
-                            log(f"      ❌ Score Error: {e}")
+                            except Exception as e:
+                                log(f"      ❌ Parsing Error: {e}")
 
-                        i += 2 
-                    else:
-                        i += 1
             except Exception as e:
-                log(f"   ❌ Page Error: {e}")
-                await page.close()
-            await page.close()
-        await browser.close()
+                log(f"   ⚠️ Page Error: {e}")
+                await browser.close()
 
 # =================================================================
 # MAIN PIPELINE
@@ -368,46 +330,22 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-async def find_best_court_match_smart(scraped_tour_name, db_tours, p1, p2):
-    """
-    NEU: Fuzzy Matching für BSI & Notes.
-    Verbindet 'Brisbane' (Scraper) mit 'Brisbane International' (DB).
-    """
-    s_clean = normalize_text(scraped_tour_name)
-    best_match = None
-    best_ratio = 0.0
-    
-    # 1. Fuzzy Scan durch die DB-Turniere
+async def find_best_court_match_smart(tour, db_tours, p1, p2):
+    s_low = tour.lower().strip()
     for t in db_tours:
-        t_name = normalize_text(t['name'])
-        # Berechne Ähnlichkeit (0-1)
-        ratio = difflib.SequenceMatcher(None, s_clean, t_name).ratio()
-        
-        # Bonus wenn der Name enthalten ist
-        if s_clean in t_name or t_name in s_clean:
-            ratio += 0.2
-            
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_match = t
-
-    # Threshold: 60% Sicherheit reicht oft
-    if best_match and best_ratio > 0.6:
-        log(f"   🏛️ Court Match: '{scraped_tour_name}' -> '{best_match['name']}' (BSI: {best_match['bsi_rating']})")
-        return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
-
-    # Fallback Logic
-    if "clay" in s_clean: return "Red Clay", 3.5, "Generic Clay Fallback"
-    if "hard" in s_clean: return "Hard", 6.5, "Generic Hard Fallback"
-    if "indoor" in s_clean: return "Indoor", 8.0, "Generic Indoor Fallback"
-    if "grass" in s_clean: return "Grass", 8.5, "Generic Grass Fallback"
+        if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
+    if "clay" in s_low: return "Red Clay", 3.5, "Local"
+    if "hard" in s_low: return "Hard", 6.5, "Local"
+    if "indoor" in s_low: return "Indoor", 8.0, "Local"
     
-    # AI Fallback als letztes Mittel
-    ai_loc = await resolve_ambiguous_tournament(p1, p2, scraped_tour_name)
+    log(f"   🤖 AI resolving location for {p1} vs {p2}...")
+    ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
+        city = ai_loc['city'].lower()
         surf = ai_loc.get('surface_guessed', 'Hard')
-        return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {ai_loc['city']}"
-    
+        for t in db_tours:
+            if city in t['name'].lower(): return t['surface'], t['bsi_rating'], f"AI: {city}"
+        return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
@@ -456,11 +394,7 @@ def parse_matches_locally(html, p_names):
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
-                # Clean extracting: Just take the first 5 chars if they look like time
-                raw_time = first_col.get_text(strip=True)
-                match = re.search(r'(\d{2}:\d{2})', raw_time)
-                if match:
-                    match_time_str = match.group(1)
+                match_time_str = first_col.get_text(strip=True)
             # --- TIME EXTRACTION END ---
 
             if i + 1 < len(rows):
@@ -489,7 +423,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v92.0 (Integrated Fixes) Starting...")
+    log(f"🚀 Neural Scout v80.8 (Immutable History Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -519,15 +453,17 @@ async def run_pipeline():
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
                     # --- CHECK EXISTING ---
+                    # We fetch 'actual_winner_name' too!
                     existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                     
-                    match_exists = False
                     if existing.data:
                         match_data = existing.data[0]
                         match_id = match_data['id']
                         winner_set = match_data.get('actual_winner_name')
 
                         # --- CRITICAL FIX: IMMUTABILITY CHECK ---
+                        # If a winner is already set, THIS MATCH IS FINISHED.
+                        # Do NOT update its time or odds anymore.
                         if winner_set:
                             log(f"🔒 Locked (Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                             continue 
@@ -539,11 +475,11 @@ async def run_pipeline():
                             "match_time": iso_timestamp 
                         }
                         supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
-                        log(f"🔄 Updated: {p1_obj['last_name']} vs {p2_obj['last_name']}")
-                        match_exists = True
+                        log(f"🔄 Updated: {p1_obj['last_name']} vs {p2_obj['last_name']} ({iso_timestamp})")
+                        continue
 
-                    if match_exists: continue
-                    if m_odds1 <= 1.0: continue
+                    if m_odds1 <= 1.0: 
+                        continue
                     
                     # INSERT NEW
                     log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
@@ -552,7 +488,6 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # SMART TOURNAMENT FINDER (Fuzzy Logic)
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
