@@ -7,6 +7,7 @@ import unicodedata
 import math
 import logging
 import sys
+import difflib  # <--- HIER WAR DER FEHLER (JETZT DRIN)
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -25,20 +26,21 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v98_BlockParser")
+logger = logging.getLogger("NeuralScout_v98_1")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# STABLE MODEL
-MODEL_NAME = 'gemini-1.5-flash' 
+# DEIN GEWÜNSCHTES MODELL
+MODEL_NAME = 'gemini-2.5-flash-lite' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     logger.critical("❌ CRITICAL: Secrets fehlen!")
     sys.exit(1)
 
-db_manager = create_client(SUPABASE_URL, SUPABASE_KEY)
+# DB Init
+db_raw = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
 # 2. UTILS
@@ -54,25 +56,21 @@ def normalize_text(text: str) -> str:
 def clean_player_name(raw: str) -> str:
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(\d+\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
+def clean_time_str(raw: str) -> str:
+    if not raw: return "12:00"
+    match = re.search(r'(\d{1,2}:\d{2})', raw)
+    return match.group(1) if match else "12:00"
+
 def extract_time_from_row(row) -> Optional[str]:
-    """
-    Returns HH:MM string ONLY if this row is a Match Start.
-    Otherwise returns None. This is the KEY to fixing phantom matches.
-    """
+    """Returns HH:MM string ONLY if this row is a Match Start."""
     first_col = row.find('td', class_='first')
     if not first_col: return None
-    
-    # Check if it has 'time' class OR contains a time pattern
     txt = first_col.get_text(strip=True)
     
     # Pattern: HH:MM or "Live"
     time_match = re.search(r'(\d{1,2}:\d{2})', txt)
-    if time_match:
-        return time_match.group(1)
-    
-    if "live" in txt.lower():
-        return "12:00" # Placeholder for live matches
-        
+    if time_match: return time_match.group(1)
+    if "live" in txt.lower(): return "12:00"
     return None
 
 def validate_market(odds1, odds2):
@@ -82,38 +80,70 @@ def validate_market(odds1, odds2):
     return 0.85 < margin < 1.30
 
 # =================================================================
-# 3. MATH & AI
+# 3. DATABASE MANAGER
+# =================================================================
+class DatabaseManager:
+    def __init__(self, client):
+        self.client = client
+
+    async def fetch_context(self):
+        logger.info("📡 Fetching Database Context...")
+        return await asyncio.gather(
+            asyncio.to_thread(lambda: self.client.table("players").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("player_skills").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("scouting_reports").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("tournaments").select("*").execute().data),
+            asyncio.to_thread(lambda: self.client.table("market_odds").select("id, player1_name, player2_name, actual_winner_name").is_("actual_winner_name", "null").execute().data)
+        )
+
+    async def check_existing(self, p1, p2, active_matches):
+        for m in active_matches:
+            if (m['player1_name'] == p1 and m['player2_name'] == p2) or \
+               (m['player1_name'] == p2 and m['player2_name'] == p1):
+                return m
+        return None
+
+    async def upsert_match(self, match_data):
+        await asyncio.to_thread(lambda: self.client.table("market_odds").insert(match_data).execute())
+
+    async def update_odds(self, mid, time, o1, o2):
+        await asyncio.to_thread(lambda: self.client.table("market_odds").update({
+            "match_time": time, "odds1": o1, "odds2": o2
+        }).eq("id", mid).execute())
+
+db = DatabaseManager(db_raw)
+
+# =================================================================
+# 4. MATH & AI
 # =================================================================
 class QuantumMathEngine:
     @staticmethod
-    def sigmoid(x, sensitivity=0.1):
+    def sigmoid(x, sensitivity=0.12):
         return 1 / (1 + math.exp(-sensitivity * x))
 
     @staticmethod
-    def calculate_fair_probability(ai_tac, ai_phy, s1, s2, e1, e2):
-        prob_ai = ai_tac
-        prob_skills = QuantumMathEngine.sigmoid(s1 - s2, 0.12)
-        prob_phy = ai_phy
-        prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
+    def calc_fair_odds(ai_tac, ai_phy, s1, s2, e1, e2):
+        p_ai = ai_tac
+        p_skill = QuantumMathEngine.sigmoid(s1 - s2)
+        p_phy = ai_phy
+        p_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
         
-        # Weighted Model (40/25/20/15)
-        raw = (prob_ai * 0.40) + (prob_skills * 0.25) + (prob_phy * 0.20) + (prob_elo * 0.15)
-        return max(0.05, min(0.95, raw))
+        prob = (p_ai * 0.40) + (p_skill * 0.25) + (p_phy * 0.20) + (p_elo * 0.15)
+        return max(0.05, min(0.95, prob))
 
     @staticmethod
-    def devig_odds(o1, o2):
-        if o1 <= 1 or o2 <= 1: return 0.5, 0.5
-        i1, i2 = 1.0/o1, 1.0/o2
+    def devig(o1, o2):
+        i1, i2 = 1/o1, 1/o2
         m = i1 + i2
         return i1/m, i2/m
 
 class AIEngine:
     def __init__(self):
-        self.sem = asyncio.Semaphore(2)
+        self.sem = asyncio.Semaphore(1) # Strict Limit for stability
 
     async def analyze(self, p1, p2, s1, s2, r1, r2, court):
         async with self.sem:
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.0)
             prompt = f"""
             ROLE: Tennis Analyst. MATCH: {p1['last_name']} vs {p2['last_name']}.
             COURT: {court.get('name')} ({court.get('surface')}).
@@ -127,39 +157,57 @@ class AIEngine:
                 "analysis_detail": "..."
             }}
             """
-            try:
-                async with httpx.AsyncClient() as client:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
-                    if resp.status_code != 200: return {}
-                    raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                    return json.loads(raw.replace("```json", "").replace("```", "").strip())
-            except: return {}
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient() as client:
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
+                        
+                        if resp.status_code == 200:
+                            raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                            return json.loads(raw.replace("```json","").replace("```","").strip())
+                        
+                        if resp.status_code == 429: 
+                            await asyncio.sleep(5 * (attempt + 1))
+                            continue
+                            
+                        # If 404 (Model not found), try fallback immediately
+                        if resp.status_code == 404:
+                            logger.warning(f"⚠️ Model {MODEL_NAME} not found. Trying 1.5-flash.")
+                            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+                            resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
+                            if resp.status_code == 200:
+                                raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                                return json.loads(raw.replace("```json","").replace("```","").strip())
+                except: 
+                    await asyncio.sleep(1)
+            
+            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Unavailable"}
 
     async def resolve_court(self, tour, p1, p2, candidates):
-        # RAG Logic simplified for stability
         if not candidates: return None
         cand_str = "\n".join([f"{i}: {c['name']}" for i,c in enumerate(candidates)])
-        prompt = f"Match: {p1} vs {p2} at {tour}. Pick correct ID from:\n{cand_str}\nJSON: {{'id': 0}}"
+        prompt = f"Match: {p1} vs {p2} at {tour}. Pick ID from:\n{cand_str}\nJSON: {{'id': 0}}"
         async with self.sem:
             try:
                 async with httpx.AsyncClient() as client:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
                     resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10.0)
-                    if resp.status_code != 200: return candidates[0]
-                    raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                    idx = json.loads(raw.replace("```json","").replace("```","").strip()).get('id')
-                    return candidates[idx] if idx < len(candidates) else candidates[0]
-            except: return candidates[0]
+                    if resp.status_code == 200:
+                        raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                        idx = json.loads(raw.replace("```json","").replace("```","").strip()).get('id')
+                        return candidates[idx] if idx < len(candidates) else candidates[0]
+            except: pass
+        return candidates[0]
 
 ai = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 4. CORE PIPELINE (BLOCK PARSER)
+# 5. CORE LOGIC (BLOCK PARSER)
 # =================================================================
-async def fetch_elo_ratings_optimized(bot):
-    logger.info("📊 Elo wird geladen...")
+async def fetch_elo_optimized(bot):
+    logger.info("📊 Updating Elo...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
     for tour, url in urls.items():
         try:
@@ -181,31 +229,29 @@ async def fetch_elo_ratings_optimized(bot):
         except: pass
 
 class ContextResolver:
-    def __init__(self, db_tournaments):
-        self.db_tournaments = db_tournaments
-        self.name_map = {t['name'].lower(): t for t in db_tournaments}
-        self.lookup_keys = list(self.name_map.keys())
+    def __init__(self, tours):
+        self.tours = tours
+        self.map = {t['name'].lower(): t for t in tours}
+        self.keys = list(self.map.keys())
 
-    async def get_court(self, tour_name, p1, p2):
-        s_clean = tour_name.lower().replace("atp", "").replace("wta", "").strip()
-        if s_clean in self.name_map: return self.name_map[s_clean]
+    async def resolve(self, tour_name, p1, p2):
+        s = tour_name.lower().replace("atp", "").replace("wta", "").strip()
+        if s in self.map: return self.map[s]
         
-        candidates = []
-        fuzzy = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
-        for f in fuzzy: candidates.append(self.name_map[f])
+        cands = []
+        fuzzy = difflib.get_close_matches(s, self.keys, n=3, cutoff=0.5)
+        for f in fuzzy: cands.append(self.map[f])
         
-        if "united cup" in s_clean:
-            for t in self.db_tournaments:
-                if "united cup" in t['name'].lower() and t not in candidates: candidates.append(t)
+        if "united cup" in s:
+            for t in self.tours:
+                if "united cup" in t['name'].lower() and t not in cands: cands.append(t)
         
-        if candidates:
-            return await ai.resolve_court(tour_name, p1, p2, candidates)
-        
+        if cands: return await ai.resolve_court(tour_name, p1, p2, cands)
         return {'name': tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
 
-async def process_day(bot, target_date, players, skills_map, reports, resolver):
+async def process_day(bot, target_date, players, skills_map, reports, resolver, active_matches):
     url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-    logger.info(f"📅 Scanne Datum: {target_date.strftime('%Y-%m-%d')}")
+    logger.info(f"📅 Scanne: {target_date.strftime('%Y-%m-%d')}")
     
     page = await bot.browser.new_page()
     await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -220,59 +266,47 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver):
 
     for table in tables:
         rows = table.find_all("tr")
-        
-        # --- BLOCK PARSER LOOP ---
         i = 0
         while i < len(rows):
             row = rows[i]
             
-            # Header Check
-            if "head" in row.get("class", []):
-                current_tour = row.find('a').get_text(strip=True) if row.find('a') else row.get_text(strip=True)
-                i += 1
-                continue
-            
-            # Date Check
+            # --- 1. HEADERS & DATE ---
             if "flags" in row.get("class", []):
                 if "Tomorrow" in row.get_text(): active_date = target_date + timedelta(days=1)
                 i += 1
                 continue
+            
+            if "head" in row.get("class", []):
+                current_tour = row.find('a').get_text(strip=True) if row.find('a') else row.get_text(strip=True)
+                i += 1
+                continue
 
-            # IS THIS A START?
+            # --- 2. MATCH START DETECTION (BLOCK PARSER) ---
             match_time = extract_time_from_row(row)
             
-            # VALID START FOUND
             if match_time and (i + 1 < len(rows)):
-                row1 = row
-                row2 = rows[i+1]
-                
-                # Extract Text
+                row1, row2 = rows[i], rows[i+1]
                 t1 = normalize_text(row1.get_text(separator=' ', strip=True))
                 t2 = normalize_text(row2.get_text(separator=' ', strip=True))
-                
-                # Check for Doubles (Quick Filter)
+
+                # Doubles Filter
                 if '/' in t1 or '/' in t2:
                     i += 2
                     continue
 
-                # Player Resolution
+                # Player Parsing
                 n1 = clean_player_name(t1.split('1.')[0] if '1.' in t1 else t1)
                 n2 = clean_player_name(t2)
                 
                 p1 = next((p for p in players if p['last_name'].lower() in n1.lower()), None)
                 p2 = next((p for p in players if p['last_name'].lower() in n2.lower()), None)
 
-                # --- STRICT GENDER CHECK ---
-                valid_pair = False
+                valid = False
                 if p1 and p2:
-                    if p1.get('tour') == p2.get('tour'): # Must match (ATP vs ATP)
-                        valid_pair = True
-                    else:
-                        # logger.warning(f"⚠️ Gender Mismatch: {p1['last_name']} vs {p2['last_name']}")
-                        valid_pair = False
-
-                if valid_pair:
-                    # ODDS
+                    # Strict Gender Check
+                    if p1.get('tour') == p2.get('tour'): valid = True
+                
+                if valid:
                     odds = []
                     try:
                         for r in [row1, row2]:
@@ -287,83 +321,78 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver):
                     m2 = odds[1] if len(odds)>1 else 0
 
                     if validate_market(m1, m2):
-                        # --- VALID MATCH ---
+                        # --- PROCESS MATCH ---
                         iso_time = f"{active_date.strftime('%Y-%m-%d')}T{match_time}:00Z"
                         
-                        # DB Check (Simplified for speed)
-                        # Only insert/update if needed
-                        # ... (DB Logic) ...
+                        existing = await db.check_existing(p1['last_name'], p2['last_name'], active_matches)
                         
-                        # New Analysis if needed
-                        court_db = await resolver.get_court(current_tour, p1['last_name'], p2['last_name'])
-                        logger.info(f"✨ Match: {p1['last_name']} vs {p2['last_name']} @ {court_db['name']}")
-                        
-                        s1 = skills_map.get(p1['id'], {})
-                        s2 = skills_map.get(p2['id'], {})
-                        r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
-                        r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
-                        
-                        ai_data = await ai.analyze(p1, p2, s1, s2, r1, r2, court_db)
-                        
-                        # Math
-                        ai_tac = ai_data.get('tactical_score_p1', 50)/100
-                        ai_phy = ai_data.get('physics_score_p1', 50)/100
-                        sk1 = to_float(s1.get('overall_rating', 50))
-                        sk2 = to_float(s2.get('overall_rating', 50))
-                        
-                        e1 = ELO_CACHE.get("ATP", {}).get(p1['last_name'].lower(), {}).get('Hard', 1500)
-                        e2 = ELO_CACHE.get("ATP", {}).get(p2['last_name'].lower(), {}).get('Hard', 1500)
-                        
-                        prob = QuantumMathEngine.calculate_fair_probability(ai_tac, ai_phy, sk1, sk2, e1, e2)
-                        mp1, _ = QuantumMathEngine.devig_odds(m1, m2)
-                        
-                        # DB INSERT (Async Wrapper)
-                        entry = {
-                            "player1_name": p1['last_name'], "player2_name": p2['last_name'],
-                            "tournament": court_db['name'], "odds1": m1, "odds2": m2,
-                            "ai_fair_odds1": round(1/prob, 2), "ai_fair_odds2": round(1/(1-prob), 2),
-                            "ai_analysis_text": json.dumps({"edge": f"{(prob-mp1)*100:.1f}%", "v": ai_data.get("analysis_detail")}),
-                            "match_time": iso_time,
-                            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                        }
-                        
-                        # Direct DB Insert via Thread to avoid async lock issues
-                        await asyncio.to_thread(lambda: db_manager.table("market_odds").insert(entry).execute())
-                        
-                # SKIP BOTH ROWS (We processed the pair)
+                        if existing:
+                            if not existing.get('actual_winner_name'):
+                                await db.update_odds(existing['id'], iso_time, m1, m2)
+                        else:
+                            # NEW ANALYSIS
+                            logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {current_tour}")
+                            court = await resolver.resolve(current_tour, p1['last_name'], p2['last_name'])
+                            
+                            s1 = skills_map.get(p1['id'], {})
+                            s2 = skills_map.get(p2['id'], {})
+                            r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
+                            r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
+                            
+                            ai_d = await ai.analyze(p1, p2, s1, s2, r1, r2, court)
+                            
+                            ai_tac = ai_d.get('tactical_score_p1', 50)/100
+                            ai_phy = ai_d.get('physics_score_p1', 50)/100
+                            sk1 = to_float(s1.get('overall_rating', 50))
+                            sk2 = to_float(s2.get('overall_rating', 50))
+                            
+                            ek = 'Hard'
+                            if 'clay' in court.get('surface','').lower(): ek='Clay'
+                            elif 'grass' in court.get('surface','').lower(): ek='Grass'
+                            el1 = ELO_CACHE.get(p1['tour'], {}).get(p1['last_name'].lower(), {}).get(ek) or (sk1*15+500)
+                            el2 = ELO_CACHE.get(p2['tour'], {}).get(p2['last_name'].lower(), {}).get(ek) or (sk2*15+500)
+                            
+                            prob = QuantumMathEngine.calc_fair_odds(ai_tac, ai_phy, sk1, sk2, el1, el2)
+                            mp1, _ = QuantumMathEngine.devig(m1, m2)
+                            
+                            entry = {
+                                "player1_name": p1['last_name'], "player2_name": p2['last_name'],
+                                "tournament": court['name'], "odds1": m1, "odds2": m2,
+                                "ai_fair_odds1": round(1/prob, 2), "ai_fair_odds2": round(1/(1-prob), 2),
+                                "ai_analysis_text": json.dumps({"edge": f"{(prob-mp1)*100:.1f}%", "v": ai_d.get("analysis_detail")}),
+                                "match_time": iso_time,
+                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            }
+                            await db.upsert_match(entry)
+                            logger.info(f"   💾 Saved. Edge: {(prob-mp1)*100:.1f}%")
+                            
                 i += 2
             else:
-                # Not a match start, check next row
                 i += 1
 
 # =================================================================
-# 5. RUNNER
+# 6. RUNNER
 # =================================================================
 class ScraperBot:
     def __init__(self):
         self.playwright = None
         self.browser = None
-    
     async def start(self):
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(headless=True)
-    
     async def stop(self):
         await self.browser.close()
         await self.playwright.stop()
 
 async def run():
-    logger.info("🚀 Neural Scout V98.0 (Block Parser) STARTING...")
+    logger.info("🚀 Neural Scout V98.1 (Final Block Parser + Fixes) STARTING...")
     bot = ScraperBot()
     await bot.start()
     try:
-        await fetch_elo_ratings_optimized(bot)
+        await fetch_elo_optimized(bot)
         
-        # Load Context
-        p = await asyncio.to_thread(lambda: db_manager.table("players").select("*").execute().data)
-        s = await asyncio.to_thread(lambda: db_manager.table("player_skills").select("*").execute().data)
-        r = await asyncio.to_thread(lambda: db_manager.table("scouting_reports").select("*").execute().data)
-        t = await asyncio.to_thread(lambda: db_manager.table("tournaments").select("*").execute().data)
+        ctx = await db.fetch_context()
+        p, s, r, t, matches = ctx
         
         if not p: return
         
@@ -372,7 +401,7 @@ async def run():
         
         now = datetime.now()
         for d in range(14):
-            await process_day(bot, now + timedelta(days=d), p, s_map, r, resolver)
+            await process_day(bot, now + timedelta(days=d), p, s_map, r, resolver, matches)
             await asyncio.sleep(1)
             
     except Exception as e:
