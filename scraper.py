@@ -26,13 +26,13 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v101_Strict")
+logger = logging.getLogger("NeuralScout_v102")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# --- USER COMMAND: STRICT MODEL NAME ---
+# --- STRICT USER REQUIREMENT ---
 MODEL_NAME = 'gemini-2.5-flash-lite' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
@@ -61,6 +61,7 @@ def clean_time_str(raw: str) -> str:
     return match.group(1) if match else "12:00"
 
 def extract_time_from_row(row) -> Optional[str]:
+    """Returns HH:MM string ONLY if this row is a Match Start."""
     first_col = row.find('td', class_='first')
     if not first_col: return None
     txt = first_col.get_text(strip=True)
@@ -143,27 +144,40 @@ class AIEngine:
         async with self.sem:
             await asyncio.sleep(1.0)
             
+            # --- DEEP DETAIL PROMPT ---
             prompt = f"""
-            ROLE: Tennis Analyst.
-            MATCH: {p1['last_name']} vs {p2['last_name']}.
-            COURT: {court.get('name')} | BSI: {court.get('bsi_rating')}.
-            P1 SKILL: Srv {s1.get('serve')}, Ret {s1.get('speed')}.
-            P2 SKILL: Srv {s2.get('serve')}, Ret {s2.get('speed')}.
+            ROLE: Elite Tennis Analyst.
+            TASK: Detailed Matchup Analysis.
             
+            MATCH: {p1['last_name']} ({p1.get('play_style','Unknown')}) vs {p2['last_name']} ({p2.get('play_style','Unknown')}).
+            VENUE: {court.get('name')} ({court.get('surface')}) | BSI: {court.get('bsi_rating')}.
+            
+            PLAYER 1 DATA ({p1['last_name']}): 
+            - Skills: Serve {s1.get('serve')}, Return {s1.get('speed')}, Mental {s1.get('mental')}.
+            - Report: {r1.get('strengths', 'N/A')}
+            
+            PLAYER 2 DATA ({p2['last_name']}):
+            - Skills: Serve {s2.get('serve')}, Return {s2.get('speed')}, Mental {s2.get('mental')}.
+            - Report: {r2.get('strengths', 'N/A')}
+
+            INSTRUCTIONS:
+            Analyze the specific tactical interaction. How does P1's strength target P2's weakness?
+            Consider the court speed (BSI). Who does it favor and why?
+            Provide a deep, multi-sentence verdict.
+
             OUTPUT JSON ONLY:
             {{
                 "tactical_score_p1": 55, 
                 "physics_score_p1": 50,
-                "analysis_detail": "Reasoning..."
+                "analysis_detail": "Detailed breakdown: P1's serve... while P2's backhand..."
             }}
             """
             
-            # STRICT MODEL CALL - NO FALLBACKS TO OTHER MODELS
             for attempt in range(3):
                 try:
                     async with httpx.AsyncClient() as client:
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
+                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=35.0)
                         
                         if resp.status_code == 200:
                             raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
@@ -173,16 +187,16 @@ class AIEngine:
                             await asyncio.sleep(5)
                             continue
                         
-                        # Log non-retriable errors
-                        if resp.status_code != 200 and resp.status_code != 429:
-                            logger.error(f"AI API Error {resp.status_code}: {resp.text[:100]}")
-                            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": f"AI Error {resp.status_code}"}
+                        # Fallback for 404/Other errors if user model name is wrong
+                        if resp.status_code == 404:
+                             logger.error(f"Model {MODEL_NAME} not found. Returning Default.")
+                             return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "Model Error"}
                             
                 except Exception as e:
-                    logger.error(f"AI Connection Exception: {e}")
+                    logger.error(f"AI Conn Error: {e}")
                     await asyncio.sleep(1)
             
-            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Timeout/RateLimit"}
+            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Timeout"}
 
     async def resolve_court(self, tour, p1, p2, candidates):
         if not candidates: return None
@@ -204,7 +218,7 @@ ai_engine = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 5. CORE LOGIC (BLOCK PARSER V2)
+# 5. CORE LOGIC (HEADER FIX + BLOCK PARSER)
 # =================================================================
 async def fetch_elo_optimized(bot):
     logger.info("📊 Updating Elo...")
@@ -270,18 +284,26 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
         while i < len(rows):
             row = rows[i]
             
-            # --- 1. HEADERS & DATE ---
-            # Try finding Date Flag
-            if "flags" in row.get("class", []):
-                if "Tomorrow" in row.get_text(): active_date = target_date + timedelta(days=1)
+            # --- 1. HEADERS & DATE (IMPROVED) ---
+            # Date Flag
+            if "flags" in row.get("class", []) and "head" not in row.get("class", []):
+                txt = row.get_text()
+                if "Tomorrow" in txt: active_date = target_date + timedelta(days=1)
                 i += 1
                 continue
             
-            # Try finding Tournament Head
-            # Agressively check for tournament links
-            link = row.find('a', href=re.compile(r'/tennis/tournament/'))
-            if "head" in row.get("class", []) or link:
-                current_tour = link.get_text(strip=True) if link else row.get_text(strip=True)
+            # Tournament Header (Aggressive Search)
+            # 1. Classic Class Check
+            is_head = "head" in row.get("class", [])
+            # 2. Structure Check: Has 't-name' cell?
+            has_tname = row.find('td', class_='t-name') is not None
+            # 3. Link Check: Has link to /tennis/tournament/
+            has_link = row.find('a', href=re.compile(r'/tennis/tournament/')) is not None
+            
+            if is_head or has_tname or has_link:
+                link = row.find('a')
+                if link: current_tour = link.get_text(strip=True)
+                else: current_tour = row.get_text(strip=True)
                 i += 1
                 continue
 
@@ -383,7 +405,7 @@ class ScraperBot:
         await self.playwright.stop()
 
 async def run():
-    logger.info("🚀 Neural Scout v101.0 (Strict User Config) STARTING...")
+    logger.info("🚀 Neural Scout v102.0 (Deep Analysis & Header Fix) STARTING...")
     bot = ScraperBot()
     await bot.start()
     try:
