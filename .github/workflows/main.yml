@@ -3,29 +3,33 @@ name: Neural Scout Sync
 on:
   schedule:
     - cron: '*/30 * * * *' # Alle 30 Minuten
-  workflow_dispatch:
+  workflow_dispatch: # Button zum manuellen Starten
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 10 # Sicherheitsnetz gegen Hänger
+
     steps:
       - uses: actions/checkout@v4
       
-      - uses: actions/setup-python@v4
+      # Upgrade auf Python 3.12 für Speed & Cache aktivieren
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
+          cache: 'pip' # Beschleunigt den Install-Step massiv
           
       - name: Install Dependencies
         run: |
           pip install -r requirements.txt
-          playwright install chromium
+          # --with-deps ist CRITICAL für headless environments!
+          playwright install chromium --with-deps
           
       - name: Run Scraper
         env:
-          # JETZT GEMINI!
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # Mapping passt so, wir decken beide Fälle ab
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python scraper.py
