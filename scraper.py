@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Tuple
 
 # Third-party imports
 from playwright.async_api import async_playwright, Browser, BrowserContext
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from supabase import create_client, Client
 import httpx
 
@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v92")
+logger = logging.getLogger("NeuralScout_v93")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -34,17 +34,21 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVIC
 MODEL_NAME = 'gemini-2.5-pro'
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("❌ CRITICAL: Secrets fehlen! Prüfe Environment Variables.")
+    logger.critical("❌ CRITICAL: Secrets fehlen! Environment Variables prüfen.")
     sys.exit(1)
 
 # =================================================================
 # 2. DATABASE MANAGER
 # =================================================================
 class DatabaseManager:
+    """
+    Wrapper for Supabase Client to handle async operations cleanly.
+    """
     def __init__(self, url: str, key: str):
         self.client: Client = create_client(url, key)
 
     async def fetch_all_context_data(self):
+        """Fetches all critical context data in parallel."""
         logger.info("📡 Fetching Database Context (Parallel)...")
         return await asyncio.gather(
             asyncio.to_thread(lambda: self.client.table("players").select("*").execute().data),
@@ -55,6 +59,7 @@ class DatabaseManager:
         )
 
     async def check_existing_match(self, p1_name: str, p2_name: str) -> List[Dict]:
+        """Checks if match exists to allow UPSERT logic."""
         def _query():
             return self.client.table("market_odds").select("id, actual_winner_name").or_(
                 f"and(player1_name.eq.{p1_name},player2_name.eq.{p2_name}),and(player1_name.eq.{p2_name},player2_name.eq.{p1_name})"
@@ -67,10 +72,75 @@ class DatabaseManager:
     async def update_match(self, match_id: int, payload: Dict):
         await asyncio.to_thread(lambda: self.client.table("market_odds").update(payload).eq("id", match_id).execute())
 
+# Initialize Global DB Manager Instance
 db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
 
+ELO_CACHE = {"ATP": {}, "WTA": {}}
+TOURNAMENT_LOC_CACHE = {} 
+
 # =================================================================
-# 3. UTILITIES (NEW TIME CLEANER)
+# 3. MATH CORE (WEIGHTED HYBRID MODEL)
+# =================================================================
+class QuantumMathEngine:
+    """
+    Implements the Weighted Hybrid Model:
+    - AI Matchup (40%)
+    - Skills (25%)
+    - Court Physics (20%)
+    - Elo (15%)
+    """
+    
+    @staticmethod
+    def sigmoid(x: float, sensitivity: float = 0.1) -> float:
+        """Converts a difference (e.g. Skill Diff) into a 0-1 probability."""
+        return 1 / (1 + math.exp(-sensitivity * x))
+
+    @staticmethod
+    def calculate_fair_probability(
+        ai_tactical_p1: float, # 0.0 to 1.0 (from AI)
+        ai_physics_p1: float,  # 0.0 to 1.0 (from AI based on BSI)
+        skill_p1: float,       # 0-100
+        skill_p2: float,       # 0-100
+        elo_p1: float,
+        elo_p2: float
+    ) -> float:
+        
+        # 1. AI Matchup (40%)
+        prob_ai = ai_tactical_p1
+        
+        # 2. Skills (25%)
+        # Diff of overall ratings. Sensitivity 0.12 means 10 points diff ~ strong advantage.
+        skill_diff = skill_p1 - skill_p2
+        prob_skills = QuantumMathEngine.sigmoid(skill_diff, sensitivity=0.12)
+        
+        # 3. Court Physics (20%)
+        prob_physics = ai_physics_p1
+        
+        # 4. Elo (15%)
+        # Standard Elo Formula
+        prob_elo = 1 / (1 + 10 ** ((elo_p2 - elo_p1) / 400))
+        
+        # WEIGHTED SUM
+        final_prob = (
+            (prob_ai * 0.40) +
+            (prob_skills * 0.25) +
+            (prob_physics * 0.20) +
+            (prob_elo * 0.15)
+        )
+        
+        # Clamp to avoid extreme odds
+        return max(0.05, min(0.95, final_prob))
+
+    @staticmethod
+    def devig_odds(odds1: float, odds2: float) -> Tuple[float, float]:
+        """Removes Bookmaker Margin (Vig) to get True Market Prob."""
+        if odds1 <= 1 or odds2 <= 1: return 0.5, 0.5
+        inv1, inv2 = 1.0/odds1, 1.0/odds2
+        margin = inv1 + inv2
+        return inv1/margin, inv2/margin
+
+# =================================================================
+# 4. UTILITIES
 # =================================================================
 def to_float(val, default=50.0):
     if val is None: return default
@@ -84,55 +154,22 @@ def normalize_text(text: str) -> str:
 def clean_player_name(raw: str) -> str:
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(\d+\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
-def clean_time_str(raw_time: str) -> str:
-    """Extracts HH:MM from messy strings like '11:30Live streams...'"""
-    if not raw_time: return "12:00"
-    match = re.search(r'(\d{1,2}:\d{2})', raw_time)
-    if match:
-        return match.group(1)
-    return "12:00"
-
 def validate_market(odds1: float, odds2: float) -> bool:
     if odds1 <= 1.01 or odds2 <= 1.01: return False
     if odds1 > 50.0 or odds2 > 50.0: return False 
     margin = (1/odds1) + (1/odds2)
     return 0.85 < margin < 1.30
 
-# =================================================================
-# 4. MATH CORE (WEIGHTED HYBRID)
-# =================================================================
-class QuantumMathEngine:
-    @staticmethod
-    def sigmoid(x: float, sensitivity: float = 0.1) -> float:
-        return 1 / (1 + math.exp(-sensitivity * x))
-
-    @staticmethod
-    def calculate_fair_probability(ai_tac_p1, ai_phy_p1, skill_p1, skill_p2, elo_p1, elo_p2) -> float:
-        # 1. AI Matchup (40%)
-        prob_ai = ai_tac_p1
-        
-        # 2. Skills (25%)
-        skill_diff = skill_p1 - skill_p2
-        prob_skills = QuantumMathEngine.sigmoid(skill_diff, sensitivity=0.12)
-        
-        # 3. Court Physics (20%)
-        prob_physics = ai_phy_p1
-        
-        # 4. Elo (15%)
-        prob_elo = 1 / (1 + 10 ** ((elo_p2 - elo_p1) / 400))
-        
-        # Weighted Sum
-        final_prob = (prob_ai * 0.40) + (prob_skills * 0.25) + (prob_physics * 0.20) + (prob_elo * 0.15)
-        return max(0.05, min(0.95, final_prob))
-
-    @staticmethod
-    def devig_odds(odds1: float, odds2: float) -> Tuple[float, float]:
-        if odds1 <= 1 or odds2 <= 1: return 0.5, 0.5
-        inv1, inv2 = 1.0/odds1, 1.0/odds2
-        return inv1/(inv1+inv2), inv2/(inv1+inv2)
+def clean_time_str(raw_time: str) -> str:
+    """Extracts HH:MM from messy strings."""
+    if not raw_time: return "12:00"
+    match = re.search(r'(\d{1,2}:\d{2})', raw_time)
+    if match:
+        return match.group(1)
+    return "12:00"
 
 # =================================================================
-# 5. AI ENGINE
+# 5. AI ENGINE (DEEP ANALYSIS & SCORING)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
@@ -150,9 +187,12 @@ class AIEngine:
                     if resp.status_code != 200: return None
                     raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
                     return json.loads(raw.replace("```json", "").replace("```", "").strip())
-            except: return None
+            except Exception as e:
+                logger.error(f"AI Error: {e}")
+                return None
 
     async def select_best_court(self, tour_name: str, p1: str, p2: str, candidates: List[Dict]) -> Optional[Dict]:
+        """Resolves venue using RAG candidates."""
         if not candidates: return None
         cand_str = "\n".join([f"ID {i}: {c['name']} ({c.get('location', 'Unknown')})" for i, c in enumerate(candidates)])
         prompt = f"""
@@ -170,6 +210,9 @@ class AIEngine:
         return None
 
     async def analyze_matchup_weighted(self, p1: Dict, p2: Dict, s1: Dict, s2: Dict, r1: Dict, r2: Dict, court: Dict) -> Dict:
+        """
+        Generates Scores for the Weighted Model.
+        """
         bsi = court.get('bsi_rating', 6.0)
         bounce = court.get('bounce', 'Medium')
         
@@ -179,7 +222,8 @@ class AIEngine:
         
         COURT PHYSICS:
         - Name: {court.get('name')} ({court.get('surface')})
-        - BSI (Speed): {bsi}/10 | Bounce: {bounce}
+        - BSI (Speed): {bsi}/10
+        - Bounce: {bounce}
         - Notes: {court.get('notes', 'N/A')}
 
         PLAYER DATA:
@@ -187,14 +231,16 @@ class AIEngine:
         - P2: Srv {s2.get('serve')}, Ret {s2.get('speed')}, Men {s2.get('mental')}. Report: {r2.get('strengths')}
 
         TASK:
-        1. TACTICAL MATCHUP (40% Weight): Score P1 (0-100, 50=Equal).
-        2. COURT FIT (20% Weight): Score P1 (0-100, 50=Equal).
-        3. VERDICT: Detailed analysis.
+        1. TACTICAL MATCHUP (40% Weight): Analyze styles. Who wins the pattern battle?
+           - Score P1 from 0-100 (50 is equal).
+        2. COURT FIT (20% Weight): Analyze BSI/Bounce interaction. Who does the court favor?
+           - Score P1 from 0-100 (50 is equal).
+        3. VERDICT: Detailed analysis of why.
 
         OUTPUT JSON ONLY:
         {{
-            "tactical_score_p1": 55,
-            "physics_score_p1": 45,
+            "tactical_score_p1": 55,  
+            "physics_score_p1": 45,   
             "analysis_detail": "Detailed breakdown..."
         }}
         """
@@ -215,8 +261,11 @@ class ContextResolver:
 
     async def resolve_court_rag(self, scraped_name, p1_name, p2_name):
         s_clean = scraped_name.lower().replace("atp", "").replace("wta", "").strip()
+        
+        # 1. Exact Match
         if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
 
+        # 2. Candidates
         candidates = []
         fuzzy = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
         for fn in fuzzy: 
@@ -226,6 +275,7 @@ class ContextResolver:
             for t in self.db_tournaments:
                 if "united cup" in t['name'].lower() and t not in candidates: candidates.append(t)
         
+        # 3. AI Selection
         if candidates:
             selected = await ai_engine.select_best_court(scraped_name, p1_name, p2_name, candidates)
             if selected: return selected, "AI-RAG"
@@ -259,8 +309,6 @@ class ScraperBot:
             return await page.content()
         except: return None
 
-ELO_CACHE = {"ATP": {}, "WTA": {}}
-
 async def fetch_elo_ratings_optimized(bot):
     logger.info("📊 Updating Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
@@ -283,7 +331,7 @@ async def fetch_elo_ratings_optimized(bot):
                     except: continue
 
 # =================================================================
-# 8. MAIN LOGIC (PHANTOM MATCH FIX)
+# 8. MAIN LOGIC (PHANTOM FIX + WEIGHTED MATH)
 # =================================================================
 async def process_day_url(bot, target_date, players, skills_map, reports, resolver):
     url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
@@ -296,31 +344,43 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
     tables = soup.find_all("table", class_="result")
     current_tour_name = "Unknown"
     
+    # DATE CONTEXT TRACKER
+    current_active_date = target_date 
+
     for table in tables:
         rows = table.find_all("tr")
-        skip_next = False  # --- PHANTOM FIX: Flag to skip the second row of a match pair
+        skip_next = False # --- PHANTOM FIX ---
 
         for i, row in enumerate(rows):
             if skip_next:
                 skip_next = False
                 continue
 
-            # 1. Header
+            # 1. Date Header
+            if "flags" in row.get("class", []) and "head" not in row.get("class", []):
+                txt = row.get_text()
+                if "Tomorrow" in txt: 
+                    current_active_date = target_date + timedelta(days=1)
+                elif re.search(r'\d{1,2}\.\d{1,2}\.', txt):
+                    # Simple date switch logic if needed
+                    pass
+                continue
+
+            # 2. Tournament Header
             if "head" in row.get("class", []):
                 link = row.find('a')
                 current_tour_name = link.get_text(strip=True) if link else row.get_text(strip=True)
                 continue
 
-            # 2. Row Check
+            # 3. Match Row
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
             if i+1 >= len(rows): continue
 
-            # Time Extraction (Cleaned)
-            raw_time = ""
+            # Clean Time
+            match_time_str = "12:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
-                raw_time = first_col.get_text(strip=True)
-            match_time_str = clean_time_str(raw_time)
+                match_time_str = clean_time_str(first_col.get_text(strip=True))
 
             p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
             p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
@@ -329,22 +389,20 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
             p2 = next((p for p in players if p['last_name'].lower() in p2_raw.lower()), None)
 
             if p1 and p2:
-                # MARK NEXT ROW AS PROCESSED
-                skip_next = True 
+                # MARK MATCH FOUND -> Skip next row to avoid phantom match
+                skip_next = True
 
-                # 3. Check Result
+                # Check Result
                 is_finished = False
                 if re.search(r'\b[0-7]-[0-7]\b', row_text): is_finished = True
 
-                # 4. Odds
+                # Odds
                 odds = []
                 try:
                     course_tds = row.find_all('td', class_='course') + rows[i+1].find_all('td', class_='course')
                     for td in course_tds:
-                        val_str = td.get_text(strip=True)
-                        if val_str and val_str.replace('.','',1).isdigit():
-                             val = float(val_str)
-                             if 1.01 <= val < 50.0: odds.append(val)
+                        val = float(td.get_text(strip=True))
+                        if 1.01 <= val < 50.0: odds.append(val)
                     if len(odds) < 2:
                          nums = [float(x) for x in re.findall(r'\d+\.\d+', row_text + " " + rows[i+1].get_text()) if 1.01 < float(x) < 50.0]
                          if len(nums) >= 2: odds = nums[:2]
@@ -355,9 +413,9 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 
                 if not validate_market(m_odds1, m_odds2): continue
 
-                iso_time = f"{target_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
+                iso_time = f"{current_active_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
                 
-                # Check Existing
+                # Check Existing ID using DB Manager
                 existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
                 if existing:
@@ -369,7 +427,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 if is_finished: continue
 
                 # 5. NEW ANALYSIS
-                logger.info(f"✨ New: {p1['last_name']} vs {p2['last_name']} @ {current_tour_name}")
+                logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {current_tour_name}")
                 court_db, _ = await resolver.resolve_court_rag(current_tour_name, p1['last_name'], p2['last_name'])
                 
                 s1 = skills_map.get(p1['id'], {})
@@ -377,8 +435,10 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
                 r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
                 
+                # AI Step
                 ai_data = await ai_engine.analyze_matchup_weighted(p1, p2, s1, s2, r1, r2, court_db)
                 
+                # Retrieve Inputs for Weights
                 ai_tac_prob = ai_data.get('tactical_score_p1', 50) / 100.0
                 ai_phy_prob = ai_data.get('physics_score_p1', 50) / 100.0
                 
@@ -394,6 +454,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 if not e1: e1 = skill1 * 15 + 500
                 if not e2: e2 = skill2 * 15 + 500
                 
+                # CALCULATION (Weighted)
                 prob_final = QuantumMathEngine.calculate_fair_probability(
                     ai_tac_prob, ai_phy_prob, skill1, skill2, e1, e2
                 )
@@ -426,7 +487,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
 # 9. RUNNER
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v92.0 (Phantom-Fix Edition) STARTING...")
+    logger.info("🚀 Neural Scout v93.0 (Phantom-Fixed & Weighted) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
