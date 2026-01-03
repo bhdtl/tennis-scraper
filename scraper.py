@@ -7,7 +7,7 @@ import unicodedata
 import math
 import logging
 import sys
-import difflib  # <--- HIER WAR DER FEHLER (JETZT DRIN)
+import difflib
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -26,20 +26,19 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v98_1")
+logger = logging.getLogger("NeuralScout_v99_1")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# DEIN GEWÜNSCHTES MODELL
-MODEL_NAME = 'gemini-2.5-flash-lite' 
+# Stable Model
+MODEL_NAME = 'gemini-1.5-flash' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     logger.critical("❌ CRITICAL: Secrets fehlen!")
     sys.exit(1)
 
-# DB Init
 db_raw = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
@@ -66,6 +65,7 @@ def extract_time_from_row(row) -> Optional[str]:
     first_col = row.find('td', class_='first')
     if not first_col: return None
     txt = first_col.get_text(strip=True)
+    if "result" in txt.lower(): return None # Avoid result headers
     
     # Pattern: HH:MM or "Live"
     time_match = re.search(r'(\d{1,2}:\d{2})', txt)
@@ -139,7 +139,7 @@ class QuantumMathEngine:
 
 class AIEngine:
     def __init__(self):
-        self.sem = asyncio.Semaphore(1) # Strict Limit for stability
+        self.sem = asyncio.Semaphore(1)
 
     async def analyze(self, p1, p2, s1, s2, r1, r2, court):
         async with self.sem:
@@ -166,19 +166,9 @@ class AIEngine:
                         if resp.status_code == 200:
                             raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
                             return json.loads(raw.replace("```json","").replace("```","").strip())
-                        
                         if resp.status_code == 429: 
                             await asyncio.sleep(5 * (attempt + 1))
                             continue
-                            
-                        # If 404 (Model not found), try fallback immediately
-                        if resp.status_code == 404:
-                            logger.warning(f"⚠️ Model {MODEL_NAME} not found. Trying 1.5-flash.")
-                            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-                            resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
-                            if resp.status_code == 200:
-                                raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                                return json.loads(raw.replace("```json","").replace("```","").strip())
                 except: 
                     await asyncio.sleep(1)
             
@@ -204,7 +194,7 @@ ai = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 5. CORE LOGIC (BLOCK PARSER)
+# 5. CORE LOGIC (ROBUST PARSER)
 # =================================================================
 async def fetch_elo_optimized(bot):
     logger.info("📊 Updating Elo...")
@@ -270,18 +260,27 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
         while i < len(rows):
             row = rows[i]
             
-            # --- 1. HEADERS & DATE ---
-            if "flags" in row.get("class", []):
-                if "Tomorrow" in row.get_text(): active_date = target_date + timedelta(days=1)
-                i += 1
-                continue
+            # --- 1. HEADERS (AGGRESSIVE FINDER) ---
+            # Try to find 'flags' (Date) or 'head' (Tournament)
+            is_header = False
             
-            if "head" in row.get("class", []):
-                current_tour = row.find('a').get_text(strip=True) if row.find('a') else row.get_text(strip=True)
+            # Date Header check
+            if "flags" in row.get("class", []) and "head" not in row.get("class", []):
+                txt = row.get_text()
+                if "Tomorrow" in txt: active_date = target_date + timedelta(days=1)
+                is_header = True
+            
+            # Tournament Header check (Classic or Link-Based)
+            link = row.find('a', href=re.compile(r'/tennis/tournament/'))
+            if "head" in row.get("class", []) or link:
+                current_tour = link.get_text(strip=True) if link else row.get_text(strip=True)
+                is_header = True
+            
+            if is_header:
                 i += 1
                 continue
 
-            # --- 2. MATCH START DETECTION (BLOCK PARSER) ---
+            # --- 2. MATCH START DETECTION ---
             match_time = extract_time_from_row(row)
             
             if match_time and (i + 1 < len(rows)):
@@ -289,12 +288,11 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                 t1 = normalize_text(row1.get_text(separator=' ', strip=True))
                 t2 = normalize_text(row2.get_text(separator=' ', strip=True))
 
-                # Doubles Filter
                 if '/' in t1 or '/' in t2:
+                    # Doubles detected
                     i += 2
                     continue
 
-                # Player Parsing
                 n1 = clean_player_name(t1.split('1.')[0] if '1.' in t1 else t1)
                 n2 = clean_player_name(t2)
                 
@@ -303,7 +301,6 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
 
                 valid = False
                 if p1 and p2:
-                    # Strict Gender Check
                     if p1.get('tour') == p2.get('tour'): valid = True
                 
                 if valid:
@@ -321,16 +318,13 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                     m2 = odds[1] if len(odds)>1 else 0
 
                     if validate_market(m1, m2):
-                        # --- PROCESS MATCH ---
-                        iso_time = f"{active_date.strftime('%Y-%m-%d')}T{match_time}:00Z"
-                        
+                        iso_time = f"{active_date.strftime('%Y-%m-%d')}T{clean_time_str(match_time)}:00Z"
                         existing = await db.check_existing(p1['last_name'], p2['last_name'], active_matches)
                         
                         if existing:
                             if not existing.get('actual_winner_name'):
                                 await db.update_odds(existing['id'], iso_time, m1, m2)
                         else:
-                            # NEW ANALYSIS
                             logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {current_tour}")
                             court = await resolver.resolve(current_tour, p1['last_name'], p2['last_name'])
                             
@@ -365,14 +359,14 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             }
                             await db.upsert_match(entry)
                             logger.info(f"   💾 Saved. Edge: {(prob-mp1)*100:.1f}%")
+                    else:
+                        # Log why we skipped
+                        pass # logger.debug(f"Skipped {p1['last_name']} vs {p2['last_name']}: Invalid Odds {m1}/{m2}")
                             
-                i += 2
+                i += 2 
             else:
-                i += 1
+                i += 1 
 
-# =================================================================
-# 6. RUNNER
-# =================================================================
 class ScraperBot:
     def __init__(self):
         self.playwright = None
@@ -385,7 +379,7 @@ class ScraperBot:
         await self.playwright.stop()
 
 async def run():
-    logger.info("🚀 Neural Scout V98.1 (Final Block Parser + Fixes) STARTING...")
+    logger.info("🚀 Neural Scout v99.1 (Robust Header & Block Parser) STARTING...")
     bot = ScraperBot()
     await bot.start()
     try:
@@ -404,10 +398,8 @@ async def run():
             await process_day(bot, now + timedelta(days=d), p, s_map, r, resolver, matches)
             await asyncio.sleep(1)
             
-    except Exception as e:
-        logger.critical(f"🔥 CRASH: {e}", exc_info=True)
-    finally:
-        await bot.stop()
+    except Exception as e: logger.critical(f"🔥 CRASH: {e}", exc_info=True)
+    finally: await bot.stop()
 
 if __name__ == "__main__":
     if sys.platform == 'win32': asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
