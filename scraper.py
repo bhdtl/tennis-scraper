@@ -32,7 +32,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# --- STRICT MODEL ---
+# --- STRICT USER CONFIG ---
 MODEL_NAME = 'gemini-2.5-flash-lite' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
@@ -56,30 +56,29 @@ def clean_player_name(raw: str) -> str:
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365|\(\d+\)', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_time_str(raw: str) -> str:
-    # Default to now if live/unknown
     if not raw or "live" in raw.lower(): return "12:00"
     match = re.search(r'(\d{1,2}:\d{2})', raw)
     return match.group(1) if match else "12:00"
 
 def extract_time_from_row(row) -> Optional[str]:
     """
-    Improved Time Extraction. Handles HH:MM, 'Live', 'After...', etc.
+    Improved extraction: Handles 'Live', 'After Rest', 'Susp.'
     """
     first_col = row.find('td', class_='first')
     if not first_col: return None
     txt = first_col.get_text(strip=True).lower()
     
-    # Ignore Results/Headers in match column
+    # Exclude obvious non-match rows
     if "result" in txt or "round" in txt: return None
     
-    # 1. HH:MM Check
+    # 1. Standard Time
     time_match = re.search(r'(\d{1,2}:\d{2})', txt)
     if time_match: return time_match.group(1)
     
-    # 2. Keywords check
-    keywords = ["live", "after", "susp", "canc"]
+    # 2. Active Match Status
+    keywords = ["live", "after", "susp", "canc", "finish"]
     if any(k in txt for k in keywords):
-        return "12:00" # Placeholder for valid active matches
+        return "12:00" # Placeholder for active/done matches
         
     return None
 
@@ -124,60 +123,69 @@ class DatabaseManager:
 db = DatabaseManager(db_raw)
 
 # =================================================================
-# 4. AI ENGINE (CITY SPLITTER LOGIC)
+# 4. AI ENGINE (CITY SPLITTER)
 # =================================================================
 class AIEngine:
     def __init__(self):
         self.sem = asyncio.Semaphore(2)
 
-    async def analyze_matchup(self, p1, p2, s1, s2, r1, r2, court):
-        """Generates the Deep Analysis and Scores"""
+    async def analyze(self, p1, p2, s1, s2, r1, r2, court):
         async with self.sem:
             await asyncio.sleep(1.0)
+            
             prompt = f"""
-            ROLE: Tennis Analyst.
+            ROLE: Elite Tennis Analyst.
             MATCH: {p1['last_name']} vs {p2['last_name']}.
             VENUE: {court.get('name')} | BSI: {court.get('bsi_rating')} | Bounce: {court.get('bounce')}.
             
-            P1 SKILLS: Serve {s1.get('serve')}, Return {s1.get('speed')}, Mental {s1.get('mental')}. Report: {r1.get('strengths','N/A')}
-            P2 SKILLS: Serve {s2.get('serve')}, Return {s2.get('speed')}, Mental {s2.get('mental')}. Report: {r2.get('strengths','N/A')}
+            P1 SKILL: Srv {s1.get('serve')}, Ret {s1.get('speed')}, Men {s1.get('mental')}. Report: {r1.get('strengths','')}
+            P2 SKILL: Srv {s2.get('serve')}, Ret {s2.get('speed')}, Men {s2.get('mental')}. Report: {r2.get('strengths','')}
 
             TASK:
-            1. TACTICAL (40%): Analyze Serve vs Return & Baseline patterns. Score P1 (0-100).
-            2. PHYSICS (20%): How does BSI/Bounce impact their shots? Score P1 (0-100).
-            3. ANALYSIS: 3-sentence deep dive.
+            1. TACTICAL (40%): Analyze Serve vs Return mechanics. Score P1 (0-100).
+            2. PHYSICS (20%): Court fit. Score P1 (0-100).
+            3. VERDICT: Detailed summary.
 
-            OUTPUT JSON: {{ "tactical_score_p1": 55, "physics_score_p1": 50, "analysis_detail": "..." }}
+            OUTPUT JSON ONLY:
+            {{
+                "tactical_score_p1": 55, 
+                "physics_score_p1": 50,
+                "analysis_detail": "..."
+            }}
             """
-            for _ in range(2):
+            for attempt in range(3):
                 try:
                     async with httpx.AsyncClient() as client:
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=25.0)
+                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
+                        
                         if resp.status_code == 200:
                             raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
                             return json.loads(raw.replace("```json","").replace("```","").strip())
-                        if resp.status_code == 429: await asyncio.sleep(5)
-                except: await asyncio.sleep(1)
-            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Timeout"}
+                        if resp.status_code == 429: 
+                            await asyncio.sleep(5)
+                except: 
+                    await asyncio.sleep(1)
+            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Unavailable"}
 
-    async def map_united_cup_venue(self, p1_name, p2_name, candidates):
+    async def resolve_united_cup(self, p1_name, p2_name, candidates):
         """
-        Forces AI to pick between Perth (RAC) and Sydney (Ken Rosewall) based on players.
+        SPECIAL FUNCTION: Forces AI to choose between Perth and Sydney based on players.
         """
         if not candidates: return None
         cand_str = "\n".join([f"ID {i}: {c['name']} (Loc: {c.get('location')})" for i,c in enumerate(candidates)])
         
         prompt = f"""
-        TASK: Resolve Venue for United Cup 2026.
+        TASK: Resolve United Cup Venue (City Splitter).
         MATCH: {p1_name} vs {p2_name}.
         OPTIONS:
         {cand_str}
         
         INSTRUCTIONS:
-        Check which city/group these players are in.
+        Check the 2026 United Cup draw. Where is this specific match playing? Perth or Sydney?
         Return JSON: {{ "id": 0 }}
         """
+        
         async with self.sem:
             try:
                 async with httpx.AsyncClient() as client:
@@ -188,18 +196,17 @@ class AIEngine:
                         idx = json.loads(raw.replace("```json","").replace("```","").strip()).get('id')
                         return candidates[idx] if idx < len(candidates) else candidates[0]
             except: pass
-        return candidates[0]
+        return candidates[0] # Fallback
 
 ai_engine = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 5. CORE LOGIC (PARSER & RESOLVER)
+# 5. CORE LOGIC (DEEP SCAN & CITY SPLITTER)
 # =================================================================
 class QuantumMathEngine:
     @staticmethod
-    def sigmoid(x, sensitivity=0.12):
-        return 1 / (1 + math.exp(-sensitivity * x))
+    def sigmoid(x, sensitivity=0.12): return 1 / (1 + math.exp(-sensitivity * x))
     @staticmethod
     def calc_fair_odds(ai_tac, ai_phy, s1, s2, e1, e2):
         prob = (ai_tac * 0.40) + (QuantumMathEngine.sigmoid(s1 - s2) * 0.25) + (ai_phy * 0.20) + ((1 / (1 + 10 ** ((e2 - e1) / 400))) * 0.15)
@@ -212,9 +219,22 @@ class QuantumMathEngine:
 
 async def fetch_elo_optimized(bot):
     logger.info("📊 Updating Elo...")
-    # ... (Keep existing Elo logic or skip for brevity, code below assumes ELO_CACHE is populated if possible)
-    # Adding simplified logic to avoid huge code blocks, assume fetch works.
-    pass
+    # Standard implementation
+    urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
+    for tour, url in urls.items():
+        try:
+            page = await bot.browser.new_page()
+            await page.goto(url, timeout=60000)
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+            table = soup.find('table', {'id': 'reportable'})
+            if table:
+                for row in table.find_all('tr')[1:]:
+                    cols = row.find_all('td')
+                    if len(cols) > 5:
+                        name = normalize_text(cols[0].get_text(strip=True)).lower()
+                        ELO_CACHE[tour][name] = { 'Hard': to_float(cols[3].get_text(strip=True), 1500), 'Clay': to_float(cols[4].get_text(strip=True), 1500), 'Grass': to_float(cols[5].get_text(strip=True), 1500) }
+            await page.close()
+        except: pass
 
 class ContextResolver:
     def __init__(self, tours):
@@ -225,21 +245,23 @@ class ContextResolver:
     async def resolve(self, tour_name, p1, p2):
         s_clean = tour_name.lower().replace("atp", "").replace("wta", "").strip()
         
-        # 1. UNITED CUP SPECIAL HANDLING
+        # 1. CITY SPLITTER (United Cup)
         if "united cup" in s_clean:
-            # Get ALL United Cup venues from DB
+            # Find all potential United Cup venues in DB
             candidates = [t for t in self.tours if "united cup" in t['name'].lower()]
             if len(candidates) > 1:
-                # Use AI to pick city
-                return await ai_engine.map_united_cup_venue(p1, p2, candidates)
+                logger.info(f"   🤖 City Splitter Active: {p1} vs {p2} -> Perth or Sydney?")
+                return await ai_engine.resolve_united_cup(p1, p2, candidates)
             elif candidates:
                 return candidates[0]
         
-        # 2. STANDARD TOURNAMENTS (Fuzzy Match)
-        matches = difflib.get_close_matches(s_clean, self.keys, n=1, cutoff=0.5)
-        if matches:
-            return self.map[matches[0]]
-            
+        # 2. STANDARD MATCHING
+        # Check Exact
+        if s_clean in self.map: return self.map[s_clean]
+        # Check Fuzzy
+        fuzzy = difflib.get_close_matches(s_clean, self.keys, n=1, cutoff=0.5)
+        if fuzzy: return self.map[fuzzy[0]]
+        
         # 3. FALLBACK
         return {'name': tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
 
@@ -264,41 +286,33 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
         while i < len(rows):
             row = rows[i]
             
-            # --- 1. HEADER DETECTION (Aggressive) ---
-            # Finds 'head' class OR 't-name' OR valid tournament links
-            is_header = False
-            
+            # --- 1. DEEP SCAN HEADERS ---
             # Date Flag
             if "flags" in row.get("class", []) and "head" not in row.get("class", []):
                 txt = row.get_text()
                 if "Tomorrow" in txt: active_date = target_date + timedelta(days=1)
-                is_header = True
+                i += 1
+                continue
             
-            # Tournament Flag
+            # Tournament Flag (Aggressive)
+            # Check for Link OR Class
             link = row.find('a', href=re.compile(r'/tennis/tournament/'))
             if "head" in row.get("class", []) or link or "t-name" in str(row):
                 if link: current_tour = link.get_text(strip=True)
                 else: current_tour = row.get_text(strip=True)
-                # logger.info(f"   🏆 Tournament Found: {current_tour}") # Debug Log
-                is_header = True
-            
-            if is_header:
                 i += 1
                 continue
 
             # --- 2. MATCH START ---
             match_time = extract_time_from_row(row)
             
-            # If we have a time AND at least one more row for opponent
             if match_time and (i + 1 < len(rows)):
                 row1, row2 = rows[i], rows[i+1]
                 t1 = normalize_text(row1.get_text(separator=' ', strip=True))
                 t2 = normalize_text(row2.get_text(separator=' ', strip=True))
 
-                # Doubles Filter
                 if '/' in t1 or '/' in t2:
-                    i += 2
-                    continue
+                    i += 2; continue
 
                 n1 = clean_player_name(t1.split('1.')[0] if '1.' in t1 else t1)
                 n2 = clean_player_name(t2)
@@ -307,11 +321,9 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                 p2 = next((p for p in players if p['last_name'].lower() in n2.lower()), None)
 
                 if p1 and p2:
-                    # Tour Check
                     if p1.get('tour') != p2.get('tour'):
                         i += 2; continue
 
-                    # Odds Check
                     odds = []
                     try:
                         for r in [row1, row2]:
@@ -331,7 +343,7 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             if not existing.get('actual_winner_name'):
                                 await db.update_odds(existing['id'], iso_time, m1, m2)
                         else:
-                            # COURT RESOLUTION (AI for United Cup)
+                            # RESOLVE COURT (With City Splitter logic)
                             court = await resolver.resolve(current_tour, p1['last_name'], p2['last_name'])
                             logger.info(f"✨ Analyzing: {p1['last_name']} vs {p2['last_name']} @ {court['name']}")
                             
@@ -340,14 +352,16 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
                             r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
                             
-                            ai_d = await ai_engine.analyze_matchup(p1, p2, s1, s2, r1, r2, court)
+                            ai_d = await ai_engine.analyze(p1, p2, s1, s2, r1, r2, court)
                             
                             ai_tac = ai_d.get('tactical_score_p1', 50)/100
                             ai_phy = ai_d.get('physics_score_p1', 50)/100
                             sk1 = to_float(s1.get('overall_rating', 50))
                             sk2 = to_float(s2.get('overall_rating', 50))
                             
-                            ek = 'Hard' # Default
+                            ek = 'Hard'
+                            if 'clay' in court.get('surface','').lower(): ek='Clay'
+                            elif 'grass' in court.get('surface','').lower(): ek='Grass'
                             el1 = ELO_CACHE.get(p1['tour'], {}).get(p1['last_name'].lower(), {}).get(ek) or (sk1*15+500)
                             el2 = ELO_CACHE.get(p2['tour'], {}).get(p2['last_name'].lower(), {}).get(ek) or (sk2*15+500)
                             
@@ -367,12 +381,9 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             
                 i += 2 
             else:
-                # If row has no time, it might be a sneaky header we missed or garbage
-                # Double check for header link just in case
+                # Fallback: Header search in non-time rows
                 link = row.find('a', href=re.compile(r'/tennis/tournament/'))
-                if link:
-                    current_tour = link.get_text(strip=True)
-                    # logger.info(f"   🏆 Tournament Update (Late): {current_tour}")
+                if link: current_tour = link.get_text(strip=True)
                 i += 1 
 
 class ScraperBot:
@@ -400,7 +411,6 @@ async def run():
         resolver = ContextResolver(t)
         
         now = datetime.now()
-        # Scan 14 days
         for d in range(14):
             await process_day(bot, now + timedelta(days=d), p, s_map, r, resolver, matches)
             await asyncio.sleep(1)
