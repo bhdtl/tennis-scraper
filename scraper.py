@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V80.8 - Immutable History Fix)...")
+log("🔌 Initialisiere Neural Scout (V81.0 - Time Extraction Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -187,7 +187,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
-     
+      
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
@@ -390,11 +390,15 @@ def parse_matches_locally(html, p_names):
             if "head" in row.get("class", []): current_tour = row.get_text(strip=True); continue
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
             
-            # --- TIME EXTRACTION START ---
+            # --- TIME EXTRACTION START (CRITICAL FIX) ---
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
-                match_time_str = first_col.get_text(strip=True)
+                raw_time = first_col.get_text(strip=True)
+                # FIX: Use regex to extract ONLY HH:MM, ignore "Live", "1xBet" etc.
+                time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
+                if time_match:
+                    match_time_str = time_match.group(1).zfill(5) # Ensures 09:00 format
             # --- TIME EXTRACTION END ---
 
             if i + 1 < len(rows):
@@ -416,14 +420,14 @@ def parse_matches_locally(html, p_names):
                         "p1": p1_raw, 
                         "p2": p2_raw, 
                         "tour": current_tour, 
-                        "time": match_time_str, # Store Time
+                        "time": match_time_str, # Clean Clean HH:MM
                         "odds1": odds[0] if odds else 0.0, 
                         "odds2": odds[1] if len(odds)>1 else 0.0
                     })
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v80.8 (Immutable History Fix) Starting...")
+    log(f"🚀 Neural Scout v81.0 (Regex Date Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -450,6 +454,7 @@ async def run_pipeline():
                     m_odds2 = m['odds2']
                     
                     # --- CONSTRUCT PROPER ISO DATETIME ---
+                    # FIX: Now m['time'] is guaranteed to be clean HH:MM
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
                     # --- CHECK EXISTING ---
