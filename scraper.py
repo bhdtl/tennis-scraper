@@ -12,8 +12,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 
 # Third-party imports
+# Install: pip install playwright beautifulsoup4 supabase httpx
 from playwright.async_api import async_playwright, Browser, BrowserContext
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 from supabase import create_client, Client
 import httpx
 
@@ -26,15 +27,17 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v93")
+logger = logging.getLogger("NeuralScout_v94_Flash")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-MODEL_NAME = 'gemini-2.5-pro'
+
+# --- ARCHITECT CHANGE: SWITCH TO FLASH 2.0 FOR SPEED & STABILITY ---
+MODEL_NAME = 'gemini-2.0-flash-exp' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    logger.critical("❌ CRITICAL: Secrets fehlen! Environment Variables prüfen.")
+    logger.critical("❌ CRITICAL: Secrets fehlen! Prüfe GitHub Secrets.")
     sys.exit(1)
 
 # =================================================================
@@ -72,7 +75,7 @@ class DatabaseManager:
     async def update_match(self, match_id: int, payload: Dict):
         await asyncio.to_thread(lambda: self.client.table("market_odds").update(payload).eq("id", match_id).execute())
 
-# Initialize Global DB Manager Instance
+# Initialize Global DB Manager
 db_manager = DatabaseManager(SUPABASE_URL, SUPABASE_KEY)
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
@@ -117,7 +120,6 @@ class QuantumMathEngine:
         prob_physics = ai_physics_p1
         
         # 4. Elo (15%)
-        # Standard Elo Formula
         prob_elo = 1 / (1 + 10 ** ((elo_p2 - elo_p1) / 400))
         
         # WEIGHTED SUM
@@ -169,27 +171,45 @@ def clean_time_str(raw_time: str) -> str:
     return "12:00"
 
 # =================================================================
-# 5. AI ENGINE (DEEP ANALYSIS & SCORING)
+# 5. AI ENGINE (FLASH 2.0 OPTIMIZED)
 # =================================================================
 class AIEngine:
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.model = model
-        self.semaphore = asyncio.Semaphore(4) 
+        # Flash supports higher concurrency
+        self.semaphore = asyncio.Semaphore(10) 
 
-    async def _call_gemini(self, prompt: str, timeout: float = 40.0) -> Optional[Dict]:
+    async def _call_gemini(self, prompt: str, timeout: float = 30.0) -> Optional[Dict]:
+        """
+        Calls Gemini API with robust retry logic. Optimized for Flash 2.0 speed.
+        """
         async with self.semaphore:
-            await asyncio.sleep(0.5)
-            try:
-                async with httpx.AsyncClient() as client:
-                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-                    resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=timeout)
-                    if resp.status_code != 200: return None
-                    raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
-                    return json.loads(raw.replace("```json", "").replace("```", "").strip())
-            except Exception as e:
-                logger.error(f"AI Error: {e}")
-                return None
+            # Flash is fast, less sleep needed
+            await asyncio.sleep(0.2) 
+            for attempt in range(3):
+                try:
+                    async with httpx.AsyncClient() as client:
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=timeout)
+                        
+                        if resp.status_code == 429: # Rate Limit
+                            logger.warning(f"⚠️ Rate Limit (429). Retrying in 2s... ({attempt+1}/3)")
+                            await asyncio.sleep(2)
+                            continue
+                            
+                        if resp.status_code != 200:
+                            logger.error(f"AI API Status: {resp.status_code} | {resp.text[:100]}")
+                            return None
+                            
+                        raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                        # Flash 2.0 sometimes wraps in markdown json blocks
+                        clean_json = raw.replace("```json", "").replace("```", "").strip()
+                        return json.loads(clean_json)
+                except Exception as e:
+                    logger.error(f"AI Connection Error (Attempt {attempt+1}): {e}")
+                    await asyncio.sleep(1)
+            return None
 
     async def select_best_court(self, tour_name: str, p1: str, p2: str, candidates: List[Dict]) -> Optional[Dict]:
         """Resolves venue using RAG candidates."""
@@ -203,7 +223,7 @@ class AIEngine:
         INSTRUCTIONS: Identify the correct venue (e.g. United Cup city).
         OUTPUT JSON ONLY: {{ "selected_id": 0 }}
         """
-        res = await self._call_gemini(prompt, timeout=15.0)
+        res = await self._call_gemini(prompt, timeout=10.0) # Flash is fast
         if res and "selected_id" in res:
             idx = res["selected_id"]
             if 0 <= idx < len(candidates): return candidates[idx]
@@ -241,10 +261,10 @@ class AIEngine:
         {{
             "tactical_score_p1": 55,  
             "physics_score_p1": 45,   
-            "analysis_detail": "Detailed breakdown..."
+            "analysis_detail": "Detailed breakdown of why P1's forehand dominates P2's backhand despite the court speed..."
         }}
         """
-        return await self._call_gemini(prompt, timeout=60.0) or {
+        return await self._call_gemini(prompt, timeout=30.0) or {
             "tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Timeout"
         }
 
@@ -262,10 +282,8 @@ class ContextResolver:
     async def resolve_court_rag(self, scraped_name, p1_name, p2_name):
         s_clean = scraped_name.lower().replace("atp", "").replace("wta", "").strip()
         
-        # 1. Exact Match
         if s_clean in self.name_map: return self.name_map[s_clean], "Exact"
 
-        # 2. Candidates
         candidates = []
         fuzzy = difflib.get_close_matches(s_clean, self.lookup_keys, n=3, cutoff=0.5)
         for fn in fuzzy: 
@@ -275,7 +293,6 @@ class ContextResolver:
             for t in self.db_tournaments:
                 if "united cup" in t['name'].lower() and t not in candidates: candidates.append(t)
         
-        # 3. AI Selection
         if candidates:
             selected = await ai_engine.select_best_court(scraped_name, p1_name, p2_name, candidates)
             if selected: return selected, "AI-RAG"
@@ -308,6 +325,8 @@ class ScraperBot:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             return await page.content()
         except: return None
+
+ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 async def fetch_elo_ratings_optimized(bot):
     logger.info("📊 Updating Elo Ratings...")
@@ -361,9 +380,6 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 txt = row.get_text()
                 if "Tomorrow" in txt: 
                     current_active_date = target_date + timedelta(days=1)
-                elif re.search(r'\d{1,2}\.\d{1,2}\.', txt):
-                    # Simple date switch logic if needed
-                    pass
                 continue
 
             # 2. Tournament Header
@@ -415,7 +431,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
 
                 iso_time = f"{current_active_date.strftime('%Y-%m-%d')}T{match_time_str}:00Z"
                 
-                # Check Existing ID using DB Manager
+                # Check Existing
                 existing = await db_manager.check_existing_match(p1['last_name'], p2['last_name'])
                 
                 if existing:
@@ -435,7 +451,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
                 r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
                 r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
                 
-                # AI Step
+                # AI Step (Flash 2.0)
                 ai_data = await ai_engine.analyze_matchup_weighted(p1, p2, s1, s2, r1, r2, court_db)
                 
                 # Retrieve Inputs for Weights
@@ -487,7 +503,7 @@ async def process_day_url(bot, target_date, players, skills_map, reports, resolv
 # 9. RUNNER
 # =================================================================
 async def run_pipeline():
-    logger.info("🚀 Neural Scout v93.0 (Phantom-Fixed & Weighted) STARTING...")
+    logger.info("🚀 Neural Scout v94.0 (Flash Speed Edition) STARTING...")
     
     bot = ScraperBot()
     await bot.start()
@@ -506,7 +522,8 @@ async def run_pipeline():
         today = datetime.now()
         for i in range(14):
             await process_day_url(bot, today + timedelta(days=i), players, skills_map, reports, resolver)
-            await asyncio.sleep(2)
+            # Reduced sleep for Flash speed
+            await asyncio.sleep(1)
 
     except Exception as e: logger.critical(f"🔥 CRASH: {e}", exc_info=True)
     finally: await bot.stop()
