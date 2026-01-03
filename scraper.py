@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V80.7 - Value Scanner Sync Fix)...")
+log("🔌 Initialisiere Neural Scout (V80.6 - Final Production Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -187,7 +187,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
-     
+    
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
@@ -389,14 +389,6 @@ def parse_matches_locally(html, p_names):
             row = rows[i]
             if "head" in row.get("class", []): current_tour = row.get_text(strip=True); continue
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
-            
-            # --- TIME EXTRACTION START ---
-            match_time_str = "00:00"
-            first_col = row.find('td', class_='first')
-            if first_col and 'time' in first_col.get('class', []):
-                match_time_str = first_col.get_text(strip=True)
-            # --- TIME EXTRACTION END ---
-
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
                 p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
@@ -411,19 +403,11 @@ def parse_matches_locally(html, p_names):
                             valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
                             if valid and valid2: odds = [valid[0], valid2[0]]
                     except: pass
-                    
-                    found.append({
-                        "p1": p1_raw, 
-                        "p2": p2_raw, 
-                        "tour": current_tour, 
-                        "time": match_time_str, # Store Time
-                        "odds1": odds[0] if odds else 0.0, 
-                        "odds2": odds[1] if len(odds)>1 else 0.0
-                    })
+                    found.append({"p1": p1_raw, "p2": p2_raw, "tour": current_tour, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0})
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v80.7 (ISO-8601 Date Fix) Starting...")
+    log(f"🚀 Neural Scout v80.6 (Idempotent Engine) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -449,31 +433,30 @@ async def run_pipeline():
                     m_odds1 = m['odds1']
                     m_odds2 = m['odds2']
                     
-                    # --- CONSTRUCT PROPER ISO DATETIME (CRITICAL FOR SCANNER) ---
-                    # Combine Scrape Date (YYYY-MM-DD) + Match Time (HH:MM)
-                    iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
-
-                    # --- SILICON VALLEY IDEMPOTENCY ---
-                    # Check existing (Order agnostic)
-                    existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
+                    # --- SILICON VALLEY IDEMPOTENCY FIX ---
+                    # Wir prüfen jetzt ZWEIMAL: Einmal wie gescraped und einmal umgekehrt.
+                    # Das verhindert Duplikate, egal wie rum der Buchmacher es listet.
                     
-                    # UPDATE EXISTING
+                    # Check 1: A vs B
+                    existing = supabase.table("market_odds").select("id").eq("player1_name", p1_obj['last_name']).eq("player2_name", p2_obj['last_name']).execute()
+                    
+                    # Check 2: B vs A (Falls 1 nicht gefunden wurde)
+                    if not existing.data:
+                        existing = supabase.table("market_odds").select("id").eq("player1_name", p2_obj['last_name']).eq("player2_name", p1_obj['last_name']).execute()
+
+                    # LOGIC: Wenn existent -> Update. Wenn nicht -> Insert.
                     if existing.data:
-                        match_id = existing.data[0]['id']
-                        update_payload = {
-                            "odds1": m_odds1, 
-                            "odds2": m_odds2, 
-                            "match_time": iso_timestamp # Update Time/Date
-                        }
-                        supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
-                        log(f"🔄 Updated: {p1_obj['last_name']} vs {p2_obj['last_name']} ({iso_timestamp})")
+                        # Match existiert (egal ob abgeschlossen oder nicht). Update nur die Quoten.
+                        supabase.table("market_odds").update({"odds1": m_odds1, "odds2": m_odds2}).eq("id", existing.data[0]['id']).execute()
+                        log(f"🔄 Update (Active/Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
 
                     if m_odds1 <= 1.0: 
+                        log(f"⏩ Skip New (No Odds): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
                     
-                    # INSERT NEW
-                    log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                    # INSERT NEW (Nur wenn wirklich NICHTS in der DB ist)
+                    log(f"✨ Analyzing New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
@@ -494,11 +477,10 @@ async def run_pipeline():
                         "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0.01 else 99,
                         "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 0.99 else 99,
                         "ai_analysis_text": ai_meta.get('ai_text', 'No analysis'),
-                        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        "match_time": iso_timestamp # Save Explicit Date
+                        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     }
                     supabase.table("market_odds").insert(entry).execute()
-                    log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']}")
+                    log(f"💾 Saved: {p1_obj['last_name']} vs {p2_obj['last_name']} (Fair: {entry['ai_fair_odds1']})")
 
             except Exception as e:
                 log(f"⚠️ Match Error: {e}")
