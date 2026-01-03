@@ -8,17 +8,17 @@ import math
 import sys
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Optional, Any, Union, Tuple
+from typing import List, Dict, Optional, Any, Tuple
 from decimal import Decimal, getcontext, ROUND_HALF_UP
 
 # Third-party imports
 import httpx
-from playwright.async_api import async_playwright, Page, Browser
+from playwright.async_api import async_playwright, Browser
 from supabase import create_client, Client
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 
 # =================================================================
-# 0. SYSTEM CONFIGURATION & CONSTANTS (The Foundation)
+# 0. SYSTEM CONFIGURATION & CONSTANTS
 # =================================================================
 
 # Precision settings for Financial Mathematics
@@ -44,7 +44,7 @@ class Config:
     @classmethod
     def validate(cls):
         if not all([cls.GEMINI_API_KEY, cls.SUPABASE_URL, cls.SUPABASE_KEY]):
-            logger.critical("❌ FATAL: Missing Environment Secrets.")
+            logger.critical("❌ FATAL: Missing Environment Secrets. Check GitHub Secrets.")
             sys.exit(1)
 
 Config.validate()
@@ -113,13 +113,6 @@ class Utils:
         parts = clean.split()
         return parts[-1].lower() if parts else ""
 
-    @staticmethod
-    def to_decimal(val: Any, default: str = "0.0") -> Decimal:
-        try:
-            return Decimal(str(val))
-        except:
-            return Decimal(default)
-
 # =================================================================
 # 3. INFRASTRUCTURE SERVICES (External I/O)
 # =================================================================
@@ -129,12 +122,10 @@ class DatabaseService:
         self.client: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
     def fetch_reference_data(self) -> Tuple[List[Player], Dict[str, Any], List[Dict]]:
-        """Loads Players, Skills, Reports, and Tournaments in one go."""
+        """Loads Players, Skills, Reports, and Tournaments."""
         try:
-            # Parallel fetch could be done here, but sequential is safe for DB load
             players_raw = self.client.table("players").select("*").execute().data
             skills_raw = self.client.table("player_skills").select("*").execute().data
-            reports_raw = self.client.table("scouting_reports").select("*").execute().data
             tournaments_raw = self.client.table("tournaments").select("*").execute().data
 
             # Map Skills
@@ -156,11 +147,11 @@ class DatabaseService:
                 )
                 players.append(player)
 
-            return players, reports_raw, tournaments_raw
+            return players, {}, tournaments_raw
 
         except Exception as e:
             logger.error(f"❌ DB Load Error: {e}")
-            return [], [], []
+            return [], {}, []
 
     def get_existing_match(self, p1_last: str, p2_last: str):
         """Checks for existing match logic with OR condition."""
@@ -187,21 +178,17 @@ class DatabaseService:
 class AIService:
     @staticmethod
     async def call_gemini(prompt: str) -> Optional[str]:
-        # Implement Rate Limiting / Jitter
         await asyncio.sleep(0.5) 
-        
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{Config.MODEL_NAME}:generateContent?key={Config.GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1}
         }
-        
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(url, headers=headers, json=payload, timeout=30.0)
                 if response.status_code != 200:
-                    logger.warning(f"⚠️ Gemini API Error: {response.status_code}")
                     return None
                 return response.json()['candidates'][0]['content']['parts'][0]['text']
             except Exception as e:
@@ -210,7 +197,6 @@ class AIService:
 
     @staticmethod
     async def analyze_match_meta(p1: Player, p2: Player, surface: str, bsi: float, notes: str) -> Dict:
-        """Requests tactical analysis from Gemini."""
         prompt = f"""
         ROLE: Elite Tennis Analyst.
         TASK: Analyze matchup {p1.last_name} vs {p2.last_name}.
@@ -239,8 +225,6 @@ class AIService:
 # =================================================================
 
 class MathEngine:
-    """The Physics & Probability Core - 2026 Edition using Decimal"""
-    
     @staticmethod
     def sigmoid(diff: float, sensitivity: float = 0.1) -> float:
         try:
@@ -257,96 +241,74 @@ class MathEngine:
         market_odds1: Decimal, market_odds2: Decimal
     ) -> Tuple[Decimal, Decimal, float]:
         
-        # 1. PREPARE DATA
         bsi_val = float(bsi)
         s1 = p1.skills
         s2 = p2.skills
         
-        # 2. COMPONENT 1: AI TACTICAL (High Weight on Strategy)
+        # 1. AI TACTICAL
         m1 = float(ai_meta.get('p1_tactical_score', 5))
         m2 = float(ai_meta.get('p2_tactical_score', 5))
         prob_tactical = MathEngine.sigmoid(m1 - m2, sensitivity=0.8)
 
-        # 3. COMPONENT 2: SURFACE PHYSICS (BSI Aware)
-        # Low BSI (Clay/Slow Hard) favors Stamina/Grind
-        # High BSI (Grass/Indoor) favors Serve/Power
+        # 2. SURFACE PHYSICS
         c1_phys, c2_phys = 0.0, 0.0
-        
-        if bsi_val <= 4.5: # Slow Court
+        if bsi_val <= 4.5: 
             c1_phys = s1.stamina + s1.speed + s1.mental + s1.backhand
             c2_phys = s2.stamina + s2.speed + s2.mental + s2.backhand
-        elif bsi_val >= 7.0: # Fast Court
+        elif bsi_val >= 7.0: 
             c1_phys = s1.serve + s1.power + s1.forehand
             c2_phys = s2.serve + s2.power + s2.forehand
-        else: # Neutral
+        else:
             c1_phys = sum(s1.model_dump().values())
             c2_phys = sum(s2.model_dump().values())
             
-        prob_physics = MathEngine.sigmoid(c1_phys - c2_phys, sensitivity=0.015) # Tuned sensitivity
+        prob_physics = MathEngine.sigmoid(c1_phys - c2_phys, sensitivity=0.015)
 
-        # 4. COMPONENT 3: ELO RATINGS
-        # Detect surface specific ELO
+        # 3. ELO RATINGS
         elo_surf = 'Hard'
         if 'clay' in surface.lower(): elo_surf = 'Clay'
         elif 'grass' in surface.lower(): elo_surf = 'Grass'
         
-        # Lookup (Using lowercase last name matching for robustness)
-        e1 = 1500.0
-        e2 = 1500.0
-        
-        # Note: In a real system, passed elo_data would be a robust lookup. 
-        # Here we simulate the logic from original script but cleaner.
-        # Assuming elo_data keys are lowercased full names or last names.
+        e1 = 1500.0; e2 = 1500.0
         for name, stats in elo_data.items():
             if p1.last_name.lower() in name: e1 = stats.get(elo_surf, 1500.0)
             if p2.last_name.lower() in name: e2 = stats.get(elo_surf, 1500.0)
             
         prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
 
-        # 5. COMPONENT 4: MARKET WISDOM
-        # Implied probability from market odds (removing vig is optional, here we just normalize)
+        # 4. MARKET
         prob_market = 0.5
         if market_odds1 > 0 and market_odds2 > 0:
             inv1 = 1 / float(market_odds1)
             inv2 = 1 / float(market_odds2)
             prob_market = inv1 / (inv1 + inv2)
 
-        # 6. WEIGHTED AGGREGATION (The "Secret Sauce")
-        # Alpha Model: Tactical (35%), Physics (25%), Elo (20%), Market (20%)
-        # This reduces reliance on just scraped odds and trusts the physics/AI more.
+        # WEIGHTED AGGREGATION
         prob_final = (prob_tactical * 0.35) + (prob_physics * 0.25) + (prob_elo * 0.20) + (prob_market * 0.20)
 
-        # 7. CONVERT TO ODDS
-        # Clamp probability to avoid division by zero or infinite odds
         prob_final = max(0.01, min(0.99, prob_final))
-        
         fair_odds1 = Decimal(1 / prob_final).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         fair_odds2 = Decimal(1 / (1 - prob_final)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         return fair_odds1, fair_odds2, prob_final
 
 class ScraperEngine:
-    """Handles all browser interactions with resilience."""
-    
     def __init__(self):
         self.elo_cache = {"ATP": {}, "WTA": {}}
+        self.combined_elo = {}
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
 
     async def fetch_elo(self):
-        """Fetches TennisAbstract Elo Ratings."""
-        logger.info("📊 Loading Surface-Specific Elo Ratings...")
+        logger.info("📊 Loading Elo Ratings...")
         urls = {"ATP": "[https://tennisabstract.com/reports/atp_elo_ratings.html](https://tennisabstract.com/reports/atp_elo_ratings.html)", "WTA": "[https://tennisabstract.com/reports/wta_elo_ratings.html](https://tennisabstract.com/reports/wta_elo_ratings.html)"}
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            
             for tour, url in urls.items():
                 try:
                     page = await browser.new_page()
                     await page.goto(url, wait_until="domcontentloaded", timeout=45000)
                     content = await page.content()
-                    # Parsing logic remains similar but wrapped safely
-                    # (In a full refactor, I would move BeautifulSoup logic to a separate parser method)
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(content, 'html.parser')
                     table = soup.find('table', {'id': 'reportable'})
@@ -363,17 +325,14 @@ class ScraperEngine:
                                         'Grass': float(cols[5].get_text(strip=True) or 1500)
                                     }
                                 except: continue
-                    logger.info(f"   ✅ {tour} Elo loaded: {len(self.elo_cache[tour])} entries.")
+                    logger.info(f"   ✅ {tour} Elo loaded: {len(self.elo_cache[tour])}")
                     await page.close()
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Elo Fetch Warning ({tour}): {e}")
+                    logger.warning(f"   ⚠️ Elo Warning ({tour}): {e}")
             await browser.close()
-        
-        # Merge dictionaries for easier lookup later
         self.combined_elo = {**self.elo_cache["ATP"], **self.elo_cache["WTA"]}
 
     async def scrape_odds_day(self, date_obj: datetime, players: List[Player]) -> List[ScrapedMatch]:
-        """Scrapes a specific day with concurrency control."""
         async with self.semaphore:
             target_players = set(p.last_name.lower() for p in players)
             found_matches = []
@@ -383,18 +342,13 @@ class ScraperEngine:
                 page = await browser.new_page()
                 try:
                     url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){date_obj.year}&month={date_obj.month}&day={date_obj.day}"
-                    # logger.info(f"📡 Scanning: {date_obj.strftime('%Y-%m-%d')}")
                     await page.goto(url, wait_until="networkidle", timeout=60000)
                     content = await page.content()
-                    
-                    # Local Parsing to keep the browser session short
                     found_matches = self._parse_explorer_html(content, target_players)
-                    
                 except Exception as e:
                     logger.error(f"❌ Scrape Error {date_obj.date()}: {e}")
                 finally:
                     await browser.close()
-            
             return found_matches
 
     def _parse_explorer_html(self, html: str, target_players: set) -> List[ScrapedMatch]:
@@ -402,24 +356,18 @@ class ScraperEngine:
         soup = BeautifulSoup(html, 'html.parser')
         results = []
         tables = soup.find_all("table", class_="result")
-        
         current_tour = "Unknown"
         
         for table in tables:
             rows = table.find_all("tr")
             for i, row in enumerate(rows):
-                # Detect Tournament Header
                 if "head" in row.get("class", []):
                     current_tour = row.get_text(strip=True)
                     continue
                 
-                # Check for Valid Match Row
                 row_text = Utils.normalize_text(row.get_text(separator=' ', strip=True))
-                
-                # Look ahead for Player 2 (TennisExplorer structure is 2 rows per match usually)
                 if i + 1 >= len(rows): continue
                 
-                # Time Extraction
                 time_str = "00:00"
                 first_col = row.find('td', class_='first')
                 if first_col and 'time' in first_col.get('class', []):
@@ -429,19 +377,15 @@ class ScraperEngine:
                 row2_text = Utils.normalize_text(rows[i+1].get_text(separator=' ', strip=True))
                 p2_raw = Utils.clean_player_name(row2_text)
                 
-                # Filter: Do we care about these players?
                 p1_ln = Utils.get_last_name(p1_raw)
                 p2_ln = Utils.get_last_name(p2_raw)
                 
                 if (p1_ln in target_players) and (p2_ln in target_players):
-                    # Extract Odds
                     odds = []
                     try:
-                        # Improved Regex for floats
                         nums = re.findall(r'\d+\.\d+', row_text)
                         valid = [Decimal(x) for x in nums if 1.0 < float(x) < 50.0]
-                        if len(valid) >= 2: 
-                            odds = valid[:2]
+                        if len(valid) >= 2: odds = valid[:2]
                         else:
                             nums2 = re.findall(r'\d+\.\d+', row2_text)
                             valid2 = [Decimal(x) for x in nums2 if 1.0 < float(x) < 50.0]
@@ -451,44 +395,33 @@ class ScraperEngine:
                     if len(odds) >= 2:
                         try:
                             m = ScrapedMatch(
-                                p1_name=p1_raw,
-                                p2_name=p2_raw,
-                                tournament=current_tour,
-                                match_time_local=time_str,
-                                odds1=odds[0],
-                                odds2=odds[1]
+                                p1_name=p1_raw, p2_name=p2_raw, tournament=current_tour,
+                                match_time_local=time_str, odds1=odds[0], odds2=odds[1]
                             )
                             results.append(m)
-                        except ValidationError as e:
-                            pass # Skip bad data
+                        except ValidationError: pass
         return results
 
 class VerificationService:
-    """Verifies past results to settle bets."""
-    
     def __init__(self, db: DatabaseService):
         self.db = db
 
     async def run_verification_cycle(self):
-        logger.info("🏆 Checking for Match Results (Deep Scan)...")
+        logger.info("🏆 Checking Results...")
         pending = self.db.get_pending_matches()
-        if not pending:
-            logger.info("   ✅ No pending matches to verify.")
-            return
+        if not pending: return
 
-        # Filter Safe Matches (Time Lock)
         safe_matches = []
         now_utc = datetime.now(timezone.utc)
         for pm in pending:
             try:
                 created_at = datetime.fromisoformat(pm['created_at'].replace('Z', '+00:00'))
-                if (now_utc - created_at).total_seconds() > 3900: # > 65 mins
+                if (now_utc - created_at).total_seconds() > 3900: 
                     safe_matches.append(pm)
             except: continue
 
         if not safe_matches: return
 
-        # Only scan last 3 days for results
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             for day_offset in range(3):
@@ -504,7 +437,6 @@ class VerificationService:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
-            
             table = soup.find('table', class_='result')
             if not table: return
 
@@ -525,43 +457,33 @@ class VerificationService:
 
                     if match_found:
                         self._settle_match(row, rows[i+1] if i+1 < len(rows) else None, pm, p1_last, p2_last)
-                        
-        except Exception as e:
-            logger.error(f"   ⚠️ Result Page Error: {e}")
-        finally:
-            await page.close()
+        except Exception: pass
+        finally: await page.close()
 
     def _settle_match(self, row, next_row, pm, p1_last, p2_last):
-        """Extracts score and determines winner."""
         try:
             row_text = row.get_text(separator=" ", strip=True).lower()
             is_ret = "ret." in row_text or "w.o." in row_text
-
-            # Helper to extract scores
+            
             def get_scores(cols):
                 scores = []
                 if not cols: return []
                 for col in cols:
                     txt = col.get_text(strip=True)
-                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
-                        scores.append(int(txt))
+                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                 return scores
 
             cols1 = row.find_all('td')
             cols2 = next_row.find_all('td') if next_row else []
-            
             s1 = get_scores(cols1)
             s2 = get_scores(cols2)
             
-            # Simple Set Counting
-            sets_p1_row = 0
-            sets_p2_row = 0
+            sets_p1_row = 0; sets_p2_row = 0
             for k in range(min(len(s1), len(s2))):
                 if s1[k] > s2[k]: sets_p1_row += 1
                 elif s2[k] > s1[k]: sets_p2_row += 1
 
             winner = None
-            # Logic: If row 1 has more sets, row 1 player won.
             if sets_p1_row > sets_p2_row or (is_ret and sets_p1_row > sets_p2_row):
                 if p1_last in row_text: winner = pm['player1_name']
                 elif p2_last in row_text: winner = pm['player2_name']
@@ -573,13 +495,11 @@ class VerificationService:
 
             if winner:
                 self.db.update_winner(pm['id'], winner)
-                logger.info(f"   ✅ WINNER SETTLED: {winner} (Match ID: {pm['id']})")
-
-        except Exception as e:
-            logger.error(f"Error settling match: {e}")
+                logger.info(f"   ✅ WINNER SETTLED: {winner}")
+        except Exception: pass
 
 # =================================================================
-# 5. ORCHESTRATOR (The Main Loop)
+# 5. ORCHESTRATOR
 # =================================================================
 
 class NeuralScoutPipeline:
@@ -589,112 +509,74 @@ class NeuralScoutPipeline:
         self.verifier = VerificationService(self.db)
         
     async def run(self):
-        logger.info("🚀 Starting Neural Scout v2026 (Protocol Compliant)...")
-        
-        # 1. Verification Phase
+        logger.info("🚀 Starting Neural Scout v2026...")
         await self.verifier.run_verification_cycle()
-
-        # 2. Data Load Phase
         await self.scraper.fetch_elo()
         players, _, db_tournaments = self.db.fetch_reference_data()
         
         if not players:
-            logger.error("No players found in DB. Aborting.")
+            logger.error("No players in DB.")
             return
 
-        # 3. Parallel Scrape Phase (Next 35 days)
         scrape_tasks = []
         today = datetime.now()
         for i in range(35):
             d = today + timedelta(days=i)
             scrape_tasks.append(self.scraper.scrape_odds_day(d, players))
         
-        logger.info(f"⚡ Launching {len(scrape_tasks)} parallel scraping tasks...")
+        logger.info(f"⚡ Launching {len(scrape_tasks)} scan tasks...")
         results_matrix = await asyncio.gather(*scrape_tasks)
-        
-        # Flatten results
-        all_matches: List[ScrapedMatch] = [m for day_res in results_matrix for m in day_res]
+        all_matches = [m for day_res in results_matrix for m in day_res]
         logger.info(f"🔍 Found {len(all_matches)} potential matches.")
 
-        # 4. Processing Phase
         for m in all_matches:
             await self._process_single_match(m, players, db_tournaments)
-
         logger.info("🏁 Pipeline Finished.")
 
     async def _process_single_match(self, m: ScrapedMatch, players: List[Player], tournaments: List[Dict]):
-        # Match player objects
         p1 = next((p for p in players if p.last_name in m.p1_name), None)
         p2 = next((p for p in players if p.last_name in m.p2_name), None)
-        
         if not p1 or not p2: return
 
-        # Identify existing match
         p1_last = p1.last_name
         p2_last = p2.last_name
         existing_res = self.db.get_existing_match(p1_last, p2_last)
-        
-        # ISO Timestamp construction
-        # Note: Ideally we'd parse the timezone correctly. For now assuming scraped time is approximate or UTC.
-        match_date_str = datetime.now().strftime('%Y-%m-%d') # Simplified for today's run context or extracted from m
-        # In a real fix, ScrapedMatch should contain the full date from the scrape loop.
-        # But keeping logic consistent with input:
+        match_date_str = datetime.now().strftime('%Y-%m-%d')
         iso_timestamp = f"{match_date_str}T{m.match_time_local}:00Z"
 
         if existing_res.data:
             match_data = existing_res.data[0]
             if match_data.get('actual_winner_name'):
-                logger.info(f"🔒 Locked (Finished): {p1_last} vs {p2_last}")
+                logger.info(f"🔒 Locked: {p1_last} vs {p2_last}")
                 return
-            
-            # Update Active Match
             self.db.update_match_odds(match_data['id'], float(m.odds1), float(m.odds2), iso_timestamp)
             logger.info(f"🔄 Updated: {p1_last} vs {p2_last}")
             return
 
-        # NEW MATCH DETECTED
         if m.odds1 <= Decimal("1.0"): return
-
-        logger.info(f"✨ Analyzing New: {p1_last} vs {p2_last}")
+        logger.info(f"✨ Analyzing: {p1_last} vs {p2_last}")
         
-        # Determine Tournament Context
-        # (Simplified logic from original, could be enhanced with Fuzzy Matching)
         surf, bsi, notes = "Hard", 6.5, "Default"
         tour_lower = m.tournament.lower()
-        
-        # Try finding in DB
         found_tour = next((t for t in tournaments if t['name'].lower() in tour_lower), None)
         if found_tour:
-            surf = found_tour['surface']
-            bsi = found_tour['bsi_rating']
-            notes = found_tour.get('notes', '')
+            surf = found_tour['surface']; bsi = found_tour['bsi_rating']; notes = found_tour.get('notes', '')
         elif "clay" in tour_lower: surf, bsi = "Red Clay", 3.5
         elif "indoor" in tour_lower: surf, bsi = "Indoor Hard", 8.0
         
-        # AI Analysis
         ai_meta = await AIService.analyze_match_meta(p1, p2, surf, bsi, notes)
-        
-        # Math Calculation
-        fair1, fair2, prob = MathEngine.calculate_fair_odds(
-            p1, p2, surf, bsi, ai_meta, 
-            self.scraper.combined_elo, m.odds1, m.odds2
-        )
+        fair1, fair2, prob = MathEngine.calculate_fair_odds(p1, p2, surf, bsi, ai_meta, self.scraper.combined_elo, m.odds1, m.odds2)
 
         entry = {
-            "player1_name": p1_last, 
-            "player2_name": p2_last, 
-            "tournament": m.tournament,
-            "odds1": float(m.odds1), 
-            "odds2": float(m.odds2),
-            "ai_fair_odds1": float(fair1),
-            "ai_fair_odds2": float(fair2),
+            "player1_name": p1_last, "player2_name": p2_last, "tournament": m.tournament,
+            "odds1": float(m.odds1), "odds2": float(m.odds2),
+            "ai_fair_odds1": float(fair1), "ai_fair_odds2": float(fair2),
             "ai_analysis_text": ai_meta.get('ai_text', ''),
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "match_time": iso_timestamp
         }
-        
         self.db.insert_match(entry)
-        logger.info(f"💾 Saved Analysis: {p1_last} vs {p2_last} (AI Prob: {prob:.2f})")
+        logger.info(f"💾 Saved: {p1_last} vs {p2_last} (AI Prob: {prob:.2f})")
 
 if __name__ == "__main__":
     asyncio.run(NeuralScoutPipeline().run())
