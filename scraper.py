@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v102")
+logger = logging.getLogger("NeuralScout_v103")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -144,32 +144,24 @@ class AIEngine:
         async with self.sem:
             await asyncio.sleep(1.0)
             
-            # --- DEEP DETAIL PROMPT ---
             prompt = f"""
-            ROLE: Elite Tennis Analyst.
-            TASK: Detailed Matchup Analysis.
-            
+            ROLE: Tennis Analyst.
             MATCH: {p1['last_name']} ({p1.get('play_style','Unknown')}) vs {p2['last_name']} ({p2.get('play_style','Unknown')}).
-            VENUE: {court.get('name')} ({court.get('surface')}) | BSI: {court.get('bsi_rating')}.
+            VENUE: {court.get('name')} | BSI: {court.get('bsi_rating')}.
             
-            PLAYER 1 DATA ({p1['last_name']}): 
-            - Skills: Serve {s1.get('serve')}, Return {s1.get('speed')}, Mental {s1.get('mental')}.
-            - Report: {r1.get('strengths', 'N/A')}
-            
-            PLAYER 2 DATA ({p2['last_name']}):
-            - Skills: Serve {s2.get('serve')}, Return {s2.get('speed')}, Mental {s2.get('mental')}.
-            - Report: {r2.get('strengths', 'N/A')}
+            P1 SKILLS: Serve {s1.get('serve')}, Return {s1.get('speed')}, Mental {s1.get('mental')}.
+            P2 SKILLS: Serve {s2.get('serve')}, Return {s2.get('speed')}, Mental {s2.get('mental')}.
 
-            INSTRUCTIONS:
-            Analyze the specific tactical interaction. How does P1's strength target P2's weakness?
-            Consider the court speed (BSI). Who does it favor and why?
-            Provide a deep, multi-sentence verdict.
+            TASK:
+            1. TACTICAL (40%): Analyze specific matchup (e.g. Serve vs Return). Score P1 (0-100).
+            2. PHYSICS (20%): Who fits the BSI better? Score P1 (0-100).
+            3. VERDICT: Detailed analysis of styles.
 
             OUTPUT JSON ONLY:
             {{
                 "tactical_score_p1": 55, 
                 "physics_score_p1": 50,
-                "analysis_detail": "Detailed breakdown: P1's serve... while P2's backhand..."
+                "analysis_detail": "..."
             }}
             """
             
@@ -177,7 +169,7 @@ class AIEngine:
                 try:
                     async with httpx.AsyncClient() as client:
                         url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=35.0)
+                        resp = await client.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=30.0)
                         
                         if resp.status_code == 200:
                             raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
@@ -187,10 +179,11 @@ class AIEngine:
                             await asyncio.sleep(5)
                             continue
                         
-                        # Fallback for 404/Other errors if user model name is wrong
-                        if resp.status_code == 404:
-                             logger.error(f"Model {MODEL_NAME} not found. Returning Default.")
-                             return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "Model Error"}
+                        # Log error but don't crash
+                        if resp.status_code != 200:
+                            logger.error(f"AI Error {resp.status_code}: {resp.text[:100]}")
+                            # No fallback, as requested
+                            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": f"AI Error {resp.status_code}"}
                             
                 except Exception as e:
                     logger.error(f"AI Conn Error: {e}")
@@ -218,7 +211,7 @@ ai_engine = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 5. CORE LOGIC (HEADER FIX + BLOCK PARSER)
+# 5. CORE LOGIC (RESTORATION)
 # =================================================================
 async def fetch_elo_optimized(bot):
     logger.info("📊 Updating Elo...")
@@ -284,32 +277,31 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
         while i < len(rows):
             row = rows[i]
             
-            # --- 1. HEADERS & DATE (IMPROVED) ---
-            # Date Flag
-            if "flags" in row.get("class", []) and "head" not in row.get("class", []):
-                txt = row.get_text()
-                if "Tomorrow" in txt: active_date = target_date + timedelta(days=1)
+            # --- 1. HEADERS & DATE ---
+            # Date Flags
+            if "flags" in row.get("class", []):
+                if "Tomorrow" in row.get_text(): active_date = target_date + timedelta(days=1)
                 i += 1
                 continue
             
-            # Tournament Header (Aggressive Search)
-            # 1. Classic Class Check
-            is_head = "head" in row.get("class", [])
-            # 2. Structure Check: Has 't-name' cell?
-            has_tname = row.find('td', class_='t-name') is not None
-            # 3. Link Check: Has link to /tennis/tournament/
-            has_link = row.find('a', href=re.compile(r'/tennis/tournament/')) is not None
-            
-            if is_head or has_tname or has_link:
+            # Tournament Header (Classic + Safe Fallback)
+            if "head" in row.get("class", []):
                 link = row.find('a')
-                if link: current_tour = link.get_text(strip=True)
-                else: current_tour = row.get_text(strip=True)
+                current_tour = link.get_text(strip=True) if link else row.get_text(strip=True)
                 i += 1
                 continue
+            
+            # SAFE TOURNAMENT DETECTOR (Fixes 'Unknown' without skipping matches)
+            # If this row is NOT a match start (no time), but has a tournament link, grab it.
+            match_time = extract_time_from_row(row)
+            if not match_time:
+                link = row.find('a', href=re.compile(r'/tennis/tournament/'))
+                if link:
+                    current_tour = link.get_text(strip=True)
+                    i += 1
+                    continue
 
             # --- 2. MATCH START DETECTION ---
-            match_time = extract_time_from_row(row)
-            
             if match_time and (i + 1 < len(rows)):
                 row1, row2 = rows[i], rows[i+1]
                 t1 = normalize_text(row1.get_text(separator=' ', strip=True))
@@ -405,7 +397,7 @@ class ScraperBot:
         await self.playwright.stop()
 
 async def run():
-    logger.info("🚀 Neural Scout v102.0 (Deep Analysis & Header Fix) STARTING...")
+    logger.info("🚀 Neural Scout v103.0 (Restoration) STARTING...")
     bot = ScraperBot()
     await bot.start()
     try:
