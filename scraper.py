@@ -26,14 +26,14 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NeuralScout_v99_1")
+logger = logging.getLogger("NeuralScout_v101_Strict")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-# Stable Model
-MODEL_NAME = 'gemini-1.5-flash' 
+# --- USER COMMAND: STRICT MODEL NAME ---
+MODEL_NAME = 'gemini-2.5-flash-lite' 
 
 if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     logger.critical("❌ CRITICAL: Secrets fehlen!")
@@ -61,13 +61,11 @@ def clean_time_str(raw: str) -> str:
     return match.group(1) if match else "12:00"
 
 def extract_time_from_row(row) -> Optional[str]:
-    """Returns HH:MM string ONLY if this row is a Match Start."""
     first_col = row.find('td', class_='first')
     if not first_col: return None
     txt = first_col.get_text(strip=True)
-    if "result" in txt.lower(): return None # Avoid result headers
+    if "result" in txt.lower(): return None
     
-    # Pattern: HH:MM or "Live"
     time_match = re.search(r'(\d{1,2}:\d{2})', txt)
     if time_match: return time_match.group(1)
     if "live" in txt.lower(): return "12:00"
@@ -143,20 +141,24 @@ class AIEngine:
 
     async def analyze(self, p1, p2, s1, s2, r1, r2, court):
         async with self.sem:
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.0)
+            
             prompt = f"""
-            ROLE: Tennis Analyst. MATCH: {p1['last_name']} vs {p2['last_name']}.
-            COURT: {court.get('name')} ({court.get('surface')}).
-            P1: Srv {s1.get('serve')}, Ret {s1.get('speed')}.
-            P2: Srv {s2.get('serve')}, Ret {s2.get('speed')}.
+            ROLE: Tennis Analyst.
+            MATCH: {p1['last_name']} vs {p2['last_name']}.
+            COURT: {court.get('name')} | BSI: {court.get('bsi_rating')}.
+            P1 SKILL: Srv {s1.get('serve')}, Ret {s1.get('speed')}.
+            P2 SKILL: Srv {s2.get('serve')}, Ret {s2.get('speed')}.
             
             OUTPUT JSON ONLY:
             {{
                 "tactical_score_p1": 55, 
                 "physics_score_p1": 50,
-                "analysis_detail": "..."
+                "analysis_detail": "Reasoning..."
             }}
             """
+            
+            # STRICT MODEL CALL - NO FALLBACKS TO OTHER MODELS
             for attempt in range(3):
                 try:
                     async with httpx.AsyncClient() as client:
@@ -166,17 +168,25 @@ class AIEngine:
                         if resp.status_code == 200:
                             raw = resp.json()['candidates'][0]['content']['parts'][0]['text']
                             return json.loads(raw.replace("```json","").replace("```","").strip())
-                        if resp.status_code == 429: 
-                            await asyncio.sleep(5 * (attempt + 1))
+                        
+                        if resp.status_code == 429:
+                            await asyncio.sleep(5)
                             continue
-                except: 
+                        
+                        # Log non-retriable errors
+                        if resp.status_code != 200 and resp.status_code != 429:
+                            logger.error(f"AI API Error {resp.status_code}: {resp.text[:100]}")
+                            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": f"AI Error {resp.status_code}"}
+                            
+                except Exception as e:
+                    logger.error(f"AI Connection Exception: {e}")
                     await asyncio.sleep(1)
             
-            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Unavailable"}
+            return {"tactical_score_p1": 50, "physics_score_p1": 50, "analysis_detail": "AI Timeout/RateLimit"}
 
     async def resolve_court(self, tour, p1, p2, candidates):
         if not candidates: return None
-        cand_str = "\n".join([f"{i}: {c['name']}" for i,c in enumerate(candidates)])
+        cand_str = "\n".join([f"{i}: {c['name']} ({c.get('location')})" for i,c in enumerate(candidates)])
         prompt = f"Match: {p1} vs {p2} at {tour}. Pick ID from:\n{cand_str}\nJSON: {{'id': 0}}"
         async with self.sem:
             try:
@@ -190,11 +200,11 @@ class AIEngine:
             except: pass
         return candidates[0]
 
-ai = AIEngine()
+ai_engine = AIEngine()
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 
 # =================================================================
-# 5. CORE LOGIC (ROBUST PARSER)
+# 5. CORE LOGIC (BLOCK PARSER V2)
 # =================================================================
 async def fetch_elo_optimized(bot):
     logger.info("📊 Updating Elo...")
@@ -236,7 +246,7 @@ class ContextResolver:
             for t in self.tours:
                 if "united cup" in t['name'].lower() and t not in cands: cands.append(t)
         
-        if cands: return await ai.resolve_court(tour_name, p1, p2, cands)
+        if cands: return await ai_engine.resolve_court(tour_name, p1, p2, cands)
         return {'name': tour_name, 'surface': 'Hard', 'bsi_rating': 6.0, 'bounce': 'Medium'}
 
 async def process_day(bot, target_date, players, skills_map, reports, resolver, active_matches):
@@ -260,23 +270,18 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
         while i < len(rows):
             row = rows[i]
             
-            # --- 1. HEADERS (AGGRESSIVE FINDER) ---
-            # Try to find 'flags' (Date) or 'head' (Tournament)
-            is_header = False
+            # --- 1. HEADERS & DATE ---
+            # Try finding Date Flag
+            if "flags" in row.get("class", []):
+                if "Tomorrow" in row.get_text(): active_date = target_date + timedelta(days=1)
+                i += 1
+                continue
             
-            # Date Header check
-            if "flags" in row.get("class", []) and "head" not in row.get("class", []):
-                txt = row.get_text()
-                if "Tomorrow" in txt: active_date = target_date + timedelta(days=1)
-                is_header = True
-            
-            # Tournament Header check (Classic or Link-Based)
+            # Try finding Tournament Head
+            # Agressively check for tournament links
             link = row.find('a', href=re.compile(r'/tennis/tournament/'))
             if "head" in row.get("class", []) or link:
                 current_tour = link.get_text(strip=True) if link else row.get_text(strip=True)
-                is_header = True
-            
-            if is_header:
                 i += 1
                 continue
 
@@ -289,7 +294,6 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                 t2 = normalize_text(row2.get_text(separator=' ', strip=True))
 
                 if '/' in t1 or '/' in t2:
-                    # Doubles detected
                     i += 2
                     continue
 
@@ -333,7 +337,7 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             r1 = next((r for r in reports if r['player_id'] == p1['id']), {})
                             r2 = next((r for r in reports if r['player_id'] == p2['id']), {})
                             
-                            ai_d = await ai.analyze(p1, p2, s1, s2, r1, r2, court)
+                            ai_d = await ai_engine.analyze(p1, p2, s1, s2, r1, r2, court)
                             
                             ai_tac = ai_d.get('tactical_score_p1', 50)/100
                             ai_phy = ai_d.get('physics_score_p1', 50)/100
@@ -359,14 +363,14 @@ async def process_day(bot, target_date, players, skills_map, reports, resolver, 
                             }
                             await db.upsert_match(entry)
                             logger.info(f"   💾 Saved. Edge: {(prob-mp1)*100:.1f}%")
-                    else:
-                        # Log why we skipped
-                        pass # logger.debug(f"Skipped {p1['last_name']} vs {p2['last_name']}: Invalid Odds {m1}/{m2}")
                             
                 i += 2 
             else:
                 i += 1 
 
+# =================================================================
+# 6. RUNNER
+# =================================================================
 class ScraperBot:
     def __init__(self):
         self.playwright = None
@@ -379,7 +383,7 @@ class ScraperBot:
         await self.playwright.stop()
 
 async def run():
-    logger.info("🚀 Neural Scout v99.1 (Robust Header & Block Parser) STARTING...")
+    logger.info("🚀 Neural Scout v101.0 (Strict User Config) STARTING...")
     bot = ScraperBot()
     await bot.start()
     try:
