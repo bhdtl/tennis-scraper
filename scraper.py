@@ -24,7 +24,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V81.4 - URL Fix & Safe DB)...")
+log("🔌 Initialisiere Neural Scout (V81.5 - Clean URL Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -255,7 +255,7 @@ async def update_past_results():
                         row_text = row.get_text(separator=" ", strip=True).lower()
                         if p1_last in row_text and p2_last in row_text:
                             # Simple Winner Check
-                            pass # Hier Logik einfügen falls gewünscht
+                            pass 
             except Exception:
                 await browser.close()
 
@@ -308,8 +308,10 @@ async def scrape_tennis_odds_for_date(target_date):
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         try:
-            # FIX: Clean URL f-string without markdown artifacts
-            url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){target_date.year}&month={target_date.month}&day={target_date.day}"
+            # FIX: Hier ist die URL jetzt absolut sauber, ohne Markdown-Klammern
+            base_url = "[https://www.tennisexplorer.com/matches/?type=all](https://www.tennisexplorer.com/matches/?type=all)"
+            url = f"{base_url}&year={target_date.year}&month={target_date.month}&day={target_date.day}"
+            
             log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             content = await page.content()
@@ -390,7 +392,7 @@ def parse_matches_strict(html, players):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v81.4 (Fixed URL) Starting...")
+    log(f"🚀 Neural Scout v81.5 (Clean URL Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
@@ -418,11 +420,11 @@ async def run_pipeline():
                 
                 iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                 
-                # --- SAFE CHECK FOR EXISTING MATCH ---
-                # Vermeidet den Supabase 400 Error bei Namen mit Leerzeichen
+                # --- SAFE CHECK FOR EXISTING MATCH (v81.3 Logic) ---
                 p1_safe_name = p1_obj['last_name']
                 p2_safe_name = p2_obj['last_name']
                 
+                # Wir holen Matches, in denen P1 involviert ist
                 existing_batch = supabase.table("market_odds").select("id, actual_winner_name, player1_name, player2_name")\
                     .or_(f"player1_name.eq.{p1_safe_name},player2_name.eq.{p1_safe_name}")\
                     .execute()
@@ -430,7 +432,7 @@ async def run_pipeline():
                 match_exists = None
                 if existing_batch.data:
                     for row in existing_batch.data:
-                        # Check in Python: Ist P2 der Gegner?
+                        # P1 vs P2 oder P2 vs P1 prüfen
                         if (row['player1_name'] == p1_safe_name and row['player2_name'] == p2_safe_name) or \
                            (row['player1_name'] == p2_safe_name and row['player2_name'] == p1_safe_name):
                             match_exists = row
@@ -438,7 +440,7 @@ async def run_pipeline():
                 
                 if match_exists:
                     if match_exists.get('actual_winner_name'):
-                        continue # Match ist fertig -> Skip
+                        continue # Match ist fertig
                     
                     # Update Odds
                     supabase.table("market_odds").update({
