@@ -8,7 +8,7 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 10     # SAFETY: Kill job if stuck to save credits
+    # Timeout removed per instruction (Default: 6h)
 
     steps:
       - name: Checkout Code
