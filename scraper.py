@@ -13,7 +13,7 @@ from decimal import Decimal, getcontext, ROUND_HALF_UP
 
 # Third-party imports
 import httpx
-from playwright.async_api import async_playwright, Browser
+from playwright.async_api import async_playwright, Browser, Page
 from supabase import create_client, Client
 from pydantic import BaseModel, ValidationError
 
@@ -39,7 +39,7 @@ class Config:
     SUPABASE_URL: str = os.environ.get("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     MODEL_NAME: str = 'gemini-2.5-pro'
-    CONCURRENCY_LIMIT: int = 5  # Max parallel browser tabs
+    CONCURRENCY_LIMIT: int = 3  # Reduced to 3 to prevent rate limits
     
     @classmethod
     def validate(cls):
@@ -77,12 +77,6 @@ class ScrapedMatch(BaseModel):
     odds1: Decimal
     odds2: Decimal
 
-class TournamentInfo(BaseModel):
-    name: str
-    surface: str
-    bsi_rating: float
-    notes: str = ""
-
 # =================================================================
 # 2. UTILITY SERVICE (Helper Functions)
 # =================================================================
@@ -108,7 +102,6 @@ class Utils:
     @staticmethod
     def get_last_name(full_name: str) -> str:
         if not full_name: return ""
-        # Remove initials like "A."
         clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
         parts = clean.split()
         return parts[-1].lower() if parts else ""
@@ -121,21 +114,18 @@ class DatabaseService:
     def __init__(self):
         self.client: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
 
-    def fetch_reference_data(self) -> Tuple[List[Player], Dict[str, Any], List[Dict]]:
-        """Loads Players, Skills, Reports, and Tournaments."""
+    def fetch_reference_data(self) -> Tuple[List[Player], List[Dict]]:
         try:
             players_raw = self.client.table("players").select("*").execute().data
             skills_raw = self.client.table("player_skills").select("*").execute().data
             tournaments_raw = self.client.table("tournaments").select("*").execute().data
 
-            # Map Skills
             skills_map = {}
             for s in skills_raw:
                 pid = s.get('player_id')
                 if pid:
                     skills_map[pid] = PlayerSkills(**{k: float(v or 50) for k, v in s.items() if k in PlayerSkills.model_fields})
 
-            # Hydrate Players
             players = []
             for p in players_raw:
                 player = Player(
@@ -147,14 +137,13 @@ class DatabaseService:
                 )
                 players.append(player)
 
-            return players, {}, tournaments_raw
+            return players, tournaments_raw
 
         except Exception as e:
             logger.error(f"❌ DB Load Error: {e}")
-            return [], {}, []
+            return [], []
 
     def get_existing_match(self, p1_last: str, p2_last: str):
-        """Checks for existing match logic with OR condition."""
         return self.client.table("market_odds").select("id, actual_winner_name").or_(
             f"and(player1_name.eq.{p1_last},player2_name.eq.{p2_last}),and(player1_name.eq.{p2_last},player2_name.eq.{p1_last})"
         ).execute()
@@ -206,7 +195,7 @@ class AIService:
         
         OUTPUT JSON ONLY:
         {{
-            "p1_tactical_score": (int 1-10, adaptability to surface),
+            "p1_tactical_score": (int 1-10),
             "p2_tactical_score": (int 1-10),
             "ai_text": "Short concise reason (max 15 words)."
         }}
@@ -221,7 +210,7 @@ class AIService:
             return default
 
 # =================================================================
-# 4. CORE ENGINES (Math & Logic)
+# 4. CORE ENGINES
 # =================================================================
 
 class MathEngine:
@@ -264,7 +253,7 @@ class MathEngine:
             
         prob_physics = MathEngine.sigmoid(c1_phys - c2_phys, sensitivity=0.015)
 
-        # 3. ELO RATINGS
+        # 3. ELO
         elo_surf = 'Hard'
         if 'clay' in surface.lower(): elo_surf = 'Clay'
         elif 'grass' in surface.lower(): elo_surf = 'Grass'
@@ -283,10 +272,9 @@ class MathEngine:
             inv2 = 1 / float(market_odds2)
             prob_market = inv1 / (inv1 + inv2)
 
-        # WEIGHTED AGGREGATION
         prob_final = (prob_tactical * 0.35) + (prob_physics * 0.25) + (prob_elo * 0.20) + (prob_market * 0.20)
-
         prob_final = max(0.01, min(0.99, prob_final))
+        
         fair_odds1 = Decimal(1 / prob_final).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         fair_odds2 = Decimal(1 / (1 - prob_final)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
@@ -297,38 +285,61 @@ class ScraperEngine:
         self.elo_cache = {"ATP": {}, "WTA": {}}
         self.combined_elo = {}
         self.semaphore = asyncio.Semaphore(Config.CONCURRENCY_LIMIT)
+        # BROWSER CONFIG - STEALTH MODE
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    async def _safe_goto(self, page: Page, url: str):
+        """Wrapper to handle navigation errors gracefully."""
+        try:
+            # Clean URL to prevent Markdown injection
+            clean_url = url.strip()
+            if not clean_url.startswith('http'):
+                logger.error(f"❌ Invalid URL format: {clean_url}")
+                return False
+                
+            await page.goto(clean_url, wait_until="domcontentloaded", timeout=45000)
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Nav Error ({clean_url}): {e}")
+            return False
 
     async def fetch_elo(self):
         logger.info("📊 Loading Elo Ratings...")
-        urls = {"ATP": "[https://tennisabstract.com/reports/atp_elo_ratings.html](https://tennisabstract.com/reports/atp_elo_ratings.html)", "WTA": "[https://tennisabstract.com/reports/wta_elo_ratings.html](https://tennisabstract.com/reports/wta_elo_ratings.html)"}
+        # RAW STRINGS - NO MARKDOWN
+        urls = {
+            "ATP": "[https://tennisabstract.com/reports/atp_elo_ratings.html](https://tennisabstract.com/reports/atp_elo_ratings.html)", 
+            "WTA": "[https://tennisabstract.com/reports/wta_elo_ratings.html](https://tennisabstract.com/reports/wta_elo_ratings.html)"
+        }
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             for tour, url in urls.items():
                 try:
-                    page = await browser.new_page()
-                    await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    content = await page.content()
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(content, 'html.parser')
-                    table = soup.find('table', {'id': 'reportable'})
-                    if table:
-                        rows = table.find_all('tr')[1:] 
-                        for row in rows:
-                            cols = row.find_all('td')
-                            if len(cols) > 4:
-                                name = Utils.normalize_text(cols[0].get_text(strip=True)).lower()
-                                try:
-                                    self.elo_cache[tour][name] = {
-                                        'Hard': float(cols[3].get_text(strip=True) or 1500), 
-                                        'Clay': float(cols[4].get_text(strip=True) or 1500), 
-                                        'Grass': float(cols[5].get_text(strip=True) or 1500)
-                                    }
-                                except: continue
-                    logger.info(f"   ✅ {tour} Elo loaded: {len(self.elo_cache[tour])}")
-                    await page.close()
+                    context = await browser.new_context(user_agent=self.user_agent)
+                    page = await context.new_page()
+                    
+                    if await self._safe_goto(page, url):
+                        content = await page.content()
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(content, 'html.parser')
+                        table = soup.find('table', {'id': 'reportable'})
+                        if table:
+                            rows = table.find_all('tr')[1:] 
+                            for row in rows:
+                                cols = row.find_all('td')
+                                if len(cols) > 4:
+                                    name = Utils.normalize_text(cols[0].get_text(strip=True)).lower()
+                                    try:
+                                        self.elo_cache[tour][name] = {
+                                            'Hard': float(cols[3].get_text(strip=True) or 1500), 
+                                            'Clay': float(cols[4].get_text(strip=True) or 1500), 
+                                            'Grass': float(cols[5].get_text(strip=True) or 1500)
+                                        }
+                                    except: continue
+                        logger.info(f"   ✅ {tour} Elo loaded: {len(self.elo_cache[tour])}")
+                    await context.close()
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Elo Warning ({tour}): {e}")
+                    logger.warning(f"   ⚠️ Elo Critical Error ({tour}): {e}")
             await browser.close()
         self.combined_elo = {**self.elo_cache["ATP"], **self.elo_cache["WTA"]}
 
@@ -339,15 +350,24 @@ class ScraperEngine:
             
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
+                context = await browser.new_context(user_agent=self.user_agent)
+                page = await context.new_page()
                 try:
+                    # DYNAMIC URL GENERATION - CLEAN
                     url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){date_obj.year}&month={date_obj.month}&day={date_obj.day}"
-                    await page.goto(url, wait_until="networkidle", timeout=60000)
-                    content = await page.content()
-                    found_matches = self._parse_explorer_html(content, target_players)
+                    
+                    if await self._safe_goto(page, url):
+                        # Wait for table explicitly to avoid empty scrapes
+                        try:
+                            await page.wait_for_selector("table.result", timeout=5000)
+                        except: pass 
+                        
+                        content = await page.content()
+                        found_matches = self._parse_explorer_html(content, target_players)
                 except Exception as e:
                     logger.error(f"❌ Scrape Error {date_obj.date()}: {e}")
                 finally:
+                    await context.close()
                     await browser.close()
             return found_matches
 
@@ -405,6 +425,7 @@ class ScraperEngine:
 class VerificationService:
     def __init__(self, db: DatabaseService):
         self.db = db
+        self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     async def run_verification_cycle(self):
         logger.info("🏆 Checking Results...")
@@ -424,17 +445,21 @@ class VerificationService:
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(user_agent=self.user_agent)
+            
             for day_offset in range(3):
                 target_date = datetime.now() - timedelta(days=day_offset)
-                await self._process_results_page(browser, target_date, safe_matches)
+                await self._process_results_page(context, target_date, safe_matches)
             await browser.close()
 
-    async def _process_results_page(self, browser: Browser, date_obj: datetime, pending_matches: List[Dict]):
+    async def _process_results_page(self, context: Browser, date_obj: datetime, pending_matches: List[Dict]):
         from bs4 import BeautifulSoup
-        page = await browser.new_page()
+        page = await context.new_page()
         try:
+            # CLEAN URL
             url = f"[https://www.tennisexplorer.com/results/?type=all&year=](https://www.tennisexplorer.com/results/?type=all&year=){date_obj.year}&month={date_obj.month}&day={date_obj.day}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', class_='result')
@@ -512,7 +537,7 @@ class NeuralScoutPipeline:
         logger.info("🚀 Starting Neural Scout v2026...")
         await self.verifier.run_verification_cycle()
         await self.scraper.fetch_elo()
-        players, _, db_tournaments = self.db.fetch_reference_data()
+        players, db_tournaments = self.db.fetch_reference_data()
         
         if not players:
             logger.error("No players in DB.")
