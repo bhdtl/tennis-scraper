@@ -411,6 +411,7 @@ async def run():
         resolver = ContextResolver(t)
         
         now = datetime.now()
+        # Scan 14 days
         for d in range(14):
             await process_day(bot, now + timedelta(days=d), p, s_map, r, resolver, matches)
             await asyncio.sleep(1)
