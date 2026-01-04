@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V104.0 - Identity Fingerprinting)...")
+log("🔌 Initialisiere Neural Scout (V105.0 - Strict Identity & Topology)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -57,7 +57,6 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    # Behalte Initialen wie "B." oder "Billy", entferne nur Wett-Müll
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
@@ -65,12 +64,12 @@ def clean_tournament_name(raw):
     clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
-def get_last_name(full_name):
-    """Extrahiert den Nachnamen (ignoriert Initialen am Anfang/Ende)."""
+def get_last_name_clean(full_name):
+    """Extrahiert den reinen Nachnamen für den Vergleich (ohne Initialen)."""
     if not full_name: return ""
-    # Entferne "B." am Anfang oder Ende, um den reinen Nachnamen zu finden
-    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name) # Remove "B. "
-    clean = re.sub(r'\s+[A-Z]\.$', '', clean)      # Remove " B."
+    # Entferne Initialen wie "B." am Ende oder Anfang
+    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name) # "B. Harris" -> "Harris"
+    clean = re.sub(r'\s+[A-Z]\.?$', '', clean)      # "Harris B." -> "Harris"
     parts = clean.strip().split()
     return parts[-1].lower() if parts else ""
 
@@ -147,12 +146,6 @@ async def get_db_data():
         log(f"❌ DB Load Error: {e}")
         return [], {}, [], []
 
-# =================================================================
-# MATH CORE V7
-# =================================================================
-def sigmoid_prob(diff, sensitivity=0.1):
-    return 1 / (1 + math.exp(-sensitivity * diff))
-
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
@@ -161,7 +154,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
+    prob_matchup = 1 / (1 + math.exp(-0.8 * (m1 - m2)))
 
     c1_score = 0; c2_score = 0
     if bsi_val <= 4.0:
@@ -173,11 +166,11 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     else:
         c1_score = sum(s1.values())
         c2_score = sum(s2.values())
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
+    prob_bsi = 1 / (1 + math.exp(-0.12 * (c1_score - c2_score)))
 
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
-    prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
+    prob_skills = 1 / (1 + math.exp(-0.08 * (score_p1 - score_p2)))
 
     elo1 = 1500.0; elo2 = 1500.0
     elo_surf = 'Hard'
@@ -249,8 +242,8 @@ async def update_past_results():
                     if 'flags' in str(row) or 'head' in str(row): continue
                     
                     for pm in safe_matches:
-                        p1_last = get_last_name(pm['player1_name'])
-                        p2_last = get_last_name(pm['player2_name'])
+                        p1_last = get_last_name_clean(pm['player1_name'])
+                        p2_last = get_last_name_clean(pm['player2_name'])
                         row_text = row.get_text(separator=" ", strip=True).lower()
                         next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                         
@@ -310,76 +303,51 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: STRICT IDENTITY RESOLUTION V104.0 ---
+# --- NEW: STRICT IDENTITY RESOLUTION FUNCTION ---
 def resolve_player_identity(scraped_name, db_players):
     """
     Identifiziert den korrekten Spieler in der DB.
-    Verhindert "Billy Harris" vs "Lloyd Harris" Fehler durch strikte Checks.
+    Löst 'Harris B.' vs 'Harris L.' korrekt auf.
     """
-    # 1. Clean & Normalize Scraped Name
-    # scraped_name could be "Harris B.", "B. Harris", "Billy Harris", "Harris"
+    scraped_clean = clean_player_name(scraped_name)
+    scraped_last = get_last_name_clean(scraped_clean).lower()
     
-    scraped_clean = clean_player_name(scraped_name).lower()
+    # 1. Kandidaten finden (Nachname in DB)
+    candidates = [p for p in db_players if get_last_name_clean(p['last_name']).lower() == scraped_last]
     
-    # Extract Last Name only for fast filtering
-    # "harris b." -> "harris"
-    last_name_only = get_last_name(scraped_clean)
-    
-    # 2. Find Candidates (Filter by last name)
-    candidates = [p for p in db_players if get_last_name(p['last_name']).lower() == last_name_only]
-    
+    # Fallback: Fuzzy
     if not candidates:
-        # Fallback: Fuzzy search if exact last name match fails
-        candidates = [p for p in db_players if p['last_name'].lower() in scraped_clean]
-        
-    if not candidates:
-        return None
-        
+        candidates = [p for p in db_players if p['last_name'].lower() in scraped_clean.lower()]
+    
+    if not candidates: return None
+    
+    # Wenn nur einer da ist, ist es einfach
     if len(candidates) == 1:
         return candidates[0]
         
-    # 3. DISAMBIGUATION (The Silicon Valley Logic)
-    # We have multiple players with same last name (e.g. Harris).
-    # We must check if the First Name or Initial matches.
-    
+    # 2. DISAMBIGUIERUNG: Prüfe Initialen/Vornamen
+    # scraped_name z.B. "Harris B." oder "Billy Harris"
     for cand in candidates:
         first_name = cand['first_name'].lower()
         if not first_name: continue
         
-        first_initial = first_name[0]
-        
-        # Case A: Full First Name Match ("Billy Harris" -> "Billy")
-        if first_name in scraped_clean:
+        # Check: Ist der volle Vorname enthalten?
+        if first_name in scraped_clean.lower():
             return cand
             
-        # Case B: Initial Match ("Harris B." -> "B")
-        # Check for "b " or " b" or "b." patterns
-        # Note: We need to be careful not to match the last letter of surname as initial
-        
-        # Check specific initial patterns in scraped name
-        if f" {first_initial}." in scraped_clean or \
-           f"{first_initial}. " in scraped_clean or \
-           scraped_clean.endswith(f" {first_initial}") or \
-           scraped_clean.startswith(f"{first_initial} "):
+        # Check: Ist die Initiale enthalten? (z.B. "B." für Billy)
+        initial = first_name[0]
+        # Regex für Initiale: " B." oder " B " oder ".B"
+        # Wir schauen, ob die Initiale isoliert im String vorkommt
+        if re.search(rf"\b{initial}[\.\s]", scraped_clean, re.IGNORECASE) or scraped_clean.lower().endswith(f" {initial}"):
+            log(f"      ✅ Identity Resolved (Initial): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
             return cand
             
-    # 4. Fallback: If no specific initial found in scraped string, use Rank/Popularity logic?
-    # For now, we LOG WARNING and skip to avoid bad data.
-    # OR we pick the one with most DB entries (if available).
-    # Safe approach: Return None if ambiguous.
-    # Aggressive approach: Return candidates[0] (usually the more famous one if sorted).
-    
-    # Let's try to match Lloyd vs Billy specifically if Harris
-    if "harris" in last_name_only:
-        # If scraped is just "Harris", it's usually Lloyd (ATP level).
-        # If it's "Harris B.", we would have caught it above.
-        for cand in candidates:
-            if "lloyd" in cand['first_name'].lower():
-                return cand
-                
-    log(f"      ⚠️ Ambiguous Player '{scraped_name}'. Candidates: {[c['first_name'] for c in candidates]}. Skipping to be safe.")
-    return None
+    # Fallback: Wenn wir es nicht wissen, loggen wir es und nehmen den ersten (oft der Berühmtere)
+    log(f"      ⚠️ Ambiguous Player '{scraped_name}'. Picking first candidate: {candidates[0]['last_name']}")
+    return candidates[0]
 
+# --- UNITED CUP TOPOLOGY ---
 async def build_country_city_map():
     if COUNTRY_TO_CITY_MAP: return 
     
@@ -398,10 +366,7 @@ async def build_country_city_map():
             prompt = f"""
             TASK: Map Countries to Host Cities.
             TEXT: {text[:20000]}
-            RULES: 
-            - Group A, Group C, Group E -> Played in PERTH.
-            - Group B, Group D, Group F -> Played in SYDNEY.
-            
+            RULES: A/C/E->PERTH, B/D/F->SYDNEY.
             OUTPUT JSON: {{ "Germany": "Perth", ... }}
             """
             res = await call_gemini(prompt)
@@ -488,7 +453,7 @@ async def scrape_tennis_odds_for_date(target_date):
             return None
 
 def parse_matches_locally(html, p_names):
-    # Dumb parser -> Grabs everything, filtering happens in main loop via resolve_identity
+    # DUMB PARSER: Finds everything, filtering happens in main loop via resolve_identity
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
@@ -540,7 +505,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v104.0 (Identity Fingerprinting) Starting...")
+    log(f"🚀 Neural Scout v105.0 (Strict Identity) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
@@ -556,12 +521,12 @@ async def run_pipeline():
         html = await scrape_tennis_odds_for_date(target_date)
         if not html: continue
 
-        matches = parse_matches_locally(html, []) # Empty list -> Get ALL matches
+        matches = parse_matches_locally(html, []) 
         log(f"🔍 Gefunden: {len(matches)} Raw Matches am {target_date.strftime('%d.%m.')}")
         
         for m in matches:
             try:
-                # --- V104.0 IDENTITY CHECK ---
+                # --- V105.0 STRICT RESOLUTION ---
                 p1_obj = resolve_player_identity(m['p1'], players)
                 p2_obj = resolve_player_identity(m['p2'], players)
                 
@@ -586,8 +551,6 @@ async def run_pipeline():
                     log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
-                    r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
-                    r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
