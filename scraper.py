@@ -42,7 +42,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # HINWEIS: Wir nutzen hier 'gemini-1.5-pro', da dies aktuell das stärkste Modell
 # für komplexe Logik ist. Falls du Zugang zu einer privaten 2.5 Beta hast, ändere dies hier.
-MODEL_NAME = 'gemini-1.5-pro' 
+MODEL_NAME = 'gemini-2.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
