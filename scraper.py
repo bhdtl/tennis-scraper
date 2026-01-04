@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V106.0 - Smart Conflict Resolution)...")
+log("🔌 Initialisiere Neural Scout (V106.1 - Bugfix r1/r2)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -37,7 +37,6 @@ ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
 # --- STATISCHE WAHRHEIT (Fallback, falls Scraper versagt) ---
-# Das verhindert, dass er fälschlicherweise "Sydney" rät, wenn er die Gruppe nicht online findet.
 STATIC_GROUP_DATA = {
     # PERTH
     "USA": "Perth", "Canada": "Perth", "Greece": "Perth", "Spain": "Perth",
@@ -48,7 +47,6 @@ STATIC_GROUP_DATA = {
     "Argentina": "Sydney"
 }
 
-# Wird mit Live-Daten ergänzt
 COUNTRY_TO_CITY_MAP = STATIC_GROUP_DATA.copy()
 
 CITY_TO_DB_STRING = {
@@ -68,7 +66,6 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    # Entfernt Wett-Spam, lässt aber Namen und Initialen ganz
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
@@ -312,16 +309,14 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: INTELLIGENT PLAYER IDENTITY RESOLVER (V106.0) ---
+# --- V106.0 SMART IDENTITY RESOLVER ---
 def resolve_player_identity_smart(scraped_name, db_players):
     """
-    Findet den Spieler in der DB. 
-    Löst Konflikte (z.B. Harris) nur wenn nötig, sonst permissiv.
+    Findet den Spieler. Löst Konflikte (Harris) intelligent, aber behält High-Recall für andere.
     """
     scraped_clean = clean_player_name(scraped_name).lower()
     
     # 1. Sammle ALLE Kandidaten, deren Nachname im gescrapten String vorkommt
-    # "Harris B." enthält "Harris" -> Billy Harris und Lloyd Harris werden gefunden
     candidates = []
     for p in db_players:
         if p['last_name'].lower() in scraped_clean:
@@ -330,33 +325,30 @@ def resolve_player_identity_smart(scraped_name, db_players):
     if not candidates:
         return None
     
-    # 2. Wenn nur EINER passt -> Nimm ihn (High Recall)
-    # Das fixt das Problem, dass Zverev etc. nicht gefunden wurden
+    # 2. Wenn nur EINER passt -> Nimm ihn (Das fixt das "Keine Matches gefunden" Problem)
     if len(candidates) == 1:
         return candidates[0]
         
-    # 3. Wenn MEHRERE passen (Konfliktfall, z.B. Harris) -> Initialen-Check
+    # 3. Wenn MEHRERE passen (Konfliktfall) -> Initialen-Check
     for cand in candidates:
         first_name = cand['first_name'].lower()
         if not first_name: continue
         
-        # Check: Ist der volle Vorname enthalten? (z.B. "Billy Harris")
+        # Check: Voller Vorname
         if first_name in scraped_clean:
             log(f"      ✅ Resolved (Full Name): {scraped_name} -> {cand['last_name']}")
             return cand
             
-        # Check: Ist die Initiale enthalten? ("Harris B." -> "B")
+        # Check: Initiale
         initial = first_name[0]
-        # Regex sucht nach isoliertem Buchstaben (Anfang, Ende oder mit Punkt/Space)
         if re.search(rf"\b{initial}[\.\s]", scraped_clean) or \
            scraped_clean.endswith(f" {initial}") or \
            scraped_clean.startswith(f"{initial} "):
             log(f"      ✅ Resolved (Initial): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
             return cand
             
-    # Fallback: Wenn wir Harris haben, aber keine Initiale -> Nimm Lloyd (häufiger) oder den ersten
-    # Das ist besser als das Match zu verlieren.
-    log(f"      ⚠️ Ambiguous Match '{scraped_name}'. Picking first candidate: {candidates[0]['last_name']}")
+    # Fallback
+    log(f"      ⚠️ Ambiguous Match '{scraped_name}'. Picking first: {candidates[0]['last_name']}")
     return candidates[0]
 
 # --- UNITED CUP TOPOLOGY ---
@@ -404,12 +396,11 @@ async def resolve_venue_by_country(p1):
                 TOURNAMENT_LOC_CACHE[cache_key] = country
             except: pass
             
-    # Check Map (Static + Dynamic)
     for map_country, map_city in COUNTRY_TO_CITY_MAP.items():
         if country.lower() in map_country.lower() or map_country.lower() in country.lower():
             return CITY_TO_DB_STRING.get(map_city)
 
-    return "Ken Rosewall Arena"
+    return "Ken Rosewall Arena" # Fallback
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
@@ -518,7 +509,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v106.0 (Smart Conflict Resolution) Starting...")
+    log(f"🚀 Neural Scout v106.1 (Bugfix & Smart Resolver) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
@@ -535,11 +526,11 @@ async def run_pipeline():
         if not html: continue
 
         matches = parse_matches_locally(html, []) 
-        log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
+        log(f"🔍 Gefunden: {len(matches)} Raw Matches am {target_date.strftime('%d.%m.')}")
         
         for m in matches:
             try:
-                # --- V106.0 SMART IDENTITY RESOLUTION ---
+                # --- V106.0 SMART RESOLVER ---
                 p1_obj = resolve_player_identity_smart(m['p1'], players)
                 p2_obj = resolve_player_identity_smart(m['p2'], players)
                 
@@ -564,6 +555,10 @@ async def run_pipeline():
                     log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
+                    
+                    # FIX: Inserted missing Scouting Reports retrieval
+                    r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
+                    r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
