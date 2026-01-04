@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V81.0 - Time Extraction Fix)...")
+log("🔌 Initialisiere Neural Scout (V81.1 - Doubles Firewall)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -48,6 +48,7 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
+    # FIX: Clean artifacts but preserve specific chars if needed later
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def get_last_name(full_name):
@@ -387,7 +388,16 @@ def parse_matches_locally(html, p_names):
         rows = table.find_all("tr")
         for i in range(len(rows)):
             row = rows[i]
-            if "head" in row.get("class", []): current_tour = row.get_text(strip=True); continue
+            if "head" in row.get("class", []): 
+                current_tour = row.get_text(strip=True)
+                continue
+            
+            # --- DOUBLES FIREWALL (NEW) ---
+            # 1. Skip if tournament header says "Doubles"
+            if "doubles" in current_tour.lower():
+                continue
+            # ------------------------------
+
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
             
             # --- TIME EXTRACTION START (CRITICAL FIX) ---
@@ -404,6 +414,13 @@ def parse_matches_locally(html, p_names):
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
                 p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
+
+                # --- DOUBLES FIREWALL (PLAYER CHECK) ---
+                # 2. Skip if player name contains '/' (TennisExplorer uses '/' for doubles)
+                if '/' in p1_raw or '/' in p2_raw:
+                    continue
+                # ---------------------------------------
+
                 if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                     odds = []
                     try:
@@ -427,7 +444,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v81.0 (Regex Date Fix) Starting...")
+    log(f"🚀 Neural Scout v81.1 (Doubles Firewall) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
