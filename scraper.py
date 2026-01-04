@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V86.0 - Gemini 2.5 Pro Arena Intelligence)...")
+log("🔌 Initialisiere Neural Scout (V86.1 - Strict Arena Search)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -31,7 +31,6 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-# UPDATE: Using the requested high-intelligence model
 MODEL_NAME = 'gemini-2.5-pro' 
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
@@ -52,9 +51,8 @@ def clean_player_name(raw):
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
-    """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA'."""
+    """Entfernt TennisExplorer-Artefakte."""
     if not raw: return "Unknown"
-    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen (typisch für Stats-Links)
     clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
@@ -68,7 +66,7 @@ def get_last_name(full_name):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.5) # Slight throttle to be safe
+    await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -307,13 +305,13 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: ADVANCED ARENA LOCATOR ---
+# --- NEW: STRICT ARENA LOCATOR (V86.1) ---
 async def resolve_united_cup_arena_with_gemini(p1, p2):
     """
-    Sucht via Google nach dem spezifischen STADION (RAC Arena vs Ken Rosewall).
-    Nutzt Gemini 2.5 Pro für Kontextverständnis.
+    Sucht spezifisch nach dem STADION (RAC Arena vs Ken Rosewall).
+    Kein Fallback-Raten mehr! Entweder sicher oder None.
     """
-    search_query = f"United Cup 2026 {p1} vs {p2} stadium court preview"
+    search_query = f"{p1} vs {p2} United Cup 2026 stadium court arena"
     log(f"   🕵️‍♀️ Identifying United Cup Arena ({p1} vs {p2})...")
     
     cache_key = f"UC_{p1}_{p2}"
@@ -330,43 +328,44 @@ async def resolve_united_cup_arena_with_gemini(p1, p2):
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- INTELLIGENT PROMPT (Arena-Aware) ---
+            # --- STRICT PROMPT (Arena-Aware) ---
             prompt = f"""
-            TASK: Determine the STADIUM/ARENA for the United Cup 2026 match: {p1} vs {p2}.
+            TASK: Determine the exact STADIUM/ARENA for the United Cup 2026 match: {p1} vs {p2}.
             
-            SEARCH RESULTS:
+            SEARCH TEXT:
             {text_content[:3000]}
             
-            CRITICAL RULES:
-            1. Look for "RAC Arena" -> implies City: "Perth"
-            2. Look for "Ken Rosewall Arena" -> implies City: "Sydney"
-            3. If context says "Sydney Finals", return "Sydney".
-            4. If context says "Perth Group Stage", return "Perth".
+            STRICT RULES:
+            1. Look for "RAC Arena" or "Perth" -> City is "Perth"
+            2. Look for "Ken Rosewall Arena" or "Sydney" -> City is "Sydney"
             
-            OUTPUT JSON ONLY: {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
-            If totally unsure, default to "Perth".
+            OUTPUT:
+            - If confident: JSON {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
+            - If NO stadium/city mentioned for THIS match: JSON {{ "city": null }} (DO NOT GUESS)
             """
             
             # Using the stronger model as requested
             res = await call_gemini(prompt, model='gemini-2.5-pro')
             
-            city = "Perth" # Default
+            city = None
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    city = data.get("city", "Perth")
+                    city = data.get("city")
                 except: pass
             
-            if city not in ["Perth", "Sydney"]: city = "Perth"
-
-            TOURNAMENT_LOC_CACHE[cache_key] = city
-            log(f"      -> AI Determined: {city}")
-            return city
+            if city in ["Perth", "Sydney"]:
+                TOURNAMENT_LOC_CACHE[cache_key] = city
+                log(f"      -> AI Determined: {city}")
+                return city
+            else:
+                log(f"      -> AI Unsure (Result: {city}). Skipping auto-assignment.")
+                return None
 
         except Exception as e:
-            log(f"      ⚠️ Search failed (Defaulting to Perth): {e}")
+            log(f"      ⚠️ Search failed: {e}")
             await browser.close() if 'browser' in locals() else None
-            return "Perth"
+            return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
@@ -376,26 +375,27 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         # 1. Ask Gemini 2.5 Pro to identify Perth vs Sydney
         city = await resolve_united_cup_arena_with_gemini(p1, p2)
         
-        # 2. Database Lookup based on CITY
-        for t in db_tours:
-            # We look for the DB entry that contains the found city in its location
-            if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
-                # This ensures we get the specific BSI/Notes for that arena
-                return t['surface'], t['bsi_rating'], f"United Cup ({city})"
+        if city:
+            # 2. Database Lookup based on CITY
+            for t in db_tours:
+                if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
+                    # Exact Match Found (e.g. "Perth, RAC Arena")
+                    return t['surface'], t['bsi_rating'], f"United Cup ({city})"
         
-        return "Hard Court Outdoor", 8.6, "United Cup (Fallback)"
+        # If no city found or AI unsure, we return a generic/default to avoid crashing, 
+        # BUT we log it clearly so you see it wasn't matched.
+        return "Hard Court Outdoor", 7.6, "United Cup (Generic/Unsure)"
     # -------------------------------
 
-    # --- STANDARD TOURNAMENT LOGIC (No Search, just DB) ---
+    # --- STANDARD TOURNAMENT LOGIC ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
-    # Basic fallbacks
+    # Fallbacks
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
     
-    # Last resort AI guess for unknown tournament names
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
@@ -489,7 +489,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v86.0 (Gemini 2.5 Pro + Arena Search) Starting...")
+    log(f"🚀 Neural Scout v86.1 (Strict Arena Search) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
