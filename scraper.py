@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V84.0 - Gemini Powered Location)...")
+log("🔌 Initialisiere Neural Scout (V85.0 - Arena-Aware Context)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -31,7 +31,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.5-pro' # SPEED & INTELLIGENCE
+MODEL_NAME = 'gemini-2.0-flash' # High Speed, High Intelligence
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
@@ -66,7 +66,7 @@ def get_last_name(full_name):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.5) # Slight throttle
+    await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -201,13 +201,11 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 # =================================================================
 async def update_past_results():
     log("🏆 Checking for Match Results (Deep Scan V6)...")
-    
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending_matches:
         log("   ✅ No pending matches to verify.")
         return
 
-    # 1. TIME-LOCK (65m)
     safe_matches = []
     now_utc = datetime.now(timezone.utc)
     for pm in pending_matches:
@@ -222,11 +220,8 @@ async def update_past_results():
         log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
         return
 
-    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
-
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
-        
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
@@ -241,27 +236,21 @@ async def update_past_results():
                 if not table: continue
 
                 rows = table.find_all('tr')
-                
                 for i in range(len(rows)):
                     row = rows[i]
                     if 'flags' in str(row) or 'head' in str(row): continue
-
+                    
                     for pm in safe_matches:
                         p1_last = get_last_name(pm['player1_name'])
                         p2_last = get_last_name(pm['player2_name'])
-                        
                         row_text = row.get_text(separator=" ", strip=True).lower()
-                        next_row_text = ""
-                        if i+1 < len(rows):
-                            next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower()
+                        next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                         
-                        # MATCH FINDER
                         match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                       (p2_last in row_text and p1_last in next_row_text) or \
                                       (p1_last in row_text and p2_last in row_text)
                         
                         if match_found:
-                            log(f"   🎯 MATCH ROW FOUND: {p1_last} vs {p2_last}")
                             try:
                                 is_retirement = "ret." in row_text or "w.o." in row_text
                                 cols1 = row.find_all('td')
@@ -271,10 +260,9 @@ async def update_past_results():
                                     scores = []
                                     for col in columns:
                                         txt = col.get_text(strip=True)
-                                        if len(txt) > 4: continue # Skip names
-                                        if '(' in txt: txt = txt.split('(')[0] # Clean tiebreak
-                                        if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
-                                            scores.append(int(txt))
+                                        if len(txt) > 4: continue
+                                        if '(' in txt: txt = txt.split('(')[0]
+                                        if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                     return scores
 
                                 p1_scores = extract_scores_aggressive(cols1)
@@ -295,21 +283,16 @@ async def update_past_results():
                                 
                                 if winner_name:
                                     supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
-                                    log(f"   ✅ WINNER SETTLED: {winner_name}")
                                     safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
-                                else:
-                                    log(f"      ⚠️ No winner derived (Sets: {p1_sets}-{p2_sets})")
 
-                            except Exception as e:
-                                log(f"      ❌ Parsing Error: {e}")
-            except Exception as e:
-                log(f"   ⚠️ Page Error: {e}")
-                await browser.close()
+                            except Exception: pass
+            except Exception: await browser.close()
 
 # =================================================================
 # MAIN PIPELINE
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
+    # This is for generic cases, not used for United Cup anymore
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     prompt = f"TASK: Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\", \"is_indoor\": bool }}"
     res = await call_gemini(prompt)
@@ -320,83 +303,84 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: GEMINI-POWERED LOCATION FINDER ---
-async def resolve_united_cup_city_with_gemini(p1, p2):
-    """Holt Suchergebnisse und lässt Gemini entscheiden: Perth oder Sydney."""
-    search_query = f"United Cup 2026 {p1} vs {p2} schedule location city"
-    log(f"   🕵️‍♀️ Identifying United Cup Venue (Gemini): {p1} vs {p2}...")
+# --- V85.0: ARENA-AWARE UNITED CUP LOCATOR ---
+async def resolve_united_cup_specifics(p1, p2):
+    """Uses Google Search Snippets + Gemini to find RAC Arena vs Ken Rosewall Arena."""
+    search_query = f"United Cup 2026 {p1} vs {p2} court arena location"
+    log(f"   🕵️‍♀️ Neural Search: {p1} vs {p2} (Targeting Arena)...")
     
-    # Check Cache First
     cache_key = f"UC_{p1}_{p2}"
-    if cache_key in TOURNAMENT_LOC_CACHE: 
-        log(f"      -> Cached: {TOURNAMENT_LOC_CACHE[cache_key]}")
-        return TOURNAMENT_LOC_CACHE[cache_key]
+    if cache_key in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[cache_key]
 
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # DuckDuckGo HTML is fast & bot friendly
+            # Searching DuckDuckGo HTML for stability
             await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=8000)
-            
-            # Get text content (snippets)
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- ASK GEMINI ---
+            # --- IMPROVED PROMPT ---
+            # We explicitly teach Gemini about the venues
             prompt = f"""
-            TASK: Analyze these search results for the tennis match {p1} vs {p2} at United Cup 2026.
-            GOAL: Determine if the match is played in PERTH or SYDNEY.
-            SEARCH_RESULTS:
-            {text_content[:2000]} 
+            TASK: Identify the specific city for this United Cup 2026 match: {p1} vs {p2}.
             
-            INSTRUCTION: 
-            - If text mentions {p1}/{p2} playing in Perth, return JSON: {{ "city": "Perth" }}
-            - If text mentions {p1}/{p2} playing in Sydney, return JSON: {{ "city": "Sydney" }}
-            - If unsure/ambiguous, default to Perth (Group Stage): {{ "city": "Perth" }}
+            CONTEXT CLUES:
+            - "RAC Arena" or "Perth" -> City is "Perth"
+            - "Ken Rosewall Arena" or "Sydney" -> City is "Sydney"
+            
+            SEARCH SNIPPETS:
+            {text_content[:2500]}
+            
+            OUTPUT RULES:
+            - Return JSON ONLY: {{ "city": "Perth" }} or {{ "city": "Sydney" }}
+            - If text mentions both, look for the match SCHEDULE.
+            - If unsure, default to "Perth".
             """
             
-            res = await call_gemini(prompt, model='gemini-2.0-flash') # Explicit 2.0 Flash
+            res = await call_gemini(prompt, model='gemini-2.0-flash')
             
-            city = "Perth" # Default
+            city = "Perth"
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
                     city = data.get("city", "Perth")
                 except: pass
             
-            # Validate output
             if city not in ["Perth", "Sydney"]: city = "Perth"
 
             TOURNAMENT_LOC_CACHE[cache_key] = city
-            log(f"      -> Gemini Identified: {city}")
+            log(f"      -> AI Decision: {city}")
             return city
 
         except Exception as e:
-            log(f"      ⚠️ Search/Gemini failed (Defaulting to Perth): {e}")
+            log(f"      ⚠️ Search failed (Fallback Perth): {e}")
             await browser.close() if 'browser' in locals() else None
             return "Perth"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL HANDLER (Gemini Enhanced) ---
+    # --- ISOLATED UNITED CUP LOGIC ---
     if "united cup" in s_low:
-        city = await resolve_united_cup_city_with_gemini(p1, p2)
-        # Filter DB for United Cup entry that matches the city
+        city = await resolve_united_cup_specifics(p1, p2)
+        # 1. Match "United Cup" AND found City in 'location'
         for t in db_tours:
             if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
                 return t['surface'], t['bsi_rating'], f"United Cup ({city})"
         return "Hard Court Outdoor", 8.6, "United Cup (Fallback)"
-    # ----------------------------------------------------
+    # ---------------------------------
 
+    # --- STANDARD LOGIC FOR ALL OTHER TOURNAMENTS (As Requested) ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
+    
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
     
-    log(f"   🤖 AI resolving location for {p1} vs {p2}...")
+    # Only fallback to AI guess if totally unknown
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
@@ -458,8 +442,7 @@ def parse_matches_locally(html, p_names):
             if first_col and 'time' in first_col.get('class', []):
                 raw_time = first_col.get_text(strip=True)
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
-                if time_match:
-                    match_time_str = time_match.group(1).zfill(5) 
+                if time_match: match_time_str = time_match.group(1).zfill(5) 
 
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
@@ -490,7 +473,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v84.0 (Gemini 2.0 Powered) Starting...")
+    log(f"🚀 Neural Scout v85.0 (Arena-Aware) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -539,10 +522,9 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW GEMINI LOCATOR ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
-                    
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
+                    
                     prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2)
                     
                     entry = {
