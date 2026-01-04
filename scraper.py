@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V95.0 - Official Site Scraper)...")
+log("🔌 Initialisiere Neural Scout (V96.0 - Cached Multi-Day Scanner)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,15 +36,16 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
+# --- MEMORY CACHE FOR SCHEDULE PAGES ---
+# Prevents re-downloading the same page 50 times.
+# Format: { 1: "full html text day 1", 2: "full html text day 2" }
+SCHEDULE_CACHE = {}
+
 # --- HARDCODED TRUTH TABLE ---
-# Mappt die Stadt aus der offiziellen Seite auf deine DB
 CITY_TO_DB_LOCATION = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
 }
-
-# Tournament Start Date (Crucial for URL calculation)
-UC_START_DATE = datetime(2025, 12, 27) 
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -71,21 +72,11 @@ def get_last_name(full_name):
     parts = clean.split()
     return parts[-1].lower() if parts else ""
 
-def get_united_cup_day(target_date_obj):
-    """Berechnet den Spieltag für die URL (Tag 1 = 27.12.2025)."""
-    # target_date might be offset-aware, ensure naive comparison or convert
-    # Simple logic: diff in days + 1
-    # We strip time for date calculation
-    d1 = datetime(target_date_obj.year, target_date_obj.month, target_date_obj.day)
-    delta = (d1 - UC_START_DATE).days + 1
-    # Ensure it's valid (e.g. between 1 and 15)
-    return max(1, delta)
-
 # =================================================================
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.5) 
+    await asyncio.sleep(0.2) # Faster throttle since we call it less often now
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -318,58 +309,70 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: OFFICIAL SITE SCRAPER V95.0 ---
-async def resolve_united_cup_official_site(p1, p2, match_date):
+# --- V96.0: CACHED MULTI-DAY OFFICIAL SCRAPER ---
+async def fetch_schedule_for_day(day_num):
     """
-    Geht direkt auf unitedcup.com/scores/schedule?day=X
-    Nutzt Gemini, um den gesamten Page-Text zu analysieren.
+    Lädt den Schedule für einen bestimmten Tag (1-9) und cached ihn.
     """
+    if day_num in SCHEDULE_CACHE:
+        return SCHEDULE_CACHE[day_num]
     
+    url = f"https://www.unitedcup.com/en/scores/schedule?day={day_num}"
+    log(f"   📥 Downloading Schedule Day {day_num}...")
+    
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+            text_content = await page.inner_text("body")
+            await browser.close()
+            
+            # Cache the result
+            SCHEDULE_CACHE[day_num] = text_content
+            return text_content
+        except Exception as e:
+            log(f"      ⚠️ Failed to download Day {day_num}: {e}")
+            return ""
+
+async def resolve_united_cup_iterative(p1, p2):
+    """
+    Loop durch Tag 1 bis 9.
+    1. Check ob Spieler-Name im Text ist (Python Check -> Schnell).
+    2. Wenn ja, frag Gemini nach der Stadt.
+    """
     cache_key = f"UC_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: 
         log(f"      -> Cached: {TOURNAMENT_LOC_CACHE[cache_key]}")
         return TOURNAMENT_LOC_CACHE[cache_key]
 
-    # 1. Berechne den Turnier-Tag (URL Parameter)
-    day_num = get_united_cup_day(match_date)
-    official_url = f"https://www.unitedcup.com/en/scores/schedule?day={day_num}"
-    
-    log(f"   🕵️‍♀️ Official Site Scan: {p1} vs {p2} (Day {day_num})...")
+    log(f"   🕵️‍♀️ Scanning United Cup Schedule (Days 1-9) for {p1}...")
 
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            # 2. Besuche die offizielle Seite
-            await page.goto(official_url, timeout=15000, wait_until="domcontentloaded")
+    for day in range(1, 10): # Tage 1 bis 9
+        content = await fetch_schedule_for_day(day)
+        if not content: continue
+
+        # PRE-FILTER: Sparrt Gemini Kosten und Zeit
+        if p1 in content or get_last_name(p1) in content:
+            log(f"      -> Match potentially found on Day {day}. Asking Gemini...")
             
-            # 3. Hole den gesamten Text der Seite
-            # (Wir suchen nach dem Spieler-Namen im Kontext der Städte-Header)
-            text_content = await page.inner_text("body")
-            await browser.close()
-            
-            # --- GEMINI ANALYSIS OF OFFICIAL DATA ---
             prompt = f"""
-            TASK: Identify the CITY for the United Cup match: {p1} vs {p2}.
-            SOURCE: Full text dump of the Official Schedule Page (Day {day_num}).
+            TASK: Identify the CITY/ARENA for the match involving {p1} vs {p2}.
+            SOURCE: United Cup Schedule Day {day}.
             
             PAGE TEXT:
-            {text_content[:8000]}  # Limit token usage, but enough for schedule
+            {content[:10000]} 
             
             INSTRUCTIONS:
-            1. Find the name "{p1}" (or their country).
-            2. Look at the SECTION headers above the player name.
-            3. Does the section header say "Perth" or "RAC Arena"? -> City = Perth.
-            4. Does the section header say "Sydney" or "Ken Rosewall"? -> City = Sydney.
+            1. Find the section where {p1} is listed.
+            2. Check the headers above (Perth/RAC or Sydney/Ken Rosewall).
             
             OUTPUT JSON ONLY:
             {{ "city": "Perth" }}  OR  {{ "city": "Sydney" }}
-            
-            If player not found on this day's schedule: {{ "city": null }}
+            If not clearly found: {{ "city": null }}
             """
             
-            res = await call_gemini(prompt, model='gemini-2.5-pro')
-            
+            res = await call_gemini(prompt)
             city = None
             if res:
                 try:
@@ -378,51 +381,30 @@ async def resolve_united_cup_official_site(p1, p2, match_date):
                 except: pass
             
             if city in ["Perth", "Sydney"]:
-                # Map to DB
                 arena = CITY_TO_DB_LOCATION.get(city)
                 TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      -> Official Site Found: {city} => Arena: {arena}")
+                log(f"      ✅ FOUND on Day {day}: {city} => {arena}")
                 return arena
-            else:
-                log(f"      -> Player not found on Day {day_num} schedule (Result: {city}).")
-                # DO NOT FALLBACK HERE. Return None so we can log it.
-                return None
-
-        except Exception as e:
-            log(f"      ⚠️ Official Site Scan failed: {e}")
-            await browser.close() if 'browser' in locals() else None
-            return None
+    
+    # Final Fallback if not found in ANY schedule (maybe not updated yet)
+    log(f"      ❌ Not found in schedule (Day 1-9). Using Sydney default.")
+    return "Ken Rosewall Arena" # Default safe bet for finals/late stage
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # We need the match date for the official URL calculation
-        # Since we are inside the loop, we use the current target_date logic implicitly.
-        # But wait, we need to pass the date. 
-        # FIX: The loop variable 'target_date' isn't passed here. 
-        # Hack: We use 'now' + heuristics or we accept that we look at 'today'.
-        # Better: We assume the match is within the next few days.
-        
-        # NOTE: For V95.0, to keep signature compatible, we estimate Day based on *today*.
-        # ideally we pass date. 
-        # Let's try finding it via official site using TODAY's date logic context.
-        current_date_context = datetime.now() # This is a slight approximation if scraping future
-        
-        arena_target = await resolve_united_cup_official_site(p1, p2, current_date_context)
+        # Calls the new Iterative Scanner
+        arena_target = await resolve_united_cup_iterative(p1, p2)
         
         if arena_target:
-            # 2. Database Lookup
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # 3. SAFETY FALLBACK (To prevent crash/skip as requested by "it skips matches")
-        # If Official Site fails (maybe player plays tomorrow, not today), we default to Sydney Finals logic
-        # OR we just log and accept generic.
-        log(f"      ⚠️ Fallback: United Cup match location unknown. Using Sydney default.")
-        return "Hard Court Outdoor", 7.0, "United Cup (Sydney Default)" 
+        # Fallback (obwohl resolve_united_cup_iterative schon einen Default liefert)
+        return "Hard Court Outdoor", 7.0, "United Cup (Sydney Default)"
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -526,7 +508,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v95.0 (Official Source Logic) Starting...")
+    log(f"🚀 Neural Scout v96.0 (Cached Multi-Day Scan) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -575,7 +557,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE OFFICIAL SOURCE LOCATOR ---
+                    # --- CALLING THE MULTI-DAY CACHED LOCATOR ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
