@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V100.0 - Country Topology Logic)...")
+log("🔌 Initialisiere Neural Scout (V101.0 - Strict Player Identity)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,15 +36,18 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- V100.0: THE GLOBAL TRUTH MAP ---
-# Wird beim Start einmalig befüllt.
-# Format: { "Italy": "Perth", "Brazil": "Perth", "USA": "Sydney" ... }
+# --- CACHE & TRUTH TABLES ---
+SCHEDULE_CACHE = {}
 COUNTRY_TO_CITY_MAP = {}
 
-# DB Mapping
-CITY_TO_DB_STRING = {
+CITY_TO_DB_LOCATION = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
+}
+
+GROUP_TO_CITY = {
+    "Group A": "Perth", "Group C": "Perth", "Group E": "Perth",
+    "Group B": "Sydney", "Group D": "Sydney", "Group F": "Sydney"
 }
 
 # =================================================================
@@ -59,7 +62,9 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
+    # Important: Do NOT strip initials (like "B.") here!
+    clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
+    return clean
 
 def clean_tournament_name(raw):
     if not raw: return "Unknown"
@@ -308,78 +313,79 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW V100.0: BUILD THE KNOWLEDGE GRAPH ---
+# --- NEW: PLAYER RESOLUTION LOGIC V101.0 ---
+def resolve_player_identity(scraped_name, db_players):
+    """
+    Identifies the correct player from DB, handling duplicates (e.g. Harris L. vs Harris B.).
+    """
+    scraped_last = get_last_name(scraped_name).lower()
+    
+    # 1. Find all players with this last name
+    candidates = [p for p in db_players if p['last_name'].lower() == scraped_last]
+    
+    if not candidates:
+        # Fuzzy check: "Harris B." contains "Harris"
+        candidates = [p for p in db_players if p['last_name'].lower() in scraped_name.lower()]
+    
+    if not candidates:
+        return None
+    
+    if len(candidates) == 1:
+        return candidates[0]
+        
+    # 2. DISAMBIGUATE using First Initial (e.g. "B." vs "L.")
+    # scraped_name example: "Harris B." or "B. Harris"
+    for cand in candidates:
+        first_initial = cand['first_name'][0].lower()
+        # Look for "b." or " b " or "b "
+        if f" {first_initial}." in scraped_name.lower() or \
+           f"{first_initial}. " in scraped_name.lower() or \
+           scraped_name.lower().endswith(f" {first_initial}"):
+            log(f"      ✅ Identity Resolved: {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
+            return cand
+            
+    # 3. Fallback: If no initial match, log warning and return first (Risk, but better than crash)
+    log(f"      ⚠️ Ambiguous Player: {scraped_name}. Candidates: {[c['first_name'] for c in candidates]}. Picking first.")
+    return candidates[0]
+
+# --- UNITED CUP TOPOLOGY ---
 async def build_country_city_map():
-    """
-    Scrapt die United Cup Standings-Seite EINMALIG.
-    Baut ein Mapping: { "Germany": "Perth", "USA": "Sydney", ... }
-    """
-    if COUNTRY_TO_CITY_MAP: return # Already built
+    if COUNTRY_TO_CITY_MAP: return 
     
     url = "https://www.unitedcup.com/en/scores/group-standings"
-    log("   📥 Building United Cup Knowledge Graph (Standings Page)...")
+    log("   📥 Building United Cup Knowledge Graph...")
     
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # Wait for the table to load (Hydration)
             await page.goto(url, timeout=20000, wait_until="networkidle")
-            await page.wait_for_timeout(3000) # Safety wait
-            
-            text_content = await page.inner_text("body")
+            await page.wait_for_timeout(3000) 
+            text = await page.inner_text("body")
             await browser.close()
             
-            # --- GEMINI MAPPER ---
             prompt = f"""
-            TASK: Map every Country in the United Cup Standings to its Host City.
-            SOURCE: Official Standings Page.
-            
-            TEXT:
-            {text_content[:20000]}
-            
-            RULES:
-            - Group A, Group C, Group E -> Played in PERTH.
-            - Group B, Group D, Group F -> Played in SYDNEY.
-            
-            INSTRUCTION:
-            1. Find countries listed in each Group.
-            2. Assign them to Perth or Sydney based on the Group rules.
-            
-            OUTPUT JSON ONLY (Keys = Country Name, Values = City):
-            {{
-                "Germany": "Perth",
-                "Brazil": "Perth",
-                "USA": "Perth", 
-                "Great Britain": "Sydney",
-                ... (include ALL countries found)
-            }}
+            TASK: Map Countries to Host Cities (Perth/Sydney).
+            TEXT: {text[:20000]}
+            RULES: A/C/E=Perth, B/D/F=Sydney.
+            OUTPUT JSON: {{ "Germany": "Perth", ... }}
             """
-            
             res = await call_gemini(prompt)
             if res:
                 data = json.loads(res.replace("```json", "").replace("```", "").strip())
                 COUNTRY_TO_CITY_MAP.update(data)
-                log(f"      ✅ Knowledge Graph Built: {len(COUNTRY_TO_CITY_MAP)} Countries Mapped.")
-                log(f"      📝 Sample: {list(COUNTRY_TO_CITY_MAP.items())[:3]}")
-                
-        except Exception as e:
-            log(f"      ⚠️ Knowledge Graph Build Failed: {e}")
+                log(f"      ✅ Mapped {len(COUNTRY_TO_CITY_MAP)} Countries.")
+        except Exception: pass
 
-async def resolve_united_cup_via_country(p1):
-    """
-    Ermittelt die Stadt basierend auf dem Land des Spielers.
-    """
-    # 1. Ensure Map exists
-    if not COUNTRY_TO_CITY_MAP:
-        await build_country_city_map()
-        
-    # 2. Get Player's Country via Gemini
+async def resolve_venue_by_country(p1):
+    if not COUNTRY_TO_CITY_MAP: await build_country_city_map()
+    
     cache_key = f"COUNTRY_{p1}"
     if cache_key in TOURNAMENT_LOC_CACHE:
         country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
-        prompt = f"What country does tennis player '{p1}' represent? Output JSON: {{ \"country\": \"Name\" }} (Use standard English name like 'Germany', 'USA', 'Italy')"
+        # Small Gemini call to get nationality
+        prompt = f"What country does tennis player '{p1}' represent? Output JSON: {{ \"country\": \"Name\" }}"
         res = await call_gemini(prompt)
         country = "Unknown"
         if res:
@@ -388,48 +394,28 @@ async def resolve_united_cup_via_country(p1):
                 TOURNAMENT_LOC_CACHE[cache_key] = country
             except: pass
             
-    log(f"      -> Player: {p1} | Country: {country}")
-    
-    # 3. Lookup in Truth Table
-    # Fuzzy Match fallback
-    if country in COUNTRY_TO_CITY_MAP:
-        city = COUNTRY_TO_CITY_MAP[country]
-        arena = CITY_TO_DB_STRING.get(city)
-        log(f"      ✅ MAPPED: {country} -> {city} -> {arena}")
-        return arena
-    
-    # Try fuzzy (e.g. "United States" vs "USA")
+    # Fuzzy Match
     for map_country, map_city in COUNTRY_TO_CITY_MAP.items():
         if country.lower() in map_country.lower() or map_country.lower() in country.lower():
-            arena = CITY_TO_DB_STRING.get(map_city)
-            log(f"      ✅ FUZZY MAPPED: {country}~{map_country} -> {map_city} -> {arena}")
-            return arena
+            return CITY_TO_DB_STRING.get(map_city)
 
-    log(f"      ❌ Country '{country}' not found in Group Map. Fallback needed.")
-    return None
+    return "Ken Rosewall Arena" # Fallback Sydney
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # 1. Resolve via Country Topology
-        arena_target = await resolve_united_cup_via_country(p1)
-        
+        arena_target = await resolve_venue_by_country(p1)
         if arena_target:
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
-        
-        # 2. Fallback (Finals in Sydney)
-        log(f"      ⚠️ Unknown Country/Location. Defaulting to Sydney (Finals).")
-        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
-    # -------------------------------
+        return "Hard Court Outdoor", 8.0, "United Cup (Default)"
 
-    # --- STANDARD TOURNAMENT LOGIC ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
+    # Defaults
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
@@ -437,17 +423,14 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
-        surf = ai_loc.get('surface_guessed', 'Hard')
         for t in db_tours:
             if city in t['name'].lower(): return t['surface'], t['bsi_rating'], f"AI: {city}"
-        return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     prompt = f"""
     ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
+    CTX: {surface} (BSI {bsi}).
     JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
     res = await call_gemini(prompt)
@@ -467,8 +450,7 @@ async def scrape_tennis_odds_for_date(target_date):
             content = await page.content()
             await browser.close()
             return content
-        except Exception as e:
-            log(f"❌ Scrape Error: {e}")
+        except:
             await browser.close()
             return None
 
@@ -476,7 +458,10 @@ def parse_matches_locally(html, p_names):
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
-    target_players = set(p.lower() for p in p_names)
+    
+    # Extract last names for broader matching
+    p_last_names = set(get_last_name(p).lower() for p in p_names)
+
     current_tour = "Unknown"
     for table in tables:
         rows = table.find_all("tr")
@@ -495,8 +480,7 @@ def parse_matches_locally(html, p_names):
             if first_col and 'time' in first_col.get('class', []):
                 raw_time = first_col.get_text(strip=True)
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
-                if time_match:
-                    match_time_str = time_match.group(1).zfill(5) 
+                if time_match: match_time_str = time_match.group(1).zfill(5) 
 
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
@@ -504,7 +488,11 @@ def parse_matches_locally(html, p_names):
 
                 if '/' in p1_raw or '/' in p2_raw: continue
 
-                if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
+                # Match against DB set
+                p1_ln = get_last_name(p1_raw).lower()
+                p2_ln = get_last_name(p2_raw).lower()
+
+                if p1_ln in p_last_names and p2_ln in p_last_names:
                     odds = []
                     try:
                         nums = re.findall(r'\d+\.\d+', row_text)
@@ -527,18 +515,20 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v100.0 (Country Topology Logic) Starting...")
+    log(f"🚀 Neural Scout v101.0 (Strict Identity) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
-    # 1. Build Knowledge Graph ONCE
+    # 1. Build Knowledge Graph
     await build_country_city_map()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
 
-    current_date = datetime.now()
+    # Player names list not strictly needed here as we scan logic is improved
     player_names = [p['last_name'] for p in players]
+    
+    current_date = datetime.now()
     
     for day_offset in range(11): 
         target_date = current_date + timedelta(days=day_offset)
@@ -550,8 +540,9 @@ async def run_pipeline():
         
         for m in matches:
             try:
-                p1_obj = next((p for p in players if p['last_name'] in m['p1']), None)
-                p2_obj = next((p for p in players if p['last_name'] in m['p2']), None)
+                # --- V101.0 IDENTITY RESOLUTION ---
+                p1_obj = resolve_player_identity(m['p1'], players)
+                p2_obj = resolve_player_identity(m['p2'], players)
                 
                 if p1_obj and p2_obj:
                     m_odds1 = m['odds1']
@@ -563,12 +554,9 @@ async def run_pipeline():
                     if existing.data:
                         match_data = existing.data[0]
                         match_id = match_data['id']
-                        winner_set = match_data.get('actual_winner_name')
-                        if winner_set:
-                            log(f"🔒 Locked (Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                        if match_data.get('actual_winner_name'):
                             continue 
-                        update_payload = {"odds1": m_odds1, "odds2": m_odds2, "match_time": iso_timestamp}
-                        supabase.table("market_odds").update(update_payload).eq("id", match_id).execute()
+                        supabase.table("market_odds").update({"odds1": m_odds1, "odds2": m_odds2, "match_time": iso_timestamp}).eq("id", match_id).execute()
                         log(f"🔄 Updated: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                         continue
 
@@ -580,7 +568,6 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW TOPOLOGY LOGIC ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
