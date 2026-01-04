@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V101.0 - Refactored L8 Core)...")
+log("🔌 Initialisiere Neural Scout (V2.0 - Deep Analysis Core)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -39,7 +39,10 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.0-flash-exp' # Empfehlung: Schneller/Günstiger für diesen Use-Case
+
+# HINWEIS: Wir nutzen hier 'gemini-1.5-pro', da dies aktuell das stärkste Modell
+# für komplexe Logik ist. Falls du Zugang zu einer privaten 2.5 Beta hast, ändere dies hier.
+MODEL_NAME = 'gemini-1.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
@@ -82,16 +85,18 @@ def get_last_name(full_name: str) -> str:
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5) 
+    # Pro-Modelle brauchen etwas mehr "Breathing Room" bei Rate Limits
+    await asyncio.sleep(1.0) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1}
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            # Timeout auf 60s erhöht für tiefere Analyse
+            response = await client.post(url, headers=headers, json=payload, timeout=60.0)
             if response.status_code != 200:
                 log(f"⚠️ Gemini API Error: {response.status_code} - {response.text}")
                 return None
@@ -135,8 +140,6 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        # Fetching all required data in parallel implies separate calls, 
-        # but here we do it sequentially for safety.
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
@@ -213,7 +216,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
-       
+        
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
@@ -465,18 +468,70 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     return 'Hard', 6.5, 'Fallback'
 
+# =================================================================
+# 8. DEEP AI ANALYSIS ENGINE (UPDATED V2.0)
+# =================================================================
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    prompt = f"""
-    ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
-    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
+    Diese Funktion führt jetzt eine extrem detaillierte 'Deep Reasoning' Analyse durch,
+    indem sie Spielerdaten, Playstyles und Court Physics (BSI) kombiniert.
+    """
+    
+    # 1. Baue reiche Kontext-Strings
+    def format_skills(s):
+        return f"Serve:{s.get('serve',50)}, Power:{s.get('power',50)}, FH:{s.get('forehand',50)}, BH:{s.get('backhand',50)}, Mental:{s.get('mental',50)}, Speed:{s.get('speed',50)}"
+
+    p1_desc = f"{p1['first_name']} {p1['last_name']} (Style: {p1.get('play_style', 'Unknown')}) | Skills: [{format_skills(s1)}] | Report: {r1.get('strengths', 'N/A')}"
+    p2_desc = f"{p2['first_name']} {p2['last_name']} (Style: {p2.get('play_style', 'Unknown')}) | Skills: [{format_skills(s2)}] | Report: {r2.get('strengths', 'N/A')}"
+    
+    # Interpret BSI for the AI
+    bsi_val = to_float(bsi, 6.0)
+    bsi_ctx = "Neutral"
+    if bsi_val < 4.0: bsi_ctx = "SLOW/GRIND (Favors Stamina/Defense)"
+    elif bsi_val > 7.5: bsi_ctx = "FAST/SHOOTOUT (Favors Serve/Power)"
+    
+    court_desc = f"Surface: {surface} | BSI Rating: {bsi} ({bsi_ctx}) | Notes: {notes}"
+
+    # 2. Der neue "Elite" Prompt
+    prompt = f"""
+    ROLE: Elite Tennis Analyst & High-Stakes Oddsmaker.
+    TASK: Analyze the matchup between P1 and P2 in extreme detail.
+
+    --- DATA ---
+    PLAYER 1: {p1_desc}
+    PLAYER 2: {p2_desc}
+    COURT/CONDITIONS: {court_desc}
+
+    --- REASONING REQUIREMENTS ---
+    1. MATCHUP MECHANICS: How does P1's play style interact with P2's on this SPECIFIC surface speed (BSI)?
+       (e.g., Does P1's heavy topspin sit up for P2's flat hitter on this Hard Court? Does P2's serve get neutralized by the low BSI?)
+    2. KEY METRICS: Compare Serve vs Return, Baseline Stability, and Mental Toughness.
+    3. X-FACTOR: Identify one specific advantage (e.g., "P1's lefty serve on ad-court against P2's weak backhand").
+
+    --- OUTPUT FORMAT (JSON ONLY) ---
+    {{
+        "p1_tactical_score": [float 0-10, based on style matchup],
+        "p2_tactical_score": [float 0-10, based on style matchup],
+        "p1_form_score": [float 0-10, inferred from skills/reports],
+        "p2_form_score": [float 0-10, inferred from skills/reports],
+        "ai_text": "A detailed 3-4 sentence analysis text describing exactly WHY one player has the edge. Mention the BSI and specific shots. Be professional and analytical."
+    }}
+    """
+    
+    # 3. Call High-Reasoning Model
     res = await call_gemini(prompt)
-    d = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
-    if not res: return d
-    try: return json.loads(res.replace("```json", "").replace("```", "").strip())
-    except: return d
+    
+    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'Analysis unavailable.'}
+    if not res: return default_res
+    try: 
+        cleaned = res.replace("```json", "").replace("```", "").strip()
+        # Fallback falls Modell Text vor JSON schreibt
+        if "{" in cleaned:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}") + 1
+            cleaned = cleaned[start:end]
+        return json.loads(cleaned)
+    except: return default_res
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
@@ -618,7 +673,9 @@ async def run_pipeline():
                             # --- CALLING THE TOPOLOGY LOGIC ---
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
+                            # --- NEW DEEP ANALYSIS ---
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
+                            
                             prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2)
                             
                             entry = {
