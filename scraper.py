@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V106.1 - Bugfix r1/r2)...")
+log("🔌 Initialisiere Neural Scout (V107.0 - Identity Disambiguation Protocol)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,7 +36,7 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- STATISCHE WAHRHEIT (Fallback, falls Scraper versagt) ---
+# --- STATISCHE WAHRHEIT (Fallback) ---
 STATIC_GROUP_DATA = {
     # PERTH
     "USA": "Perth", "Canada": "Perth", "Greece": "Perth", "Spain": "Perth",
@@ -309,46 +309,54 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- V106.0 SMART IDENTITY RESOLVER ---
+# --- NEW: V107.0 IDENTITY DISAMBIGUATION ---
 def resolve_player_identity_smart(scraped_name, db_players):
     """
-    Findet den Spieler. Löst Konflikte (Harris) intelligent, aber behält High-Recall für andere.
+    Stellt sicher, dass 'Harris B.' nicht als 'Harris L.' erkannt wird.
     """
     scraped_clean = clean_player_name(scraped_name).lower()
     
-    # 1. Sammle ALLE Kandidaten, deren Nachname im gescrapten String vorkommt
+    # 1. Kandidaten finden (Nachname)
     candidates = []
     for p in db_players:
+        # Check ob Nachname im String ist
+        # "harris" in "harris b."
         if p['last_name'].lower() in scraped_clean:
             candidates.append(p)
             
     if not candidates:
         return None
     
-    # 2. Wenn nur EINER passt -> Nimm ihn (Das fixt das "Keine Matches gefunden" Problem)
+    # 2. Wenn nur einer, ist es einfach
     if len(candidates) == 1:
         return candidates[0]
         
-    # 3. Wenn MEHRERE passen (Konfliktfall) -> Initialen-Check
+    # 3. CONFLICT RESOLUTION (Disambiguation)
+    # Wir haben mehrere (z.B. Billy Harris & Lloyd Harris)
+    
+    # Wir suchen nach Initialen im gescrapten String
+    # Tokens: "harris", "b."
+    tokens = re.split(r'[\s\.]+', scraped_clean)
+    
     for cand in candidates:
         first_name = cand['first_name'].lower()
         if not first_name: continue
         
-        # Check: Voller Vorname
+        initial = first_name[0] # "b" für Billy
+        
+        # Regel: Wenn "b" als einzelnes Token existiert (oder "b."), dann ist es Billy.
+        # "harris b" -> tokens: ["harris", "b"]
+        if initial in tokens:
+            log(f"      ✅ Disambiguated (Token '{initial}'): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
+            return cand
+            
+        # Regel: Wenn voller Vorname drin ist
         if first_name in scraped_clean:
-            log(f"      ✅ Resolved (Full Name): {scraped_name} -> {cand['last_name']}")
             return cand
-            
-        # Check: Initiale
-        initial = first_name[0]
-        if re.search(rf"\b{initial}[\.\s]", scraped_clean) or \
-           scraped_clean.endswith(f" {initial}") or \
-           scraped_clean.startswith(f"{initial} "):
-            log(f"      ✅ Resolved (Initial): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
-            return cand
-            
-    # Fallback
-    log(f"      ⚠️ Ambiguous Match '{scraped_name}'. Picking first: {candidates[0]['last_name']}")
+
+    # 4. Wenn keine Initiale passt, nehmen wir den ersten (meist der mit dem besseren Ranking/DB-Index)
+    # Das ist der Fall bei "Harris" (ohne B). Dann ist es statistisch wahrscheinlich Lloyd.
+    log(f"      ⚠️ Ambiguous '{scraped_name}' (No Initials found). Guessing: {candidates[0]['last_name']}, {candidates[0]['first_name']}")
     return candidates[0]
 
 # --- UNITED CUP TOPOLOGY ---
@@ -400,7 +408,7 @@ async def resolve_venue_by_country(p1):
         if country.lower() in map_country.lower() or map_country.lower() in country.lower():
             return CITY_TO_DB_STRING.get(map_city)
 
-    return "Ken Rosewall Arena" # Fallback
+    return "Ken Rosewall Arena"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
@@ -457,7 +465,6 @@ async def scrape_tennis_odds_for_date(target_date):
             return None
 
 def parse_matches_locally(html, p_names):
-    # DUMB PARSER: Hol alles, filtere später
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
@@ -509,7 +516,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v106.1 (Bugfix & Smart Resolver) Starting...")
+    log(f"🚀 Neural Scout v107.0 (Smart Identity Disambiguation) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
@@ -530,7 +537,7 @@ async def run_pipeline():
         
         for m in matches:
             try:
-                # --- V106.0 SMART RESOLVER ---
+                # --- V107.0 SMART RESOLVER ---
                 p1_obj = resolve_player_identity_smart(m['p1'], players)
                 p2_obj = resolve_player_identity_smart(m['p2'], players)
                 
@@ -556,7 +563,7 @@ async def run_pipeline():
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
                     
-                    # FIX: Inserted missing Scouting Reports retrieval
+                    # BUGFIX: Added r1/r2 retrieval from V106.1
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
