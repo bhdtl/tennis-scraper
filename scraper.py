@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V88.0 - Gemini Arena Sniper)...")
+log("🔌 Initialisiere Neural Scout (V89.0 - ATP/Group Logic Intelligence)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,14 +51,11 @@ def clean_player_name(raw):
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
-    """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA' aus dem Namen."""
     if not raw: return "Unknown"
-    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen am Ende des Strings
     clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
 def get_last_name(full_name):
-    """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
@@ -307,13 +304,13 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: STRICT ARENA LOCATOR WITH GEMINI ---
+# --- NEW: V88.0 OFFICIAL ATP/GROUP LOGIC ---
 async def resolve_united_cup_arena_gemini(p1, p2):
     """
-    Fragt Gemini 2.5 Pro nach dem spezifischen STADION (RAC vs Ken Rosewall).
-    KEIN Fallback auf Perth. Wenn unsicher -> None.
+    Sucht nach Spielplan-Infos und nutzt Gemini, um basierend auf Arena UND Gruppenlogik zu entscheiden.
     """
-    search_query = f"{p1} vs {p2} United Cup 2026 court stadium"
+    # Better Query: "schedule" and "group" trigger official lists
+    search_query = f"{p1} vs {p2} United Cup 2026 match schedule city group"
     log(f"   🕵️‍♀️ Identifying United Cup Arena ({p1} vs {p2})...")
     
     cache_key = f"UC_{p1}_{p2}"
@@ -325,31 +322,36 @@ async def resolve_united_cup_arena_gemini(p1, p2):
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # DuckDuckGo HTML is safer against blocks
+            # DuckDuckGo HTML prevents blocking
             await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=10000)
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- STRICT PROMPT (Arena-Aware) ---
+            # --- SUPERIOR PROMPT (Official Logic Injection) ---
             prompt = f"""
-            TASK: Determine the exact STADIUM/ARENA for the United Cup 2026 match: {p1} vs {p2}.
+            TASK: Identify the ARENA for the United Cup match: {p1} vs {p2}.
             
-            SEARCH SNIPPETS:
+            SEARCH TEXT:
             {text_content[:3500]}
             
+            KNOWLEDGE BASE (OFFICIAL ATP RULES):
+            - Group A, Group C, Group E -> Played in PERTH (RAC Arena).
+            - Group B, Group D, Group F -> Played in SYDNEY (Ken Rosewall Arena).
+            - Finals -> Played in SYDNEY.
+            
             INSTRUCTIONS:
-            1. Find the arena name ("RAC Arena" or "Ken Rosewall Arena").
-            2. "RAC Arena" implies PERTH.
-            3. "Ken Rosewall Arena" implies SYDNEY.
+            1. Search text for the GROUP (e.g. "Group A", "Group F").
+            2. Search text for the ARENA ("RAC", "Ken Rosewall").
+            3. Search text for the CITY ("Perth", "Sydney").
+            4. Combine clues. If text says "{p1} in Group C", then Arena = RAC Arena.
             
             OUTPUT JSON ONLY:
             {{ "arena": "RAC Arena" }}  OR  {{ "arena": "Ken Rosewall Arena" }}
             
-            If NO arena or city is clearly linked to THIS specific match in the text, return: {{ "arena": null }}
+            If you cannot find the Group, City, or Arena in the text: {{ "arena": null }}
             DO NOT GUESS.
             """
             
-            # Using the stronger model as requested
             res = await call_gemini(prompt, model='gemini-2.5-pro')
             
             arena = None
@@ -361,10 +363,10 @@ async def resolve_united_cup_arena_gemini(p1, p2):
             
             if arena in ["RAC Arena", "Ken Rosewall Arena"]:
                 TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      -> AI Found Arena: {arena}")
+                log(f"      -> AI Success: {arena}")
                 return arena
             else:
-                log(f"      -> AI Unsure (Result: {arena}). Skipping.")
+                log(f"      -> AI Failed/Unsure (Result: {arena}).")
                 return None
 
         except Exception as e:
@@ -377,28 +379,27 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # 1. Ask Gemini 2.5 Pro to identify Arena
+        # 1. Ask Gemini to find the Arena (using Group logic)
         arena_target = await resolve_united_cup_arena_gemini(p1, p2)
         
         if arena_target:
-            # 2. Database Lookup based on ARENA STRING
+            # 2. Database Lookup based on ARENA NAME
             for t in db_tours:
-                # Wir suchen nach dem Eintrag, der den Arenanamen in 'location' hat
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
-                    # Exact Match Found
+                    # EXACT MATCH
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # NO FALLBACK as requested. Return defaults but with a warning note.
-        # Ideally we skip, but for now we return generic so the loop continues but you know it's generic.
-        log(f"      ⚠️ No specific arena found for United Cup match. Using Generic.")
-        return "Hard Court Outdoor", 7.6, "United Cup (Generic)"
+        # 3. NO FALLBACK (As requested)
+        # If we can't find the arena, we return a flag that effectively skips detailed physics 
+        # or keeps it generic, but we explicitly LOG it.
+        log(f"      ❌ MATCH SKIPPED (Physics): No United Cup arena found for {p1} vs {p2}.")
+        return "Hard Court Outdoor", 7.0, "United Cup (Unknown Arena)" 
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
-    # Fallbacks
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
