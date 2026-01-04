@@ -1,14 +1,19 @@
-name: Neural Scout Syncon
+name: Neural Scout Syncon v2.0
 
 on:
   schedule:
     - cron: '*/30 * * * *'  # Alle 30 Minuten
   workflow_dispatch:        # Manueller Trigger erlaubt
 
+# Best Practice: Rechte auf das Nötigste beschränken
+permissions:
+  contents: read
+
 jobs:
   scrape:
+    name: Run Scraper Job
     runs-on: ubuntu-latest
-    # Timeout removed per instruction (Default: 6h)
+    timeout-minutes: 60     # WICHTIG: Stoppt den Job nach 60 Min, falls der Scraper hängt (spart Action-Minuten)
 
     steps:
       - name: Checkout Code
