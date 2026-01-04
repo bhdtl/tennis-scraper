@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V96.0 - Cached Multi-Day Scanner)...")
+log("🔌 Initialisiere Neural Scout (V97.0 - Case-Insensitive Deep Scan)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,12 +36,11 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- MEMORY CACHE FOR SCHEDULE PAGES ---
-# Prevents re-downloading the same page 50 times.
-# Format: { 1: "full html text day 1", 2: "full html text day 2" }
+# --- GLOBAL SCHEDULE CACHE ---
+# Speichert den HTML-Text pro Tag, damit wir nicht pro Match neu laden müssen
 SCHEDULE_CACHE = {}
 
-# --- HARDCODED TRUTH TABLE ---
+# --- DB TRUTH TABLE ---
 CITY_TO_DB_LOCATION = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
@@ -67,6 +66,7 @@ def clean_tournament_name(raw):
     return clean
 
 def get_last_name(full_name):
+    """Gibt den Nachnamen in Kleinbuchstaben zurück."""
     if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
@@ -76,7 +76,7 @@ def get_last_name(full_name):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.2) # Faster throttle since we call it less often now
+    await asyncio.sleep(0.2) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -309,16 +309,16 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- V96.0: CACHED MULTI-DAY OFFICIAL SCRAPER ---
-async def fetch_schedule_for_day(day_num):
+# --- V97.0: ITERATIVE CACHED SCHEDULE SCRAPER ---
+async def fetch_schedule_for_day_cached(day_num):
     """
-    Lädt den Schedule für einen bestimmten Tag (1-9) und cached ihn.
+    Lädt die offizielle Schedule-Seite für Tag X und speichert sie im Cache.
     """
     if day_num in SCHEDULE_CACHE:
         return SCHEDULE_CACHE[day_num]
     
     url = f"https://www.unitedcup.com/en/scores/schedule?day={day_num}"
-    log(f"   📥 Downloading Schedule Day {day_num}...")
+    log(f"   📥 Downloading United Cup Schedule Day {day_num}...")
     
     async with async_playwright() as p:
         try:
@@ -328,18 +328,17 @@ async def fetch_schedule_for_day(day_num):
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # Cache the result
-            SCHEDULE_CACHE[day_num] = text_content
-            return text_content
+            # WICHTIG: Wir speichern alles in LOWERCASE für einfachere Suche
+            SCHEDULE_CACHE[day_num] = text_content.lower()
+            return SCHEDULE_CACHE[day_num]
         except Exception as e:
             log(f"      ⚠️ Failed to download Day {day_num}: {e}")
             return ""
 
 async def resolve_united_cup_iterative(p1, p2):
     """
-    Loop durch Tag 1 bis 9.
-    1. Check ob Spieler-Name im Text ist (Python Check -> Schnell).
-    2. Wenn ja, frag Gemini nach der Stadt.
+    Scannt Tage 1-9 der offiziellen United Cup Seite.
+    Verwendet Case-Insensitive Matching für maximale Trefferquote.
     """
     cache_key = f"UC_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: 
@@ -347,29 +346,38 @@ async def resolve_united_cup_iterative(p1, p2):
         return TOURNAMENT_LOC_CACHE[cache_key]
 
     log(f"   🕵️‍♀️ Scanning United Cup Schedule (Days 1-9) for {p1}...")
+    
+    # Pre-calculate search terms in lowercase
+    p1_lower = p1.lower()
+    p1_last = get_last_name(p1).lower()
 
-    for day in range(1, 10): # Tage 1 bis 9
-        content = await fetch_schedule_for_day(day)
+    for day in range(1, 10): # Wir prüfen Tage 1 bis 9
+        content = await fetch_schedule_for_day_cached(day)
         if not content: continue
 
-        # PRE-FILTER: Sparrt Gemini Kosten und Zeit
-        if p1 in content or get_last_name(p1) in content:
-            log(f"      -> Match potentially found on Day {day}. Asking Gemini...")
+        # CHECK: Ist der Name (oder Nachname) im Text?
+        # Wir suchen erst nach vollem Namen, dann nach Nachnamen
+        if p1_lower in content or (len(p1_last) > 3 and p1_last in content):
+            log(f"      -> Match potentially found on Day {day}. Asking Gemini to pinpoint City...")
             
+            # Wir geben Gemini den rohen (aber gecacheden) Text
             prompt = f"""
-            TASK: Identify the CITY/ARENA for the match involving {p1} vs {p2}.
-            SOURCE: United Cup Schedule Day {day}.
+            TASK: Identify the CITY for the match involving {p1}.
+            SOURCE: United Cup Schedule Day {day} (Raw Text).
             
-            PAGE TEXT:
-            {content[:10000]} 
+            TEXT_SNIPPET:
+            {content[:15000]} 
             
             INSTRUCTIONS:
-            1. Find the section where {p1} is listed.
-            2. Check the headers above (Perth/RAC or Sydney/Ken Rosewall).
+            1. Find the section where "{p1}" (or {p1_last}) is listed.
+            2. Look at the HEADERS above/around the player name.
+            3. "RAC Arena" implies PERTH.
+            4. "Ken Rosewall Arena" implies SYDNEY.
             
             OUTPUT JSON ONLY:
             {{ "city": "Perth" }}  OR  {{ "city": "Sydney" }}
-            If not clearly found: {{ "city": null }}
+            
+            If not found: {{ "city": null }}
             """
             
             res = await call_gemini(prompt)
@@ -385,17 +393,20 @@ async def resolve_united_cup_iterative(p1, p2):
                 TOURNAMENT_LOC_CACHE[cache_key] = arena
                 log(f"      ✅ FOUND on Day {day}: {city} => {arena}")
                 return arena
+            else:
+                log(f"      -> Gemini found player on Day {day} but City was unclear.")
     
-    # Final Fallback if not found in ANY schedule (maybe not updated yet)
+    # 3. SAFETY FALLBACK (Unbreakable)
+    # Wenn wir den Spieler in 9 Tagen nicht finden, nehmen wir Sydney (Finals Location).
     log(f"      ❌ Not found in schedule (Day 1-9). Using Sydney default.")
-    return "Ken Rosewall Arena" # Default safe bet for finals/late stage
+    return "Ken Rosewall Arena"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # Calls the new Iterative Scanner
+        # Calls the Iterative Official Scanner
         arena_target = await resolve_united_cup_iterative(p1, p2)
         
         if arena_target:
@@ -403,8 +414,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # Fallback (obwohl resolve_united_cup_iterative schon einen Default liefert)
-        return "Hard Court Outdoor", 7.0, "United Cup (Sydney Default)"
+        # Absolute Emergency Fallback
+        return "Hard Court Outdoor", 8.0, "United Cup (Sydney Default)"
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -508,7 +519,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v96.0 (Cached Multi-Day Scan) Starting...")
+    log(f"🚀 Neural Scout v97.0 (Case-Insensitive Official Scan) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -557,7 +568,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE MULTI-DAY CACHED LOCATOR ---
+                    # --- CALLING THE ROBUST SCANNER ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
