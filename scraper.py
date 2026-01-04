@@ -41,7 +41,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # MODEL: 1.5-pro für Deep Analysis (wie gewünscht)
-MODEL_NAME = 'gemini-1.5-pro' 
+MODEL_NAME = 'gemini-2.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
