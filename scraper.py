@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V99.0 - Group Topology Mapping)...")
+log("🔌 Initialisiere Neural Scout (V100.0 - Country Topology Logic)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,25 +36,16 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- HARDCODED TRUTH TABLES ---
-CITY_TO_DB_LOCATION = {
+# --- V100.0: THE GLOBAL TRUTH MAP ---
+# Wird beim Start einmalig befüllt.
+# Format: { "Italy": "Perth", "Brazil": "Perth", "USA": "Sydney" ... }
+COUNTRY_TO_CITY_MAP = {}
+
+# DB Mapping
+CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
 }
-
-# Official United Cup 2026 Rules (Static)
-GROUP_TO_CITY = {
-    "Group A": "Perth",
-    "Group C": "Perth",
-    "Group E": "Perth",
-    "Group B": "Sydney",
-    "Group D": "Sydney",
-    "Group F": "Sydney"
-}
-
-# Global Cache for "Country -> Group" mapping
-# e.g., { "Germany": "Group E", "USA": "Group A" }
-COUNTRY_GROUP_MAP = {}
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -307,7 +298,6 @@ async def update_past_results():
 # MAIN PIPELINE
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
-    # Fallback for normal tournaments
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     prompt = f"TASK: Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\", \"is_indoor\": bool }}"
     res = await call_gemini(prompt)
@@ -318,95 +308,122 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW V99.0: INITIALIZE GROUP MAPPING FROM OFFICIAL STANDINGS ---
-async def init_united_cup_groups():
-    """Scrapes the Standings Page once to build the Country->Group map."""
-    if COUNTRY_GROUP_MAP: return # Already loaded
+# --- NEW V100.0: BUILD THE KNOWLEDGE GRAPH ---
+async def build_country_city_map():
+    """
+    Scrapt die United Cup Standings-Seite EINMALIG.
+    Baut ein Mapping: { "Germany": "Perth", "USA": "Sydney", ... }
+    """
+    if COUNTRY_TO_CITY_MAP: return # Already built
     
-    url = "https://www.unitedcup.com/en/scores/standings" # Correct official URL
-    log("   📥 Initializing United Cup Group Topology...")
+    url = "https://www.unitedcup.com/en/scores/group-standings"
+    log("   📥 Building United Cup Knowledge Graph (Standings Page)...")
     
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # Hydration wait is key for SPA
-            await page.goto(url, timeout=20000, wait_until="networkidle") 
-            await page.wait_for_timeout(3000) 
-            text = await page.inner_text("body")
+            # Wait for the table to load (Hydration)
+            await page.goto(url, timeout=20000, wait_until="networkidle")
+            await page.wait_for_timeout(3000) # Safety wait
+            
+            text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- GEMINI PARSER ---
+            # --- GEMINI MAPPER ---
             prompt = f"""
-            TASK: Extract United Cup Groups and Countries.
+            TASK: Map every Country in the United Cup Standings to its Host City.
             SOURCE: Official Standings Page.
-            TEXT: {text[:15000]}
             
-            OUTPUT JSON ONLY:
+            TEXT:
+            {text_content[:20000]}
+            
+            RULES:
+            - Group A, Group C, Group E -> Played in PERTH.
+            - Group B, Group D, Group F -> Played in SYDNEY.
+            
+            INSTRUCTION:
+            1. Find countries listed in each Group.
+            2. Assign them to Perth or Sydney based on the Group rules.
+            
+            OUTPUT JSON ONLY (Keys = Country Name, Values = City):
             {{
-                "Germany": "Group E",
-                "USA": "Group A",
-                ... (all found countries)
+                "Germany": "Perth",
+                "Brazil": "Perth",
+                "USA": "Perth", 
+                "Great Britain": "Sydney",
+                ... (include ALL countries found)
             }}
             """
+            
             res = await call_gemini(prompt)
             if res:
                 data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                COUNTRY_GROUP_MAP.update(data)
-                log(f"      ✅ Mapped {len(COUNTRY_GROUP_MAP)} Countries to Groups.")
+                COUNTRY_TO_CITY_MAP.update(data)
+                log(f"      ✅ Knowledge Graph Built: {len(COUNTRY_TO_CITY_MAP)} Countries Mapped.")
+                log(f"      📝 Sample: {list(COUNTRY_TO_CITY_MAP.items())[:3]}")
+                
         except Exception as e:
-            log(f"      ⚠️ Group Init Failed: {e}")
+            log(f"      ⚠️ Knowledge Graph Build Failed: {e}")
 
-async def resolve_venue_by_country(p1):
+async def resolve_united_cup_via_country(p1):
     """
-    1. Finds p1's country via Gemini.
-    2. Maps Country -> Group -> City -> Arena.
+    Ermittelt die Stadt basierend auf dem Land des Spielers.
     """
-    if not COUNTRY_GROUP_MAP:
-        await init_united_cup_groups()
+    # 1. Ensure Map exists
+    if not COUNTRY_TO_CITY_MAP:
+        await build_country_city_map()
         
-    # 1. Identify Country
-    prompt = f"What country does tennis player '{p1}' represent? Output JSON: {{ \"country\": \"Name\" }}"
-    res = await call_gemini(prompt)
-    country = "Unknown"
-    if res:
-        try:
-            country = json.loads(res.replace("```json", "").replace("```", "").strip()).get("country")
-        except: pass
-        
-    # 2. Logic Chain
-    # Try fuzzy matching for country names (e.g. "USA" vs "United States")
-    group = None
-    for c_key, g_val in COUNTRY_GROUP_MAP.items():
-        if country.lower() in c_key.lower() or c_key.lower() in country.lower():
-            group = g_val
-            break
+    # 2. Get Player's Country via Gemini
+    cache_key = f"COUNTRY_{p1}"
+    if cache_key in TOURNAMENT_LOC_CACHE:
+        country = TOURNAMENT_LOC_CACHE[cache_key]
+    else:
+        prompt = f"What country does tennis player '{p1}' represent? Output JSON: {{ \"country\": \"Name\" }} (Use standard English name like 'Germany', 'USA', 'Italy')"
+        res = await call_gemini(prompt)
+        country = "Unknown"
+        if res:
+            try:
+                country = json.loads(res.replace("```json", "").replace("```", "").strip()).get("country")
+                TOURNAMENT_LOC_CACHE[cache_key] = country
+            except: pass
             
-    if group:
-        city = GROUP_TO_CITY.get(group)
-        if city:
-            arena = CITY_TO_DB_LOCATION.get(city)
-            log(f"      ✅ LOGIC MATCH: {p1} ({country}) -> {group} -> {city} -> {arena}")
+    log(f"      -> Player: {p1} | Country: {country}")
+    
+    # 3. Lookup in Truth Table
+    # Fuzzy Match fallback
+    if country in COUNTRY_TO_CITY_MAP:
+        city = COUNTRY_TO_CITY_MAP[country]
+        arena = CITY_TO_DB_STRING.get(city)
+        log(f"      ✅ MAPPED: {country} -> {city} -> {arena}")
+        return arena
+    
+    # Try fuzzy (e.g. "United States" vs "USA")
+    for map_country, map_city in COUNTRY_TO_CITY_MAP.items():
+        if country.lower() in map_country.lower() or map_country.lower() in country.lower():
+            arena = CITY_TO_DB_STRING.get(map_city)
+            log(f"      ✅ FUZZY MAPPED: {country}~{map_country} -> {map_city} -> {arena}")
             return arena
-            
-    # Fallback: If logic fails (Knockout stages aren't in groups), assume Sydney (Finals)
-    log(f"      ⚠️ Logic gap for {p1} ({country}). Assuming Knockout Stage -> Sydney.")
-    return "Ken Rosewall Arena"
+
+    log(f"      ❌ Country '{country}' not found in Group Map. Fallback needed.")
+    return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        arena_target = await resolve_venue_by_country(p1) # V99.0 Logic
+        # 1. Resolve via Country Topology
+        arena_target = await resolve_united_cup_via_country(p1)
         
         if arena_target:
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # Hard Fallback
-        return "Hard Court Outdoor", 8.0, "United Cup (Sydney Default)"
+        # 2. Fallback (Finals in Sydney)
+        log(f"      ⚠️ Unknown Country/Location. Defaulting to Sydney (Finals).")
+        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -510,11 +527,12 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v99.0 (Group Topology Mapping) Starting...")
+    log(f"🚀 Neural Scout v100.0 (Country Topology Logic) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
-    # PRE-INIT GROUPS (Only once)
-    await init_united_cup_groups()
+    
+    # 1. Build Knowledge Graph ONCE
+    await build_country_city_map()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
@@ -562,7 +580,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW TOPOLOGY MAPPER ---
+                    # --- CALLING THE NEW TOPOLOGY LOGIC ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
