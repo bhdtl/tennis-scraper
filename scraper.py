@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V92.0 - Player-Centric Location)...")
+log("🔌 Initialisiere Neural Scout (V93.0 - Logic Mapping Protocol)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,9 +36,19 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- HARDCODED TRUTH TABLE ---
-# Mappt Stadt auf exakten DB-String
-CITY_TO_DB_LOCATION = {
+# --- SILICON VALLEY TRUTH TABLE ---
+# Statische Regeln des Turniers. Keine AI darf das überschreiben.
+# Perth = RAC Arena | Sydney = Ken Rosewall Arena
+GROUP_TO_CITY = {
+    "Group A": "Perth",
+    "Group C": "Perth",
+    "Group E": "Perth",
+    "Group B": "Sydney",
+    "Group D": "Sydney",
+    "Group F": "Sydney"
+}
+
+CITY_TO_DB_ARENA = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
 }
@@ -153,12 +163,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
-    # 1. AI MATCHUP (50%)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    # 2. COURT PHYSICS (20%)
     c1_score = 0; c2_score = 0
     if bsi_val <= 4.0:
         c1_score = s1.get('stamina',50) + s1.get('speed',50) + s1.get('mental',50)
@@ -171,12 +179,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         c2_score = sum(s2.values())
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
 
-    # 3. SKILLS (15%)
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
-    # 4. ELO (15%)
     elo1 = 1500.0; elo2 = 1500.0
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
@@ -309,13 +315,16 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: V92.0 PLAYER-CENTRIC SEARCH ---
-async def resolve_united_cup_robust(p1, p2):
+# --- NEW: V93.0 LOGIC MAPPING STRATEGY ---
+async def resolve_united_cup_strategy(p1, p2):
     """
-    Sucht nach dem SPIELER (Player 1) statt dem Match.
-    Grund: "Zverev United Cup City" findet man immer. "Zverev vs De Minaur" erst am Spieltag.
-    Falls Search versagt, wird die offizielle ATP-Seite geprüft.
+    Findet die Location durch Logik: 
+    1. Suche Country/Group des Spielers.
+    2. Mappe Gruppe auf Stadt (Hardcoded Truth).
+    3. Mappe Stadt auf Arena (Hardcoded Truth).
     """
+    search_query = f'"{p1}" United Cup 2026 group team country'
+    log(f"   🕵️‍♀️ Logic Map for {p1}: Identifying Group/City...")
     
     cache_key = f"UC_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: 
@@ -326,64 +335,60 @@ async def resolve_united_cup_robust(p1, p2):
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            
-            # 1. GOOGLE SEARCH (PLAYER CENTRIC)
-            # "Alexander Zverev United Cup 2026 city group"
-            search_query = f"{p1} United Cup 2026 city group schedule"
-            log(f"   🕵️‍♀️ Identifying Venue via Player Search: {p1}...")
-            
+            # Generic Search is fine here because "Zverev United Cup Group" is very stable info
             await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=10000)
             text_content = await page.inner_text("body")
-            
-            # --- OFFICIAL SITE FALLBACK ---
-            # If text is too short, visit ATP Tour Scores
-            if len(text_content) < 500:
-                log("      ⚠️ Search result weak. Checking Official ATP Scores...")
-                await page.goto("https://www.atptour.com/en/scores/current", timeout=15000)
-                text_content += "\n" + await page.inner_text("body")
-
             await browser.close()
             
-            # --- INTELLIGENT PROMPT ---
+            # --- LOGIC PROMPT ---
             prompt = f"""
-            TASK: Identify the CITY where player "{p1}" (and opponent "{p2}") is playing the United Cup 2026.
+            TASK: Identify the UNITED CUP GROUP for player: {p1}.
             
             SOURCE TEXT:
-            {text_content[:4000]}
+            {text_content[:3000]}
             
-            RULES:
-            - If "{p1}" is in Group A, C, or E -> City is "Perth".
-            - If "{p1}" is in Group B, D, or F -> City is "Sydney".
-            - Look for direct mentions: "{p1} in Perth" or "{p1} in Sydney".
-            - Ignore past years.
+            INSTRUCTIONS:
+            1. Find which Country {p1} represents.
+            2. Find which GROUP that Country is in (Group A, B, C, D, E, F).
+            3. Check if it is a Quarterfinal/Semi/Final match (Knockout).
             
-            OUTPUT JSON ONLY:
-            {{ "city": "Perth" }}  OR  {{ "city": "Sydney" }}
-            
-            If NO info found: {{ "city": null }}
+            OUTPUT JSON:
+            {{ "group": "Group A" }} OR {{ "stage": "Finals" }}
+            If found nothing: {{ "group": null }}
             """
             
             res = await call_gemini(prompt, model='gemini-2.5-pro')
             
-            city = None
+            found_key = None
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    city = data.get("city")
+                    if data.get("stage") in ["Finals", "Semifinals", "Quarterfinals"]:
+                        # Knockouts are mostly in Sydney
+                        found_key = "Sydney"
+                    else:
+                        group = data.get("group")
+                        if group in GROUP_TO_CITY:
+                            found_key = GROUP_TO_CITY[group] # Maps "Group A" -> "Perth"
                 except: pass
             
-            if city in ["Perth", "Sydney"]:
-                # Map City to DB Arena Name immediately
-                arena = CITY_TO_DB_LOCATION.get(city)
+            if found_key and found_key in CITY_TO_DB_ARENA:
+                arena = CITY_TO_DB_ARENA[found_key]
                 TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      -> AI Found Player City: {city} => Arena: {arena}")
+                log(f"      -> Logic Success: {p1} -> {found_key} -> {arena}")
                 return arena
-            else:
-                log(f"      -> AI Unsure (Result: {city}).")
-                return None
+            
+            # Fallback if AI fails logic but text mentions city
+            if "perth" in text_content.lower() and "sydney" not in text_content.lower():
+                return CITY_TO_DB_ARENA["Perth"]
+            if "sydney" in text_content.lower() and "perth" not in text_content.lower():
+                return CITY_TO_DB_ARENA["Sydney"]
+
+            log(f"      -> AI Logic Unsure. Returning None.")
+            return None
 
         except Exception as e:
-            log(f"      ⚠️ Search failed: {e}")
+            log(f"      ⚠️ Logic Map failed: {e}")
             await browser.close() if 'browser' in locals() else None
             return None
 
@@ -392,8 +397,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # 1. Get Arena via Robust Player Search
-        arena_target = await resolve_united_cup_robust(p1, p2)
+        # 1. Use Logic Mapping (Group -> City -> Arena)
+        arena_target = await resolve_united_cup_strategy(p1, p2)
         
         if arena_target:
             # 2. Database Lookup
@@ -507,7 +512,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v92.0 (Player-Centric + Official Fallback) Starting...")
+    log(f"🚀 Neural Scout v93.0 (Logic Mapping Protocol) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -556,7 +561,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW PLAYER-CENTRIC LOCATOR ---
+                    # --- CALLING THE NEW LOGIC MAPPER ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
