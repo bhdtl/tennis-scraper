@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V85.0 - Arena-Aware Context)...")
+log("🔌 Initialisiere Neural Scout (V86.0 - Gemini 2.5 Pro Arena Intelligence)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -31,7 +31,8 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.0-flash' # High Speed, High Intelligence
+# UPDATE: Using the requested high-intelligence model
+MODEL_NAME = 'gemini-2.5-pro' 
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
@@ -51,8 +52,9 @@ def clean_player_name(raw):
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
-    """Entfernt TennisExplorer-Artefakte."""
+    """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA'."""
     if not raw: return "Unknown"
+    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen (typisch für Stats-Links)
     clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
@@ -66,7 +68,7 @@ def get_last_name(full_name):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.5) 
+    await asyncio.sleep(0.5) # Slight throttle to be safe
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -220,6 +222,8 @@ async def update_past_results():
         log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
         return
 
+    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
+
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         async with async_playwright() as p:
@@ -292,7 +296,7 @@ async def update_past_results():
 # MAIN PIPELINE
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
-    # This is for generic cases, not used for United Cup anymore
+    # Fallback for normal tournaments
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     prompt = f"TASK: Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\", \"is_indoor\": bool }}"
     res = await call_gemini(prompt)
@@ -303,45 +307,50 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- V85.0: ARENA-AWARE UNITED CUP LOCATOR ---
-async def resolve_united_cup_specifics(p1, p2):
-    """Uses Google Search Snippets + Gemini to find RAC Arena vs Ken Rosewall Arena."""
-    search_query = f"United Cup 2026 {p1} vs {p2} court arena location"
-    log(f"   🕵️‍♀️ Neural Search: {p1} vs {p2} (Targeting Arena)...")
+# --- NEW: ADVANCED ARENA LOCATOR ---
+async def resolve_united_cup_arena_with_gemini(p1, p2):
+    """
+    Sucht via Google nach dem spezifischen STADION (RAC Arena vs Ken Rosewall).
+    Nutzt Gemini 2.5 Pro für Kontextverständnis.
+    """
+    search_query = f"United Cup 2026 {p1} vs {p2} stadium court preview"
+    log(f"   🕵️‍♀️ Identifying United Cup Arena ({p1} vs {p2})...")
     
     cache_key = f"UC_{p1}_{p2}"
-    if cache_key in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[cache_key]
+    if cache_key in TOURNAMENT_LOC_CACHE: 
+        log(f"      -> Cached: {TOURNAMENT_LOC_CACHE[cache_key]}")
+        return TOURNAMENT_LOC_CACHE[cache_key]
 
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # Searching DuckDuckGo HTML for stability
-            await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=8000)
+            # DuckDuckGo HTML is safer against blocks
+            await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=10000)
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- IMPROVED PROMPT ---
-            # We explicitly teach Gemini about the venues
+            # --- INTELLIGENT PROMPT (Arena-Aware) ---
             prompt = f"""
-            TASK: Identify the specific city for this United Cup 2026 match: {p1} vs {p2}.
+            TASK: Determine the STADIUM/ARENA for the United Cup 2026 match: {p1} vs {p2}.
             
-            CONTEXT CLUES:
-            - "RAC Arena" or "Perth" -> City is "Perth"
-            - "Ken Rosewall Arena" or "Sydney" -> City is "Sydney"
+            SEARCH RESULTS:
+            {text_content[:3000]}
             
-            SEARCH SNIPPETS:
-            {text_content[:2500]}
+            CRITICAL RULES:
+            1. Look for "RAC Arena" -> implies City: "Perth"
+            2. Look for "Ken Rosewall Arena" -> implies City: "Sydney"
+            3. If context says "Sydney Finals", return "Sydney".
+            4. If context says "Perth Group Stage", return "Perth".
             
-            OUTPUT RULES:
-            - Return JSON ONLY: {{ "city": "Perth" }} or {{ "city": "Sydney" }}
-            - If text mentions both, look for the match SCHEDULE.
-            - If unsure, default to "Perth".
+            OUTPUT JSON ONLY: {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
+            If totally unsure, default to "Perth".
             """
             
-            res = await call_gemini(prompt, model='gemini-2.0-flash')
+            # Using the stronger model as requested
+            res = await call_gemini(prompt, model='gemini-2.5-pro')
             
-            city = "Perth"
+            city = "Perth" # Default
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
@@ -351,36 +360,42 @@ async def resolve_united_cup_specifics(p1, p2):
             if city not in ["Perth", "Sydney"]: city = "Perth"
 
             TOURNAMENT_LOC_CACHE[cache_key] = city
-            log(f"      -> AI Decision: {city}")
+            log(f"      -> AI Determined: {city}")
             return city
 
         except Exception as e:
-            log(f"      ⚠️ Search failed (Fallback Perth): {e}")
+            log(f"      ⚠️ Search failed (Defaulting to Perth): {e}")
             await browser.close() if 'browser' in locals() else None
             return "Perth"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- ISOLATED UNITED CUP LOGIC ---
+    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        city = await resolve_united_cup_specifics(p1, p2)
-        # 1. Match "United Cup" AND found City in 'location'
+        # 1. Ask Gemini 2.5 Pro to identify Perth vs Sydney
+        city = await resolve_united_cup_arena_with_gemini(p1, p2)
+        
+        # 2. Database Lookup based on CITY
         for t in db_tours:
+            # We look for the DB entry that contains the found city in its location
             if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
+                # This ensures we get the specific BSI/Notes for that arena
                 return t['surface'], t['bsi_rating'], f"United Cup ({city})"
+        
         return "Hard Court Outdoor", 8.6, "United Cup (Fallback)"
-    # ---------------------------------
+    # -------------------------------
 
-    # --- STANDARD LOGIC FOR ALL OTHER TOURNAMENTS (As Requested) ---
+    # --- STANDARD TOURNAMENT LOGIC (No Search, just DB) ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
+    # Basic fallbacks
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
     
-    # Only fallback to AI guess if totally unknown
+    # Last resort AI guess for unknown tournament names
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
@@ -442,7 +457,8 @@ def parse_matches_locally(html, p_names):
             if first_col and 'time' in first_col.get('class', []):
                 raw_time = first_col.get_text(strip=True)
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
-                if time_match: match_time_str = time_match.group(1).zfill(5) 
+                if time_match:
+                    match_time_str = time_match.group(1).zfill(5) 
 
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
@@ -473,7 +489,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v85.0 (Arena-Aware) Starting...")
+    log(f"🚀 Neural Scout v86.0 (Gemini 2.5 Pro + Arena Search) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -522,9 +538,10 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
+                    # --- CALLING THE NEW GEMINI LOCATOR ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
-                    ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
+                    ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2)
                     
                     entry = {
