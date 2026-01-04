@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V105.0 - Strict Identity Logic)...")
+log("🔌 Initialisiere Neural Scout (V106.0 - Smart Conflict Resolution)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,11 +36,21 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- V100.0: THE GLOBAL TRUTH MAP ---
-# Wird beim Start einmalig befüllt.
-COUNTRY_TO_CITY_MAP = {}
+# --- STATISCHE WAHRHEIT (Fallback, falls Scraper versagt) ---
+# Das verhindert, dass er fälschlicherweise "Sydney" rät, wenn er die Gruppe nicht online findet.
+STATIC_GROUP_DATA = {
+    # PERTH
+    "USA": "Perth", "Canada": "Perth", "Greece": "Perth", "Spain": "Perth",
+    "China": "Perth", "Germany": "Perth", "Brazil": "Perth", "Kazakhstan": "Perth",
+    # SYDNEY
+    "Italy": "Sydney", "France": "Sydney", "Great Britain": "Sydney", "Australia": "Sydney",
+    "Poland": "Sydney", "Norway": "Sydney", "Czech Republic": "Sydney", "Switzerland": "Sydney",
+    "Argentina": "Sydney"
+}
 
-# DB Mapping
+# Wird mit Live-Daten ergänzt
+COUNTRY_TO_CITY_MAP = STATIC_GROUP_DATA.copy()
+
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
@@ -58,7 +68,7 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    # WICHTIG: Hier NICHTS entfernen, was wie eine Initiale aussieht!
+    # Entfernt Wett-Spam, lässt aber Namen und Initialen ganz
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
@@ -67,13 +77,10 @@ def clean_tournament_name(raw):
     return clean
 
 def get_last_name(full_name):
-    """Extrahiert den reinen Nachnamen (ohne Initialen) für den DB-Abgleich."""
     if not full_name: return ""
-    # Entferne Initialen am Ende (z.B. "Harris B." -> "Harris")
-    clean = re.sub(r'\s+[A-Z]\.?$', '', full_name).strip()
-    # Entferne Initialen am Anfang (z.B. "B. Harris" -> "Harris")
-    clean = re.sub(r'^[A-Z]\.?\s+', '', clean).strip()
-    return clean.split()[-1].lower()
+    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
+    parts = clean.split()
+    return parts[-1].lower() if parts else ""
 
 # =================================================================
 # GEMINI ENGINE
@@ -305,53 +312,59 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: SILICON VALLEY IDENTITY RESOLUTION ---
-def resolve_player_identity(scraped_name, db_players):
+# --- NEW: INTELLIGENT PLAYER IDENTITY RESOLVER (V106.0) ---
+def resolve_player_identity_smart(scraped_name, db_players):
     """
-    Identifiziert den korrekten Spieler in der DB mit forensischer Präzision.
-    Löst 'Harris B.' (Billy) vs 'Harris L.' (Lloyd) Konflikte.
+    Findet den Spieler in der DB. 
+    Löst Konflikte (z.B. Harris) nur wenn nötig, sonst permissiv.
     """
-    scraped_clean = clean_player_name(scraped_name)
-    scraped_last = get_last_name(scraped_clean).lower()
+    scraped_clean = clean_player_name(scraped_name).lower()
     
-    # 1. Kandidaten finden (exakter Nachname Match)
-    candidates = [p for p in db_players if get_last_name(p['last_name']).lower() == scraped_last]
-    
-    # Fallback: Fuzzy
+    # 1. Sammle ALLE Kandidaten, deren Nachname im gescrapten String vorkommt
+    # "Harris B." enthält "Harris" -> Billy Harris und Lloyd Harris werden gefunden
+    candidates = []
+    for p in db_players:
+        if p['last_name'].lower() in scraped_clean:
+            candidates.append(p)
+            
     if not candidates:
-        candidates = [p for p in db_players if p['last_name'].lower() in scraped_clean.lower()]
+        return None
     
-    if not candidates: return None
-    if len(candidates) == 1: return candidates[0]
+    # 2. Wenn nur EINER passt -> Nimm ihn (High Recall)
+    # Das fixt das Problem, dass Zverev etc. nicht gefunden wurden
+    if len(candidates) == 1:
+        return candidates[0]
         
-    # 2. DISAMBIGUIERUNG: Initiale oder Vorname checken
+    # 3. Wenn MEHRERE passen (Konfliktfall, z.B. Harris) -> Initialen-Check
     for cand in candidates:
         first_name = cand['first_name'].lower()
         if not first_name: continue
         
-        # Check A: Ist der volle Vorname enthalten? (z.B. "Billy Harris")
-        if first_name in scraped_clean.lower():
+        # Check: Ist der volle Vorname enthalten? (z.B. "Billy Harris")
+        if first_name in scraped_clean:
+            log(f"      ✅ Resolved (Full Name): {scraped_name} -> {cand['last_name']}")
             return cand
             
-        # Check B: Ist die Initiale enthalten? (z.B. "B." für Billy)
+        # Check: Ist die Initiale enthalten? ("Harris B." -> "B")
         initial = first_name[0]
-        # Regex sucht nach " B." oder " B " oder ".B" oder am Ende " B"
-        # Dies verhindert, dass das "l" in "Lloyd" fälschlicherweise in "Ball" gefunden wird
-        pattern = rf"[\s\.]{initial}[\.\s]|^{initial}[\.\s]|[\s\.]{initial}$"
-        if re.search(pattern, scraped_clean, re.IGNORECASE):
-            log(f"      ✅ Identity Resolved (Initial): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
+        # Regex sucht nach isoliertem Buchstaben (Anfang, Ende oder mit Punkt/Space)
+        if re.search(rf"\b{initial}[\.\s]", scraped_clean) or \
+           scraped_clean.endswith(f" {initial}") or \
+           scraped_clean.startswith(f"{initial} "):
+            log(f"      ✅ Resolved (Initial): {scraped_name} -> {cand['last_name']}, {cand['first_name']}")
             return cand
             
-    # Fallback: Wenn wir es nicht sicher wissen, nehmen wir den ersten (Risiko, aber besser als Skip)
-    log(f"      ⚠️ Ambiguous Player '{scraped_name}'. Picking first candidate: {candidates[0]['last_name']}")
+    # Fallback: Wenn wir Harris haben, aber keine Initiale -> Nimm Lloyd (häufiger) oder den ersten
+    # Das ist besser als das Match zu verlieren.
+    log(f"      ⚠️ Ambiguous Match '{scraped_name}'. Picking first candidate: {candidates[0]['last_name']}")
     return candidates[0]
 
 # --- UNITED CUP TOPOLOGY ---
 async def build_country_city_map():
-    if COUNTRY_TO_CITY_MAP: return 
+    if len(COUNTRY_TO_CITY_MAP) > 20: return 
     
     url = "https://www.unitedcup.com/en/scores/group-standings"
-    log("   📥 Building United Cup Knowledge Graph (Standings Page)...")
+    log("   📥 Scraping United Cup Standings...")
     
     async with async_playwright() as p:
         try:
@@ -363,13 +376,10 @@ async def build_country_city_map():
             await browser.close()
             
             prompt = f"""
-            TASK: Map every Country in the United Cup Standings to its Host City.
-            SOURCE: Official Standings Page.
+            TASK: Map Countries to Host Cities.
             TEXT: {text[:20000]}
-            RULES: 
-            - Group A, Group C, Group E -> Played in PERTH.
-            - Group B, Group D, Group F -> Played in SYDNEY.
-            OUTPUT JSON ONLY: {{ "Germany": "Perth", ... }}
+            RULES: A/C/E->PERTH, B/D/F->SYDNEY.
+            OUTPUT JSON: {{ "Germany": "Perth", ... }}
             """
             res = await call_gemini(prompt)
             if res:
@@ -379,9 +389,8 @@ async def build_country_city_map():
         except Exception: pass
 
 async def resolve_venue_by_country(p1):
-    if not COUNTRY_TO_CITY_MAP:
-        await build_country_city_map()
-        
+    await build_country_city_map()
+    
     cache_key = f"COUNTRY_{p1}"
     if cache_key in TOURNAMENT_LOC_CACHE:
         country = TOURNAMENT_LOC_CACHE[cache_key]
@@ -395,11 +404,12 @@ async def resolve_venue_by_country(p1):
                 TOURNAMENT_LOC_CACHE[cache_key] = country
             except: pass
             
+    # Check Map (Static + Dynamic)
     for map_country, map_city in COUNTRY_TO_CITY_MAP.items():
         if country.lower() in map_country.lower() or map_country.lower() in country.lower():
             return CITY_TO_DB_STRING.get(map_city)
 
-    return "Ken Rosewall Arena" # Fallback
+    return "Ken Rosewall Arena"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
@@ -456,6 +466,7 @@ async def scrape_tennis_odds_for_date(target_date):
             return None
 
 def parse_matches_locally(html, p_names):
+    # DUMB PARSER: Hol alles, filtere später
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
@@ -507,11 +518,10 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v105.0 (Strict Identity Logic) Starting...")
+    log(f"🚀 Neural Scout v106.0 (Smart Conflict Resolution) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     
-    # 1. Build Knowledge Graph ONCE
     await build_country_city_map()
     
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -529,9 +539,9 @@ async def run_pipeline():
         
         for m in matches:
             try:
-                # --- V105.0 STRICT IDENTITY RESOLUTION ---
-                p1_obj = resolve_player_identity(m['p1'], players)
-                p2_obj = resolve_player_identity(m['p2'], players)
+                # --- V106.0 SMART IDENTITY RESOLUTION ---
+                p1_obj = resolve_player_identity_smart(m['p1'], players)
+                p2_obj = resolve_player_identity_smart(m['p2'], players)
                 
                 if p1_obj and p2_obj:
                     m_odds1 = m['odds1']
@@ -554,8 +564,6 @@ async def run_pipeline():
                     log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
-                    r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
-                    r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
