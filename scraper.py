@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V89.0 - ATP/Group Logic Intelligence)...")
+log("🔌 Initialisiere Neural Scout (V91.0 - Official Sources & Strict Logic)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -35,6 +35,13 @@ MODEL_NAME = 'gemini-2.5-pro'
 
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
+
+# --- HARDCODED TRUTH TABLE (DB MAPPING) ---
+# Verbindet die Stadt mit dem exakten String in deiner DB-Spalte 'location'
+CITY_TO_DB_STRING = {
+    "Perth": "RAC Arena",
+    "Sydney": "Ken Rosewall Arena"
+}
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -219,8 +226,6 @@ async def update_past_results():
         log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
         return
 
-    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
-
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         async with async_playwright() as p:
@@ -304,14 +309,14 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: V88.0 OFFICIAL ATP/GROUP LOGIC ---
-async def resolve_united_cup_arena_gemini(p1, p2):
+# --- NEW: V90.0 OFFICIAL SOURCE SNIPER ---
+async def resolve_united_cup_official(p1, p2):
     """
-    Sucht nach Spielplan-Infos und nutzt Gemini, um basierend auf Arena UND Gruppenlogik zu entscheiden.
+    Sucht NUR auf offiziellen Seiten nach dem Spielplan und nutzt Gemini zur Analyse.
     """
-    # Better Query: "schedule" and "group" trigger official lists
-    search_query = f"{p1} vs {p2} United Cup 2026 match schedule city group"
-    log(f"   🕵️‍♀️ Identifying United Cup Arena ({p1} vs {p2})...")
+    # 1. STRICT SITE SEARCH: Nur atptour.com und unitedcup.com werden durchsucht.
+    search_query = f'site:atptour.com OR site:unitedcup.com "{p1}" "{p2}" schedule group city'
+    log(f"   🕵️‍♀️ Identifying United Cup Arena (Official Sources): {p1} vs {p2}...")
     
     cache_key = f"UC_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: 
@@ -322,51 +327,52 @@ async def resolve_united_cup_arena_gemini(p1, p2):
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # DuckDuckGo HTML prevents blocking
             await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=10000)
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- SUPERIOR PROMPT (Official Logic Injection) ---
+            # --- 2. LOGIC INJECTION PROMPT ---
             prompt = f"""
-            TASK: Identify the ARENA for the United Cup match: {p1} vs {p2}.
+            TASK: Identify the CITY for the United Cup 2026 match: {p1} vs {p2}.
+            SOURCE: Official ATP snippets.
             
             SEARCH TEXT:
             {text_content[:3500]}
             
-            KNOWLEDGE BASE (OFFICIAL ATP RULES):
-            - Group A, Group C, Group E -> Played in PERTH (RAC Arena).
-            - Group B, Group D, Group F -> Played in SYDNEY (Ken Rosewall Arena).
-            - Finals -> Played in SYDNEY.
+            INTERNAL KNOWLEDGE (DO NOT HALLUCINATE):
+            - Group A, Group C, Group E are played in PERTH.
+            - Group B, Group D, Group F are played in SYDNEY.
+            - "RAC Arena" = PERTH.
+            - "Ken Rosewall Arena" = SYDNEY.
             
             INSTRUCTIONS:
-            1. Search text for the GROUP (e.g. "Group A", "Group F").
-            2. Search text for the ARENA ("RAC", "Ken Rosewall").
-            3. Search text for the CITY ("Perth", "Sydney").
-            4. Combine clues. If text says "{p1} in Group C", then Arena = RAC Arena.
+            1. Find the Group (e.g., "Group C").
+            2. Find the City/Stadium directly.
+            3. Infer City from Group using the Knowledge above.
             
             OUTPUT JSON ONLY:
-            {{ "arena": "RAC Arena" }}  OR  {{ "arena": "Ken Rosewall Arena" }}
+            {{ "city": "Perth" }}  OR  {{ "city": "Sydney" }}
             
-            If you cannot find the Group, City, or Arena in the text: {{ "arena": null }}
-            DO NOT GUESS.
+            If NO valid info found: {{ "city": null }}
             """
             
             res = await call_gemini(prompt, model='gemini-2.5-pro')
             
-            arena = None
+            city = None
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    arena = data.get("arena")
+                    city = data.get("city")
                 except: pass
             
-            if arena in ["RAC Arena", "Ken Rosewall Arena"]:
-                TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      -> AI Success: {arena}")
-                return arena
+            if city in ["Perth", "Sydney"]:
+                # 3. DIRECT DB STRING MAPPING
+                arena_db_string = CITY_TO_DB_STRING.get(city)
+                TOURNAMENT_LOC_CACHE[cache_key] = arena_db_string
+                log(f"      -> AI Found City: {city} => Mapped to DB: {arena_db_string}")
+                return arena_db_string
             else:
-                log(f"      -> AI Failed/Unsure (Result: {arena}).")
+                log(f"      -> AI Unsure (Result: {city}). Skipping.")
                 return None
 
         except Exception as e:
@@ -379,21 +385,19 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # 1. Ask Gemini to find the Arena (using Group logic)
-        arena_target = await resolve_united_cup_arena_gemini(p1, p2)
+        # 1. Get Arena via Official Source Search
+        arena_target = await resolve_united_cup_official(p1, p2)
         
         if arena_target:
-            # 2. Database Lookup based on ARENA NAME
+            # 2. Database Lookup
             for t in db_tours:
+                # Suche nach DB-Eintrag, der den Arena-Namen (z.B. "RAC Arena") enthält
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
-                    # EXACT MATCH
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # 3. NO FALLBACK (As requested)
-        # If we can't find the arena, we return a flag that effectively skips detailed physics 
-        # or keeps it generic, but we explicitly LOG it.
-        log(f"      ❌ MATCH SKIPPED (Physics): No United Cup arena found for {p1} vs {p2}.")
-        return "Hard Court Outdoor", 7.0, "United Cup (Unknown Arena)" 
+        # 3. NO FALLBACK (As requested) - Explicit logging only
+        log(f"      ❌ MATCH SKIPPED (Physics): No United Cup location found for {p1} vs {p2}.")
+        return "Hard Court Outdoor", 7.0, "United Cup (Unknown)" 
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -497,7 +501,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v88.0 (Gemini Arena Sniper) Starting...")
+    log(f"🚀 Neural Scout v90.0 (Official Source Logic) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -546,7 +550,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW GEMINI LOCATOR ---
+                    # --- CALLING THE OFFICIAL SOURCE LOCATOR ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
