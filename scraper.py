@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V81.1 - Doubles Firewall)...")
+log("🔌 Initialisiere Neural Scout (V82.0 - United Cup Location Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -48,11 +48,16 @@ def normalize_text(text):
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn') if text else ""
 
 def clean_player_name(raw): 
-    # FIX: Clean artifacts but preserve specific chars if needed later
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
+def clean_tournament_name(raw):
+    """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA' aus dem Namen."""
+    if not raw: return "Unknown"
+    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen, was typisch für die Stats-Links ist
+    clean = re.sub(r'S\d+.*', '', raw).strip()
+    return clean
+
 def get_last_name(full_name):
-    """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
@@ -260,8 +265,6 @@ async def update_past_results():
                             log(f"   🎯 MATCH ROW FOUND: {p1_last} vs {p2_last}")
                             
                             try:
-                                # FIX: Kein aggressiver Time-Check mehr!
-                                # Wir vertrauen jetzt der Score-Extraction.
                                 is_retirement = "ret." in row_text or "w.o." in row_text
 
                                 # EXTRACT SCORES (All Columns)
@@ -331,8 +334,57 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
+# --- NEW: United Cup Locator ---
+async def fetch_united_cup_city_external(p1, p2):
+    """Uses DuckDuckGo HTML search to find if match is in Perth or Sydney."""
+    search_query = f"{p1} {p2} United Cup 2026 city"
+    log(f"   🕵️‍♀️ Identifying United Cup Venue for {p1} vs {p2}...")
+    
+    async with async_playwright() as p:
+        # Use simple browser context, no heavy evasion needed for DDG HTML
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        try:
+            # DuckDuckGo HTML is bot-friendly and lightweight
+            url = f"https://html.duckduckgo.com/html/?q={search_query}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            content = await page.content_txt() if hasattr(page, 'content_txt') else await page.content()
+            await browser.close()
+            
+            content_lower = content.lower()
+            if "perth" in content_lower and "sydney" not in content_lower:
+                log("      -> Venue found: PERTH")
+                return "Perth"
+            if "sydney" in content_lower and "perth" not in content_lower:
+                log("      -> Venue found: SYDNEY")
+                return "Sydney"
+            
+            # If both or neither, defaulting to Perth (usually main group stage) or Sydney (finals)
+            # Simple heuristic:
+            if "perth" in content_lower: return "Perth"
+            if "sydney" in content_lower: return "Sydney"
+            
+            return None
+        except Exception as e:
+            log(f"      ⚠️ Search failed: {e}")
+            await browser.close()
+            return None
+
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
-    s_low = tour.lower().strip()
+    s_low = clean_tournament_name(tour).lower().strip()
+    
+    # --- UNITED CUP SPECIAL HANDLER ---
+    if "united cup" in s_low:
+        city = await fetch_united_cup_city_external(p1, p2)
+        if city:
+            # Filter DB for United Cup entry that matches the city in 'location'
+            for t in db_tours:
+                if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
+                    return t['surface'], t['bsi_rating'], f"United Cup ({city})"
+        # Fallback if search fails: Default to Perth (usually faster/more common)
+        return "Hard Court Outdoor", 8.6, "United Cup (Fallback)"
+    # ----------------------------------
+
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
@@ -392,34 +444,28 @@ def parse_matches_locally(html, p_names):
                 current_tour = row.get_text(strip=True)
                 continue
             
-            # --- DOUBLES FIREWALL (NEW) ---
-            # 1. Skip if tournament header says "Doubles"
+            # --- DOUBLES FIREWALL ---
             if "doubles" in current_tour.lower():
                 continue
-            # ------------------------------
 
             row_text = normalize_text(row.get_text(separator=' ', strip=True))
             
-            # --- TIME EXTRACTION START (CRITICAL FIX) ---
+            # --- TIME EXTRACTION ---
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
                 raw_time = first_col.get_text(strip=True)
-                # FIX: Use regex to extract ONLY HH:MM, ignore "Live", "1xBet" etc.
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match:
-                    match_time_str = time_match.group(1).zfill(5) # Ensures 09:00 format
-            # --- TIME EXTRACTION END ---
+                    match_time_str = time_match.group(1).zfill(5) 
 
             if i + 1 < len(rows):
                 p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
                 p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
 
                 # --- DOUBLES FIREWALL (PLAYER CHECK) ---
-                # 2. Skip if player name contains '/' (TennisExplorer uses '/' for doubles)
                 if '/' in p1_raw or '/' in p2_raw:
                     continue
-                # ---------------------------------------
 
                 if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                     odds = []
@@ -436,15 +482,15 @@ def parse_matches_locally(html, p_names):
                     found.append({
                         "p1": p1_raw, 
                         "p2": p2_raw, 
-                        "tour": current_tour, 
-                        "time": match_time_str, # Clean Clean HH:MM
+                        "tour": clean_tournament_name(current_tour), # CLEANED HERE
+                        "time": match_time_str, 
                         "odds1": odds[0] if odds else 0.0, 
                         "odds2": odds[1] if len(odds)>1 else 0.0
                     })
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v81.1 (Doubles Firewall) Starting...")
+    log(f"🚀 Neural Scout v82.0 (United Cup Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -470,12 +516,8 @@ async def run_pipeline():
                     m_odds1 = m['odds1']
                     m_odds2 = m['odds2']
                     
-                    # --- CONSTRUCT PROPER ISO DATETIME ---
-                    # FIX: Now m['time'] is guaranteed to be clean HH:MM
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
-                    # --- CHECK EXISTING ---
-                    # We fetch 'actual_winner_name' too!
                     existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                     
                     if existing.data:
@@ -483,14 +525,10 @@ async def run_pipeline():
                         match_id = match_data['id']
                         winner_set = match_data.get('actual_winner_name')
 
-                        # --- CRITICAL FIX: IMMUTABILITY CHECK ---
-                        # If a winner is already set, THIS MATCH IS FINISHED.
-                        # Do NOT update its time or odds anymore.
                         if winner_set:
                             log(f"🔒 Locked (Finished): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                             continue 
 
-                        # Update only if ACTIVE (no winner yet)
                         update_payload = {
                             "odds1": m_odds1, 
                             "odds2": m_odds2, 
@@ -503,13 +541,13 @@ async def run_pipeline():
                     if m_odds1 <= 1.0: 
                         continue
                     
-                    # INSERT NEW
                     log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                     s1 = all_skills.get(p1_obj['id'], {})
                     s2 = all_skills.get(p2_obj['id'], {})
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
+                    # Uses the NEW smart finder with external search
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
@@ -520,7 +558,7 @@ async def run_pipeline():
                     )
                     
                     entry = {
-                        "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'],
+                        "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'], # Clean name stored
                         "odds1": m_odds1, "odds2": m_odds2,
                         "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0.01 else 99,
                         "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 0.99 else 99,
