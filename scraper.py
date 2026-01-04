@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V86.1 - Strict Arena Search)...")
+log("🔌 Initialisiere Neural Scout (V88.0 - Gemini Arena Sniper)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,12 +51,14 @@ def clean_player_name(raw):
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw):
-    """Entfernt TennisExplorer-Artefakte."""
+    """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA' aus dem Namen."""
     if not raw: return "Unknown"
+    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen am Ende des Strings
     clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
 def get_last_name(full_name):
+    """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
@@ -262,8 +264,8 @@ async def update_past_results():
                                     scores = []
                                     for col in columns:
                                         txt = col.get_text(strip=True)
-                                        if len(txt) > 4: continue
-                                        if '(' in txt: txt = txt.split('(')[0]
+                                        if len(txt) > 4: continue 
+                                        if '(' in txt: txt = txt.split('(')[0] 
                                         if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                     return scores
 
@@ -305,13 +307,13 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: STRICT ARENA LOCATOR (V86.1) ---
-async def resolve_united_cup_arena_with_gemini(p1, p2):
+# --- NEW: STRICT ARENA LOCATOR WITH GEMINI ---
+async def resolve_united_cup_arena_gemini(p1, p2):
     """
-    Sucht spezifisch nach dem STADION (RAC Arena vs Ken Rosewall).
-    Kein Fallback-Raten mehr! Entweder sicher oder None.
+    Fragt Gemini 2.5 Pro nach dem spezifischen STADION (RAC vs Ken Rosewall).
+    KEIN Fallback auf Perth. Wenn unsicher -> None.
     """
-    search_query = f"{p1} vs {p2} United Cup 2026 stadium court arena"
+    search_query = f"{p1} vs {p2} United Cup 2026 court stadium"
     log(f"   🕵️‍♀️ Identifying United Cup Arena ({p1} vs {p2})...")
     
     cache_key = f"UC_{p1}_{p2}"
@@ -332,34 +334,37 @@ async def resolve_united_cup_arena_with_gemini(p1, p2):
             prompt = f"""
             TASK: Determine the exact STADIUM/ARENA for the United Cup 2026 match: {p1} vs {p2}.
             
-            SEARCH TEXT:
-            {text_content[:3000]}
+            SEARCH SNIPPETS:
+            {text_content[:3500]}
             
-            STRICT RULES:
-            1. Look for "RAC Arena" or "Perth" -> City is "Perth"
-            2. Look for "Ken Rosewall Arena" or "Sydney" -> City is "Sydney"
+            INSTRUCTIONS:
+            1. Find the arena name ("RAC Arena" or "Ken Rosewall Arena").
+            2. "RAC Arena" implies PERTH.
+            3. "Ken Rosewall Arena" implies SYDNEY.
             
-            OUTPUT:
-            - If confident: JSON {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
-            - If NO stadium/city mentioned for THIS match: JSON {{ "city": null }} (DO NOT GUESS)
+            OUTPUT JSON ONLY:
+            {{ "arena": "RAC Arena" }}  OR  {{ "arena": "Ken Rosewall Arena" }}
+            
+            If NO arena or city is clearly linked to THIS specific match in the text, return: {{ "arena": null }}
+            DO NOT GUESS.
             """
             
             # Using the stronger model as requested
             res = await call_gemini(prompt, model='gemini-2.5-pro')
             
-            city = None
+            arena = None
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    city = data.get("city")
+                    arena = data.get("arena")
                 except: pass
             
-            if city in ["Perth", "Sydney"]:
-                TOURNAMENT_LOC_CACHE[cache_key] = city
-                log(f"      -> AI Determined: {city}")
-                return city
+            if arena in ["RAC Arena", "Ken Rosewall Arena"]:
+                TOURNAMENT_LOC_CACHE[cache_key] = arena
+                log(f"      -> AI Found Arena: {arena}")
+                return arena
             else:
-                log(f"      -> AI Unsure (Result: {city}). Skipping auto-assignment.")
+                log(f"      -> AI Unsure (Result: {arena}). Skipping.")
                 return None
 
         except Exception as e:
@@ -372,19 +377,21 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     
     # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        # 1. Ask Gemini 2.5 Pro to identify Perth vs Sydney
-        city = await resolve_united_cup_arena_with_gemini(p1, p2)
+        # 1. Ask Gemini 2.5 Pro to identify Arena
+        arena_target = await resolve_united_cup_arena_gemini(p1, p2)
         
-        if city:
-            # 2. Database Lookup based on CITY
+        if arena_target:
+            # 2. Database Lookup based on ARENA STRING
             for t in db_tours:
-                if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
-                    # Exact Match Found (e.g. "Perth, RAC Arena")
-                    return t['surface'], t['bsi_rating'], f"United Cup ({city})"
+                # Wir suchen nach dem Eintrag, der den Arenanamen in 'location' hat
+                if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
+                    # Exact Match Found
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
-        # If no city found or AI unsure, we return a generic/default to avoid crashing, 
-        # BUT we log it clearly so you see it wasn't matched.
-        return "Hard Court Outdoor", 7.6, "United Cup (Generic/Unsure)"
+        # NO FALLBACK as requested. Return defaults but with a warning note.
+        # Ideally we skip, but for now we return generic so the loop continues but you know it's generic.
+        log(f"      ⚠️ No specific arena found for United Cup match. Using Generic.")
+        return "Hard Court Outdoor", 7.6, "United Cup (Generic)"
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -489,7 +496,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v86.1 (Strict Arena Search) Starting...")
+    log(f"🚀 Neural Scout v88.0 (Gemini Arena Sniper) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
