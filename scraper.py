@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V93.0 - Logic Mapping Protocol)...")
+log("🔌 Initialisiere Neural Scout (V94.0 - Unbreakable Fallback Mode)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,22 +36,10 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- SILICON VALLEY TRUTH TABLE ---
-# Statische Regeln des Turniers. Keine AI darf das überschreiben.
-# Perth = RAC Arena | Sydney = Ken Rosewall Arena
-GROUP_TO_CITY = {
-    "Group A": "Perth",
-    "Group C": "Perth",
-    "Group E": "Perth",
-    "Group B": "Sydney",
-    "Group D": "Sydney",
-    "Group F": "Sydney"
-}
-
-CITY_TO_DB_ARENA = {
-    "Perth": "RAC Arena",
-    "Sydney": "Ken Rosewall Arena"
-}
+# --- HARDCODED DB MAPPING (EXACT CSV NAMES) ---
+# Das sind die exakten Strings aus deiner tournaments_rows.csv
+DB_NAME_PERTH = "Perth, RAC Arena"
+DB_NAME_SYDNEY = "Sydney, Ken Rosewall Arena"
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -232,6 +220,8 @@ async def update_past_results():
         log("   ⏳ Waiting for matches to finish (Time-Lock active)...")
         return
 
+    log(f"   🔎 Target List: {[m['player1_name'] + ' vs ' + m['player2_name'] for m in safe_matches]}")
+
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         async with async_playwright() as p:
@@ -315,17 +305,12 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: V93.0 LOGIC MAPPING STRATEGY ---
-async def resolve_united_cup_strategy(p1, p2):
+# --- NEW: V94.0 PLAYER-CENTRIC SEARCH + DB MAPPING ---
+async def resolve_united_cup_location(p1, p2):
     """
-    Findet die Location durch Logik: 
-    1. Suche Country/Group des Spielers.
-    2. Mappe Gruppe auf Stadt (Hardcoded Truth).
-    3. Mappe Stadt auf Arena (Hardcoded Truth).
+    Sucht nach dem SPIELER (Player 1) beim United Cup.
+    Falls keine Antwort, gibt er NONE zurück (Trigger für Fallback).
     """
-    search_query = f'"{p1}" United Cup 2026 group team country'
-    log(f"   🕵️‍♀️ Logic Map for {p1}: Identifying Group/City...")
-    
     cache_key = f"UC_{p1}_{p2}"
     if cache_key in TOURNAMENT_LOC_CACHE: 
         log(f"      -> Cached: {TOURNAMENT_LOC_CACHE[cache_key]}")
@@ -335,80 +320,72 @@ async def resolve_united_cup_strategy(p1, p2):
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            # Generic Search is fine here because "Zverev United Cup Group" is very stable info
-            await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=10000)
+            
+            # Simple, effective query
+            search_query = f"{p1} United Cup 2026 city"
+            log(f"   🕵️‍♀️ Identifying Venue via Player Search: {p1}...")
+            
+            await page.goto(f"https://html.duckduckgo.com/html/?q={search_query}", timeout=8000)
             text_content = await page.inner_text("body")
             await browser.close()
             
-            # --- LOGIC PROMPT ---
             prompt = f"""
-            TASK: Identify the UNITED CUP GROUP for player: {p1}.
+            TASK: Identify the CITY for United Cup player: {p1}.
+            TEXT: {text_content[:2000]}
+            RULES: 
+            - Group A/C/E = Perth.
+            - Group B/D/F = Sydney.
+            - Mentions of "RAC Arena" = Perth.
+            - Mentions of "Ken Rosewall" = Sydney.
             
-            SOURCE TEXT:
-            {text_content[:3000]}
-            
-            INSTRUCTIONS:
-            1. Find which Country {p1} represents.
-            2. Find which GROUP that Country is in (Group A, B, C, D, E, F).
-            3. Check if it is a Quarterfinal/Semi/Final match (Knockout).
-            
-            OUTPUT JSON:
-            {{ "group": "Group A" }} OR {{ "stage": "Finals" }}
-            If found nothing: {{ "group": null }}
+            OUTPUT JSON ONLY: {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
+            If totally unknown: {{ "city": null }}
             """
             
-            res = await call_gemini(prompt, model='gemini-2.5-pro')
-            
-            found_key = None
+            res = await call_gemini(prompt)
+            city = None
             if res:
                 try:
                     data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    if data.get("stage") in ["Finals", "Semifinals", "Quarterfinals"]:
-                        # Knockouts are mostly in Sydney
-                        found_key = "Sydney"
-                    else:
-                        group = data.get("group")
-                        if group in GROUP_TO_CITY:
-                            found_key = GROUP_TO_CITY[group] # Maps "Group A" -> "Perth"
+                    city = data.get("city")
                 except: pass
             
-            if found_key and found_key in CITY_TO_DB_ARENA:
-                arena = CITY_TO_DB_ARENA[found_key]
-                TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      -> Logic Success: {p1} -> {found_key} -> {arena}")
-                return arena
-            
-            # Fallback if AI fails logic but text mentions city
-            if "perth" in text_content.lower() and "sydney" not in text_content.lower():
-                return CITY_TO_DB_ARENA["Perth"]
-            if "sydney" in text_content.lower() and "perth" not in text_content.lower():
-                return CITY_TO_DB_ARENA["Sydney"]
-
-            log(f"      -> AI Logic Unsure. Returning None.")
+            if city in ["Perth", "Sydney"]:
+                TOURNAMENT_LOC_CACHE[cache_key] = city
+                return city
             return None
 
         except Exception as e:
-            log(f"      ⚠️ Logic Map failed: {e}")
+            log(f"      ⚠️ Search failed: {e}")
             await browser.close() if 'browser' in locals() else None
             return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL PATH ---
+    # --- UNITED CUP SPECIAL PATH (UNBREAKABLE) ---
     if "united cup" in s_low:
-        # 1. Use Logic Mapping (Group -> City -> Arena)
-        arena_target = await resolve_united_cup_strategy(p1, p2)
+        # 1. Try to find the city
+        found_city = await resolve_united_cup_location(p1, p2)
         
-        if arena_target:
-            # 2. Database Lookup
-            for t in db_tours:
-                if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
-                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
+        # 2. Determine Target DB Location String
+        if found_city == "Perth":
+            target_location_str = DB_NAME_PERTH # "Perth, RAC Arena"
+        else:
+            # FALLBACK TO SYDNEY if None or Sydney found
+            # This guarantees we NEVER skip a match.
+            target_location_str = DB_NAME_SYDNEY # "Sydney, Ken Rosewall Arena"
+            if not found_city:
+                log(f"      ⚠️ City not found for {p1}. Defaulting to SYDNEY.")
+
+        # 3. Database Lookup
+        for t in db_tours:
+            # Strict match on the name "United Cup" and the SPECIFIC location string
+            if "united cup" in t['name'].lower() and target_location_str.lower() in t.get('location', '').lower():
+                return t['surface'], t['bsi_rating'], f"United Cup ({target_location_str})"
         
-        # 3. NO FALLBACK (As requested)
-        log(f"      ❌ MATCH SKIPPED (Physics): No United Cup location found for {p1} vs {p2}.")
-        return "Hard Court Outdoor", 7.0, "United Cup (Unknown)" 
+        # Emergency Fallback (should never happen if DB is correct)
+        return "Hard Court Outdoor", 7.0, "United Cup (Emergency Fallback)"
     # -------------------------------
 
     # --- STANDARD TOURNAMENT LOGIC ---
@@ -512,7 +489,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v93.0 (Logic Mapping Protocol) Starting...")
+    log(f"🚀 Neural Scout v94.0 (Unbreakable United Cup) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -561,7 +538,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # --- CALLING THE NEW LOGIC MAPPER ---
+                    # --- CALLING THE NEW LOCATOR ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
