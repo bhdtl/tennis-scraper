@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V98.0 - Hydration-Aware Official Scraper)...")
+log("🔌 Initialisiere Neural Scout (V99.0 - Group Topology Mapping)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -36,14 +36,25 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE = {} 
 
-# --- CACHE ---
-SCHEDULE_CACHE = {}
-
-# --- DB MAP ---
+# --- HARDCODED TRUTH TABLES ---
 CITY_TO_DB_LOCATION = {
     "Perth": "RAC Arena",
     "Sydney": "Ken Rosewall Arena"
 }
+
+# Official United Cup 2026 Rules (Static)
+GROUP_TO_CITY = {
+    "Group A": "Perth",
+    "Group C": "Perth",
+    "Group E": "Perth",
+    "Group B": "Sydney",
+    "Group D": "Sydney",
+    "Group F": "Sydney"
+}
+
+# Global Cache for "Country -> Group" mapping
+# e.g., { "Germany": "Group E", "USA": "Group A" }
+COUNTRY_GROUP_MAP = {}
 
 # =================================================================
 # HELPER FUNCTIONS
@@ -74,7 +85,7 @@ def get_last_name(full_name):
 # GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt, model=MODEL_NAME):
-    await asyncio.sleep(0.2) 
+    await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -296,6 +307,7 @@ async def update_past_results():
 # MAIN PIPELINE
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
+    # Fallback for normal tournaments
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     prompt = f"TASK: Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\", \"is_indoor\": bool }}"
     res = await call_gemini(prompt)
@@ -306,117 +318,98 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- V98.0: HYDRATION-AWARE OFFICIAL SCRAPER ---
-async def fetch_schedule_for_day_cached(day_num):
-    if day_num in SCHEDULE_CACHE: return SCHEDULE_CACHE[day_num]
+# --- NEW V99.0: INITIALIZE GROUP MAPPING FROM OFFICIAL STANDINGS ---
+async def init_united_cup_groups():
+    """Scrapes the Standings Page once to build the Country->Group map."""
+    if COUNTRY_GROUP_MAP: return # Already loaded
     
-    url = f"https://www.unitedcup.com/en/scores/schedule?day={day_num}"
-    log(f"   📥 Downloading United Cup Schedule Day {day_num}...")
+    url = "https://www.unitedcup.com/en/scores/standings" # Correct official URL
+    log("   📥 Initializing United Cup Group Topology...")
     
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            
-            # CRITICAL FIX: wait_until='networkidle' ensures JS has fetched the data
-            await page.goto(url, timeout=20000, wait_until="networkidle")
-            
-            # EXTRA SAFETY: Wait 3 seconds for React hydration
-            await page.wait_for_timeout(3000)
-            
-            text_content = await page.inner_text("body")
-            await browser.close()
-            
-            SCHEDULE_CACHE[day_num] = text_content.lower()
-            return SCHEDULE_CACHE[day_num]
-        except Exception as e:
-            log(f"      ⚠️ Failed to download Day {day_num}: {e}")
-            return ""
-
-async def resolve_united_cup_iterative(p1, p2):
-    cache_key = f"UC_{p1}_{p2}"
-    if cache_key in TOURNAMENT_LOC_CACHE: 
-        log(f"      -> Cached: {TOURNAMENT_LOC_CACHE[cache_key]}")
-        return TOURNAMENT_LOC_CACHE[cache_key]
-
-    log(f"   🕵️‍♀️ Scanning United Cup Schedule (Days 1-9) for {p1}...")
-    
-    p1_lower = p1.lower()
-    p1_last = get_last_name(p1).lower()
-
-    for day in range(1, 10): 
-        content = await fetch_schedule_for_day_cached(day)
-        if not content: continue
-
-        # PRE-FILTER
-        if p1_lower in content or (len(p1_last) > 3 and p1_last in content):
-            log(f"      -> Found {p1} on Day {day}. Extracting Venue...")
-            
-            prompt = f"""
-            TASK: Identify the CITY for the match involving {p1}.
-            SOURCE: United Cup Schedule Day {day} (Raw Text).
-            
-            TEXT_SNIPPET:
-            {content[:15000]} 
-            
-            INSTRUCTIONS:
-            1. Find "{p1}" (or {p1_last}).
-            2. Check surrounding text for "RAC Arena" (Perth) or "Ken Rosewall Arena" (Sydney).
-            
-            OUTPUT JSON ONLY: {{ "city": "Perth" }} OR {{ "city": "Sydney" }}
-            If not found: {{ "city": null }}
-            """
-            
-            res = await call_gemini(prompt)
-            city = None
-            if res:
-                try:
-                    data = json.loads(res.replace("```json", "").replace("```", "").strip())
-                    city = data.get("city")
-                except: pass
-            
-            if city in ["Perth", "Sydney"]:
-                arena = CITY_TO_DB_LOCATION.get(city)
-                TOURNAMENT_LOC_CACHE[cache_key] = arena
-                log(f"      ✅ FOUND: {city} => {arena}")
-                return arena
-
-    # FALLBACK STRATEGY B: GOOGLE SEARCH (If Official Site fails/blocks)
-    log(f"      ⚠️ Official Site failed. Switching to Google Search Fallback...")
-    return await resolve_united_cup_google_fallback(p1)
-
-async def resolve_united_cup_google_fallback(p1):
-    # This is your requested fallback if the official scrape fails
-    async with async_playwright() as p:
-        try:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(f"https://html.duckduckgo.com/html/?q={p1} United Cup 2026 city", timeout=8000)
+            # Hydration wait is key for SPA
+            await page.goto(url, timeout=20000, wait_until="networkidle") 
+            await page.wait_for_timeout(3000) 
             text = await page.inner_text("body")
             await browser.close()
             
-            if "perth" in text.lower() and "sydney" not in text.lower(): return "RAC Arena"
-            if "sydney" in text.lower() and "perth" not in text.lower(): return "Ken Rosewall Arena"
+            # --- GEMINI PARSER ---
+            prompt = f"""
+            TASK: Extract United Cup Groups and Countries.
+            SOURCE: Official Standings Page.
+            TEXT: {text[:15000]}
+            
+            OUTPUT JSON ONLY:
+            {{
+                "Germany": "Group E",
+                "USA": "Group A",
+                ... (all found countries)
+            }}
+            """
+            res = await call_gemini(prompt)
+            if res:
+                data = json.loads(res.replace("```json", "").replace("```", "").strip())
+                COUNTRY_GROUP_MAP.update(data)
+                log(f"      ✅ Mapped {len(COUNTRY_GROUP_MAP)} Countries to Groups.")
+        except Exception as e:
+            log(f"      ⚠️ Group Init Failed: {e}")
+
+async def resolve_venue_by_country(p1):
+    """
+    1. Finds p1's country via Gemini.
+    2. Maps Country -> Group -> City -> Arena.
+    """
+    if not COUNTRY_GROUP_MAP:
+        await init_united_cup_groups()
+        
+    # 1. Identify Country
+    prompt = f"What country does tennis player '{p1}' represent? Output JSON: {{ \"country\": \"Name\" }}"
+    res = await call_gemini(prompt)
+    country = "Unknown"
+    if res:
+        try:
+            country = json.loads(res.replace("```json", "").replace("```", "").strip()).get("country")
         except: pass
-    
-    # ULTIMATE FALLBACK: Sydney (Finals location)
+        
+    # 2. Logic Chain
+    # Try fuzzy matching for country names (e.g. "USA" vs "United States")
+    group = None
+    for c_key, g_val in COUNTRY_GROUP_MAP.items():
+        if country.lower() in c_key.lower() or c_key.lower() in country.lower():
+            group = g_val
+            break
+            
+    if group:
+        city = GROUP_TO_CITY.get(group)
+        if city:
+            arena = CITY_TO_DB_LOCATION.get(city)
+            log(f"      ✅ LOGIC MATCH: {p1} ({country}) -> {group} -> {city} -> {arena}")
+            return arena
+            
+    # Fallback: If logic fails (Knockout stages aren't in groups), assume Sydney (Finals)
+    log(f"      ⚠️ Logic gap for {p1} ({country}). Assuming Knockout Stage -> Sydney.")
     return "Ken Rosewall Arena"
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP ---
+    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
-        arena_target = await resolve_united_cup_iterative(p1, p2)
+        arena_target = await resolve_venue_by_country(p1) # V99.0 Logic
         
         if arena_target:
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         
+        # Hard Fallback
         return "Hard Court Outdoor", 8.0, "United Cup (Sydney Default)"
-    # ------------------
+    # -------------------------------
 
+    # --- STANDARD TOURNAMENT LOGIC ---
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
@@ -517,9 +510,12 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v98.0 (Hydration-Aware Official Scraper) Starting...")
+    log(f"🚀 Neural Scout v99.0 (Group Topology Mapping) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
+    # PRE-INIT GROUPS (Only once)
+    await init_united_cup_groups()
+    
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: return
 
@@ -566,6 +562,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
+                    # --- CALLING THE NEW TOPOLOGY MAPPER ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
