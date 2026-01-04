@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V2.3 - Silicon Valley Engine + Topology Logic)...")
+log("🔌 Initialisiere Neural Scout (V2.4 - Resultat-Fix based on v95)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -40,15 +40,14 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# MODEL: Wir nutzen 1.5-pro (High Reasoning). Falls du wirklich 2.5 hast, ändere es hier.
-MODEL_NAME = 'gemini-2.5-pro' 
+# MODEL: 1.5-pro für Deep Analysis (wie gewünscht)
+MODEL_NAME = 'gemini-1.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {} 
 
-# --- V100.0 TOPOLOGY MAP ---
-# Wird dynamisch befüllt via build_country_city_map()
+# --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 CITY_TO_DB_STRING = {
@@ -92,7 +91,7 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1} # Low Temp for Precision
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.1}
     }
     async with httpx.AsyncClient() as client:
         try:
@@ -161,7 +160,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE V7 (Strictly from V100 Logic)
+# 5. MATH CORE
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -172,7 +171,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
-    # V100 AI Integration
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
@@ -198,14 +196,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
     
-    # Try to find player in Elo Cache
     for name, stats in ELO_CACHE.get(tour, {}).items():
         if n1 in name: elo1 = stats.get(elo_surf, 1500.0)
         if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
         
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    # V100 Weights
     prob_alpha = (prob_matchup * 0.50) + (prob_bsi * 0.20) + (prob_skills * 0.15) + (prob_elo * 0.15)
 
     if prob_alpha > 0.60:
@@ -223,10 +219,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE (Silicon Valley Edition - V2.2)
+# 6. RESULT VERIFICATION ENGINE (RESTORED V95.0 LOGIC)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (Smart Column Logic)...")
+    log("🏆 Checking for Match Results (Restored v95.0 Aggressive Logic)...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches:
@@ -249,89 +245,85 @@ async def update_past_results(browser: Browser):
 
     log(f"   🔍 Searching results for {len(safe_matches)} pending matches...")
 
+    # Nutzung der v95.0 Logik, aber mit effizientem Browser-Sharing
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
+            # Benutze '/results/' um sicherzustellen, dass wir Ergebnisse sehen
             url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             
-            # --- DYNAMIC HEADER DETECTION ---
-            idx_sets = -1
-            header_row = soup.find('tr', class_='headings') or soup.find('tr', class_='flags')
-            if header_row:
-                cols = header_row.find_all(['th', 'td'])
-                for idx, col in enumerate(cols):
-                    txt = col.get_text(strip=True).upper()
-                    if txt == 'S': idx_sets = idx
-            
-            if idx_sets == -1: idx_sets = -6 
-            
             table = soup.find('table', class_='result')
             if not table: continue
 
             rows = table.find_all('tr')
-            i = 0
-            while i < len(rows):
+            for i in range(len(rows)):
                 row = rows[i]
-                row_classes = row.get('class', [])
-                if 'head' in row_classes or 'flags' in row_classes: 
-                    i += 1; continue
+                if 'flags' in str(row) or 'head' in str(row): continue
                 
-                if i + 1 >= len(rows): break
-                row1 = row; row2 = rows[i+1]
-                
-                if 'head' in row2.get('class', []) or 'flags' in row2.get('class', []):
-                    i += 1; continue
-
-                p1_text = row1.get_text(separator=' ', strip=True).lower()
-                p2_text = row2.get_text(separator=' ', strip=True).lower()
-                
-                matched_pm = None
+                # Wir prüfen gegen alle offenen Matches
                 for pm in safe_matches:
-                    last1 = get_last_name(pm['player1_name'])
-                    last2 = get_last_name(pm['player2_name'])
-                    if (last1 in p1_text and last2 in p2_text) or (last2 in p1_text and last1 in p2_text):
-                        matched_pm = pm; break
-                
-                if matched_pm:
-                    def get_set_score(r):
-                        cols = r.find_all('td')
-                        if 0 <= idx_sets < len(cols):
-                            val = cols[idx_sets].get_text(strip=True)
-                            if val.isdigit(): return int(val)
-                        return 0
-
-                    s1 = get_set_score(row1)
-                    s2 = get_set_score(row2)
-                    winner = None
-                    is_ret = "ret." in p1_text or "ret." in p2_text
+                    p1_last = get_last_name(pm['player1_name'])
+                    p2_last = get_last_name(pm['player2_name'])
                     
-                    if s1 > s2 and (s1 >= 2 or is_ret):
-                        last1_db = get_last_name(matched_pm['player1_name'])
-                        if last1_db in p1_text: winner = matched_pm['player1_name']
-                        else: winner = matched_pm['player2_name']
-                    elif s2 > s1 and (s2 >= 2 or is_ret):
-                        last1_db = get_last_name(matched_pm['player1_name'])
-                        if last1_db in p2_text: winner = matched_pm['player1_name']
-                        else: winner = matched_pm['player2_name']
+                    row_text = row.get_text(separator=" ", strip=True).lower()
+                    next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
+                    
+                    # Identifikation des Matches (v95 Logic)
+                    match_found = (p1_last in row_text and p2_last in next_row_text) or \
+                                  (p2_last in row_text and p1_last in next_row_text) or \
+                                  (p1_last in row_text and p2_last in row_text)
+                    
+                    if match_found:
+                        try:
+                            is_retirement = "ret." in row_text or "w.o." in row_text
+                            cols1 = row.find_all('td')
+                            cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
+                            
+                            # --- RESTORED AGGRESSIVE EXTRACTOR FROM V95 ---
+                            def extract_scores_aggressive(columns):
+                                scores = []
+                                for col in columns:
+                                    txt = col.get_text(strip=True)
+                                    if len(txt) > 4: continue 
+                                    if '(' in txt: txt = txt.split('(')[0] 
+                                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
+                                return scores
+                            # ---------------------------------------------
 
-                    if winner:
-                        supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", matched_pm['id']).execute()
-                        safe_matches = [x for x in safe_matches if x['id'] != matched_pm['id']]
-                        log(f"      ✅ Verified Winner: {winner} (Sets: {s1}-{s2})")
-                    i += 2
-                else:
-                    i += 1
+                            p1_scores = extract_scores_aggressive(cols1)
+                            p2_scores = extract_scores_aggressive(cols2)
+                            
+                            p1_sets = 0; p2_sets = 0
+                            for k in range(min(len(p1_scores), len(p2_scores))):
+                                if p1_scores[k] > p2_scores[k]: p1_sets += 1
+                                elif p2_scores[k] > p1_scores[k]: p2_sets += 1
+                            
+                            winner_name = None
+                            # V95 Winner Logic
+                            if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
+                                if p1_last in row_text: winner_name = pm['player1_name']
+                                elif p2_last in row_text: winner_name = pm['player2_name']
+                            elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_retirement and p2_sets > p1_sets):
+                                if p1_last in next_row_text: winner_name = pm['player1_name']
+                                elif p2_last in next_row_text: winner_name = pm['player2_name']
+                            
+                            if winner_name:
+                                supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
+                                safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
+                                log(f"      ✅ Verified Winner: {winner_name} (Sets: {p1_sets}-{p2_sets})")
+
+                        except Exception: pass
         except Exception as e:
             log(f"   ⚠️ Result Fetch Error: {e}")
         finally:
             await page.close()
 
 # =================================================================
-# 7. MAIN PIPELINE WITH TOPOLOGY LOGIC (V100)
+# 7. MAIN PIPELINE
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
@@ -346,9 +338,6 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
 
 # --- V100.0: BUILD THE KNOWLEDGE GRAPH ---
 async def build_country_city_map(browser: Browser):
-    """
-    Scrapt die United Cup Standings-Seite EINMALIG.
-    """
     if COUNTRY_TO_CITY_MAP: return 
     
     url = "https://www.unitedcup.com/en/scores/group-standings"
@@ -381,9 +370,6 @@ async def build_country_city_map(browser: Browser):
         await page.close()
 
 async def resolve_united_cup_via_country(p1):
-    """
-    Ermittelt die Stadt basierend auf dem Land des Spielers.
-    """
     if not COUNTRY_TO_CITY_MAP: return None
         
     cache_key = f"COUNTRY_{p1}"
@@ -403,7 +389,6 @@ async def resolve_united_cup_via_country(p1):
         city = COUNTRY_TO_CITY_MAP[country]
         return CITY_TO_DB_STRING.get(city)
     
-    # Fuzzy match
     for map_country, map_city in COUNTRY_TO_CITY_MAP.items():
         if country.lower() in map_country.lower() or map_country.lower() in country.lower():
             return CITY_TO_DB_STRING.get(map_city)
@@ -413,7 +398,7 @@ async def resolve_united_cup_via_country(p1):
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL PATH (V100 Logic) ---
+    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -439,9 +424,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
-    """
-    EXACT V100 PROMPT STRUCTURE
-    """
     prompt = f"""
     ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
     CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
@@ -528,18 +510,18 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v2.3 (Silicon Valley Engine + Topology Logic) Starting...")
+    log(f"🚀 Neural Scout v2.4 (Merged: Silicon Valley Engine + Topology + v95 Result Fix) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 1. Update Results (Robust V2.2)
+            # 1. Update Results (Using RESTORED v95 Logic)
             await update_past_results(browser)
             
             # 2. Fetch Elo
             await fetch_elo_ratings(browser)
             
-            # 3. Build Knowledge Graph (V100 Logic)
+            # 3. Build Knowledge Graph
             await build_country_city_map(browser)
             
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -587,7 +569,6 @@ async def run_pipeline():
                             r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                             
-                            # V100 Logic Injection
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                             prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2)
