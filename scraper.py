@@ -20,7 +20,7 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
-log("🔌 Initialisiere Neural Scout (V82.0 - United Cup Location Fix)...")
+log("🔌 Initialisiere Neural Scout (V82.1 - Lightweight United Cup Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -53,11 +53,13 @@ def clean_player_name(raw):
 def clean_tournament_name(raw):
     """Entfernt TennisExplorer-Artefakte wie 'S12345H2HHA' aus dem Namen."""
     if not raw: return "Unknown"
-    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen, was typisch für die Stats-Links ist
-    clean = re.sub(r'S\d+.*', '', raw).strip()
+    # Entfernt alles ab einem großen 'S' gefolgt von Zahlen (typisch für Stats-Links)
+    # United CupS123... -> United Cup
+    clean = re.sub(r'S\d+[A-Z0-9]*$', '', raw).strip()
     return clean
 
 def get_last_name(full_name):
+    """Extrahiert den Nachnamen (lowercase) für robusten Vergleich."""
     if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
@@ -198,7 +200,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# RESULT VERIFICATION ENGINE (V80.6 - FIXED PARSER)
+# RESULT VERIFICATION ENGINE
 # =================================================================
 async def update_past_results():
     log("🏆 Checking for Match Results (Deep Scan V6)...")
@@ -334,24 +336,23 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- NEW: United Cup Locator ---
-async def fetch_united_cup_city_external(p1, p2):
-    """Uses DuckDuckGo HTML search to find if match is in Perth or Sydney."""
+# --- NEW: United Cup Locator (LIGHTWEIGHT VERSION) ---
+async def resolve_united_cup_city_lightweight(p1, p2):
+    """Uses HTTPX (No Browser) to check DuckDuckGo HTML for City info."""
     search_query = f"{p1} {p2} United Cup 2026 city"
-    log(f"   🕵️‍♀️ Identifying United Cup Venue for {p1} vs {p2}...")
+    log(f"   🕵️‍♀️ Identifying United Cup Venue (Fast Search): {p1} vs {p2}...")
     
-    async with async_playwright() as p:
-        # Use simple browser context, no heavy evasion needed for DDG HTML
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        try:
-            # DuckDuckGo HTML is bot-friendly and lightweight
-            url = f"https://html.duckduckgo.com/html/?q={search_query}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            content = await page.content_txt() if hasattr(page, 'content_txt') else await page.content()
-            await browser.close()
+    url = f"https://html.duckduckgo.com/html/?q={search_query}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=10.0)
+            if resp.status_code != 200: 
+                log(f"      ⚠️ HTTP Error {resp.status_code}")
+                return None
             
-            content_lower = content.lower()
+            content_lower = resp.text.lower()
             if "perth" in content_lower and "sydney" not in content_lower:
                 log("      -> Venue found: PERTH")
                 return "Perth"
@@ -359,29 +360,30 @@ async def fetch_united_cup_city_external(p1, p2):
                 log("      -> Venue found: SYDNEY")
                 return "Sydney"
             
-            # If both or neither, defaulting to Perth (usually main group stage) or Sydney (finals)
-            # Simple heuristic:
+            # Heuristic fallback if both or neither appear clearly
             if "perth" in content_lower: return "Perth"
             if "sydney" in content_lower: return "Sydney"
-            
-            return None
-        except Exception as e:
-            log(f"      ⚠️ Search failed: {e}")
-            await browser.close()
             return None
 
+    except Exception as e:
+        log(f"      ⚠️ Search failed: {e}")
+        return None
+
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
+    # CLEANED Name
     s_low = clean_tournament_name(tour).lower().strip()
     
     # --- UNITED CUP SPECIAL HANDLER ---
     if "united cup" in s_low:
-        city = await fetch_united_cup_city_external(p1, p2)
+        city = await resolve_united_cup_city_lightweight(p1, p2)
         if city:
             # Filter DB for United Cup entry that matches the city in 'location'
             for t in db_tours:
                 if "united cup" in t['name'].lower() and city.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({city})"
-        # Fallback if search fails: Default to Perth (usually faster/more common)
+        
+        # Fallback if search fails: Default to Perth (Main Venue)
+        # This ensures the pipeline NEVER stops even if search fails.
         return "Hard Court Outdoor", 8.6, "United Cup (Fallback)"
     # ----------------------------------
 
@@ -455,6 +457,7 @@ def parse_matches_locally(html, p_names):
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
                 raw_time = first_col.get_text(strip=True)
+                # FIX: Use regex to extract ONLY HH:MM, ignore "Live", "1xBet" etc.
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match:
                     match_time_str = time_match.group(1).zfill(5) 
@@ -482,7 +485,7 @@ def parse_matches_locally(html, p_names):
                     found.append({
                         "p1": p1_raw, 
                         "p2": p2_raw, 
-                        "tour": clean_tournament_name(current_tour), # CLEANED HERE
+                        "tour": clean_tournament_name(current_tour), # CLEANED HERE!
                         "time": match_time_str, 
                         "odds1": odds[0] if odds else 0.0, 
                         "odds2": odds[1] if len(odds)>1 else 0.0
@@ -490,7 +493,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v82.0 (United Cup Fix) Starting...")
+    log(f"🚀 Neural Scout v82.1 (Stable United Cup Fix) Starting...")
     await update_past_results()
     await fetch_elo_ratings()
     players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -518,6 +521,7 @@ async def run_pipeline():
                     
                     iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
+                    # --- CHECK EXISTING (V81.1 Logic Restored) ---
                     existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                     
                     if existing.data:
@@ -547,7 +551,7 @@ async def run_pipeline():
                     r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
                     r2 = next((r for r in all_reports if r['player_id'] == p2_obj['id']), {})
                     
-                    # Uses the NEW smart finder with external search
+                    # --- V82.1: Uses SAFE Lightweight Finder ---
                     surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                     ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes)
                     
@@ -558,7 +562,7 @@ async def run_pipeline():
                     )
                     
                     entry = {
-                        "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'], # Clean name stored
+                        "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'], # Clean Name
                         "odds1": m_odds1, "odds2": m_odds2,
                         "ai_fair_odds1": round(1/prob_p1, 2) if prob_p1 > 0.01 else 99,
                         "ai_fair_odds2": round(1/(1-prob_p1), 2) if prob_p1 < 0.99 else 99,
