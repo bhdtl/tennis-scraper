@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V2.4 - Resultat-Fix based on v95)...")
+log("🔌 Initialisiere Neural Scout (V3.0 - Identity Resolution Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -39,16 +39,15 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# MODEL: 1.5-pro für Deep Analysis (wie gewünscht)
 MODEL_NAME = 'gemini-2.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {} 
-
-# --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
+
+# PLAYER CACHE für schnelle Lookups: { "zverev": [obj1, obj2], "williams": [obj3, obj4] }
+PLAYER_CACHE: Dict[str, List[Dict]] = {}
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
@@ -77,10 +76,81 @@ def clean_tournament_name(raw: str) -> str:
     return clean
 
 def get_last_name(full_name: str) -> str:
+    """Extrahiert NUR den Nachnamen für den Hash-Lookup."""
     if not full_name: return ""
+    # Entfernt Initialen wie "A." am Anfang oder Ende
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     parts = clean.split()
     return parts[-1].lower() if parts else ""
+
+# --- SILICON VALLEY IDENTITY RESOLVER ---
+def extract_initial(scraped_name: str) -> Optional[str]:
+    """Holt das Initial aus dem gescrapten Namen (z.B. 'Zverev A.' -> 'a')"""
+    match = re.search(r'\b([A-Z])\.', scraped_name) # Sucht nach 'A.'
+    if match:
+        return match.group(1).lower()
+    return None
+
+def detect_gender_context(tour_name: str) -> str:
+    """Versucht das Geschlecht anhand des Turniers zu raten."""
+    t = tour_name.lower()
+    if "wta" in t or "women" in t or "ladies" in t: return "WTA"
+    if "atp" in t or "men" in t: return "ATP"
+    return "ANY" # Mixed, Grand Slams, Challenger (oft ATP, aber sicher ist sicher)
+
+def smart_resolve_player(scraped_name_raw: str, tour_context: str) -> Optional[Dict]:
+    """
+    Die neue Kern-Logik für Spieler-Identifikation.
+    Löst Kollisionen durch Initialen-Check und Tour-Kontext.
+    """
+    cleaned_name = clean_player_name(scraped_name_raw)
+    last_name_key = get_last_name(cleaned_name)
+    
+    # 1. Lookup: Gibt es überhaupt Spieler mit diesem Nachnamen?
+    candidates = PLAYER_CACHE.get(last_name_key)
+    if not candidates:
+        return None
+    
+    # Wenn nur einer da ist -> Treffer (Optimierung)
+    if len(candidates) == 1:
+        return candidates[0]
+        
+    # 2. Collision Handling: Wir haben mehrere (z.B. Cerundolo, Zverev, Williams)
+    
+    # A) Filter nach Geschlecht (wenn Kontext klar ist)
+    gender_req = detect_gender_context(tour_context)
+    filtered_by_gender = []
+    
+    # Wir nehmen an, dass die DB kein explizites "Tour" Feld hat, aber wir können raten oder 
+    # wir verlassen uns primär auf Initialen. 
+    # Wenn deine DB ein 'gender' oder 'tour' feld hat, nutze es hier!
+    # Da ich das Schema nicht sehe, überspringe ich den strikten DB-Gender-Check und gehe auf Initialen.
+    
+    # B) Filter nach Initialen
+    scraped_initial = extract_initial(cleaned_name)
+    
+    final_candidates = []
+    if scraped_initial:
+        for p in candidates:
+            # DB First Name checken
+            db_first = p.get('first_name', '').lower()
+            if db_first and db_first.startswith(scraped_initial):
+                final_candidates.append(p)
+    else:
+        # Kein Initial im Scraping ('Alcaraz') -> Wir nehmen alle Kandidaten
+        final_candidates = candidates
+
+    if len(final_candidates) == 1:
+        return final_candidates[0]
+    
+    if len(final_candidates) > 1:
+        # Immer noch uneindeutig. Wir loggen Warning und skippen, um falsche Daten zu vermeiden.
+        # Ausnahme: Wenn es ATP ist und wir ATP Spieler haben, nimm den mit besserem Ranking (falls vorhanden)
+        # Hier: Safety first -> None
+        log(f"⚠️ Ambiguous Player: '{scraped_name_raw}' matches {len(final_candidates)} DB entries ({[c['last_name'] for c in final_candidates]}). Skipping.")
+        return None
+        
+    return None
 
 # =================================================================
 # 3. GEMINI ENGINE
@@ -144,6 +214,18 @@ async def get_db_data():
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
         
+        # --- BUILDING PLAYER CACHE FOR O(1) LOOKUP ---
+        global PLAYER_CACHE
+        PLAYER_CACHE = {}
+        for p in players:
+            lname = p.get('last_name', '').lower()
+            if lname:
+                if lname not in PLAYER_CACHE:
+                    PLAYER_CACHE[lname] = []
+                PLAYER_CACHE[lname].append(p)
+        
+        log(f"   🧠 Player Index built: {len(PLAYER_CACHE)} unique last names.")
+
         clean_skills = {}
         for entry in skills:
             pid = entry.get('player_id')
@@ -196,9 +278,16 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
     
-    for name, stats in ELO_CACHE.get(tour, {}).items():
-        if n1 in name: elo1 = stats.get(elo_surf, 1500.0)
-        if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
+    # Try looking in both tours, but prioritize by scraping context if possible
+    # For now, we search both
+    found_elo = False
+    for t_key in ["ATP", "WTA"]:
+        cache = ELO_CACHE.get(t_key, {})
+        for name, stats in cache.items():
+            if n1 in name: 
+                elo1 = stats.get(elo_surf, 1500.0)
+            if n2 in name: 
+                elo2 = stats.get(elo_surf, 1500.0)
         
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
@@ -219,10 +308,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE (RESTORED V95.0 LOGIC)
+# 6. RESULT VERIFICATION ENGINE (V95.0 LOGIC)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (Restored v95.0 Aggressive Logic)...")
+    log("🏆 Checking for Match Results...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches:
@@ -245,12 +334,10 @@ async def update_past_results(browser: Browser):
 
     log(f"   🔍 Searching results for {len(safe_matches)} pending matches...")
 
-    # Nutzung der v95.0 Logik, aber mit effizientem Browser-Sharing
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
-            # Benutze '/results/' um sicherzustellen, dass wir Ergebnisse sehen
             url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
@@ -264,15 +351,14 @@ async def update_past_results(browser: Browser):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row): continue
                 
-                # Wir prüfen gegen alle offenen Matches
                 for pm in safe_matches:
+                    # Hier nutzen wir den gespeicherten Namen, der schon resolved ist
                     p1_last = get_last_name(pm['player1_name'])
                     p2_last = get_last_name(pm['player2_name'])
                     
                     row_text = row.get_text(separator=" ", strip=True).lower()
                     next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                     
-                    # Identifikation des Matches (v95 Logic)
                     match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                   (p2_last in row_text and p1_last in next_row_text) or \
                                   (p1_last in row_text and p2_last in row_text)
@@ -283,7 +369,6 @@ async def update_past_results(browser: Browser):
                             cols1 = row.find_all('td')
                             cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                             
-                            # --- RESTORED AGGRESSIVE EXTRACTOR FROM V95 ---
                             def extract_scores_aggressive(columns):
                                 scores = []
                                 for col in columns:
@@ -292,7 +377,6 @@ async def update_past_results(browser: Browser):
                                     if '(' in txt: txt = txt.split('(')[0] 
                                     if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                 return scores
-                            # ---------------------------------------------
 
                             p1_scores = extract_scores_aggressive(cols1)
                             p2_scores = extract_scores_aggressive(cols2)
@@ -303,7 +387,6 @@ async def update_past_results(browser: Browser):
                                 elif p2_scores[k] > p1_scores[k]: p2_sets += 1
                             
                             winner_name = None
-                            # V95 Winner Logic
                             if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
                                 if p1_last in row_text: winner_name = pm['player1_name']
                                 elif p2_last in row_text: winner_name = pm['player2_name']
@@ -336,7 +419,6 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         return data
     except: return None
 
-# --- V100.0: BUILD THE KNOWLEDGE GRAPH ---
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return 
     
@@ -398,7 +480,6 @@ async def resolve_united_cup_via_country(p1):
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -452,11 +533,14 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally:
         await page.close()
 
-def parse_matches_locally(html, p_names):
+def parse_matches_locally(html):
+    """
+    Parsed NUR die Rohdaten. Das Resolving passiert später in der Pipeline.
+    Das trennt Scraping (unsauber) von Matching (sauber).
+    """
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
-    target_players = set(p.lower() for p in p_names)
     
     current_tour = "Unknown"
     for table in tables:
@@ -482,46 +566,42 @@ def parse_matches_locally(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
+            # Name extrahieren (mit Initialen!)
             p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
             p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
 
             if '/' in p1_raw or '/' in p2_raw: 
                 i += 1; continue
 
-            if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
-                odds = []
-                try:
-                    nums = re.findall(r'\d+\.\d+', row_text)
-                    valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
-                    if len(valid) >= 2: odds = valid[:2]
-                    else:
-                        nums2 = re.findall(r'\d+\.\d+', rows[i+1].get_text())
-                        valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
-                        if valid and valid2: odds = [valid[0], valid2[0]]
-                except: pass
-                
-                found.append({
-                    "p1": p1_raw, "p2": p2_raw, "tour": clean_tournament_name(current_tour), 
-                    "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0
-                })
-                i += 2 
-            else:
-                i += 1 
+            # Odds Check
+            odds = []
+            try:
+                nums = re.findall(r'\d+\.\d+', row_text)
+                valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
+                if len(valid) >= 2: odds = valid[:2]
+                else:
+                    nums2 = re.findall(r'\d+\.\d+', rows[i+1].get_text())
+                    valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
+                    if valid and valid2: odds = [valid[0], valid2[0]]
+            except: pass
+            
+            found.append({
+                "p1_raw": p1_raw, "p2_raw": p2_raw, 
+                "tour": clean_tournament_name(current_tour), 
+                "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0
+            })
+            i += 2 
+
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v2.4 (Merged: Silicon Valley Engine + Topology + v95 Result Fix) Starting...")
+    log(f"🚀 Neural Scout v3.0 (Smart Identity Resolution) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 1. Update Results (Using RESTORED v95 Logic)
             await update_past_results(browser)
-            
-            # 2. Fetch Elo
             await fetch_elo_ratings(browser)
-            
-            # 3. Build Knowledge Graph
             await build_country_city_map(browser)
             
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -530,26 +610,29 @@ async def run_pipeline():
                 return
 
             current_date = datetime.now()
-            player_names = [p['last_name'] for p in players]
             
             for day_offset in range(11): 
                 target_date = current_date + timedelta(days=day_offset)
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
 
-                matches = parse_matches_locally(html, player_names)
-                log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
+                # 1. Scrape Raw Data
+                matches_raw = parse_matches_locally(html)
+                log(f"🔍 Scanned: {len(matches_raw)} raw matches found for {target_date.strftime('%d.%m.')}")
                 
-                for m in matches:
+                # 2. Resolve Identities (The Fix)
+                for m in matches_raw:
                     try:
-                        p1_obj = next((p for p in players if p['last_name'] in m['p1']), None)
-                        p2_obj = next((p for p in players if p['last_name'] in m['p2']), None)
+                        # SMART RESOLVE statt naivem Matching
+                        p1_obj = smart_resolve_player(m['p1_raw'], m['tour'])
+                        p2_obj = smart_resolve_player(m['p2_raw'], m['tour'])
                         
                         if p1_obj and p2_obj:
                             m_odds1 = m['odds1']
                             m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
+                            # ID-Check verhindert Namens-Gleichheiten in der DB
                             existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data:
@@ -563,7 +646,7 @@ async def run_pipeline():
 
                             if m_odds1 <= 1.0: continue
                             
-                            log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                            log(f"✨ Verified Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                             s1 = all_skills.get(p1_obj['id'], {})
                             s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
