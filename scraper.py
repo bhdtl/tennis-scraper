@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V2.5 - Stable Core + Smart Identity)...")
+log("🔌 Initialisiere Neural Scout (V2.6 - Hotfix Identity)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -40,16 +40,11 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# MODEL
 MODEL_NAME = 'gemini-2.5-pro' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {} 
-
-# --- NEU: PLAYER INDEX FÜR SCHNELLE SUCHE ---
-# Mapping: "zverev" -> [PlayerObj1 (Alex), PlayerObj2 (Mischa)]
-PLAYER_CACHE: Dict[str, List[Dict]] = {}
 
 # --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
@@ -60,7 +55,7 @@ CITY_TO_DB_STRING = {
 }
 
 # =================================================================
-# 2. HELPER FUNCTIONS & SMART RESOLVER
+# 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -82,53 +77,50 @@ def clean_tournament_name(raw: str) -> str:
 
 def get_last_name(full_name: str) -> str:
     if not full_name: return ""
-    # Entfernt Initialen am Anfang (A. Zverev) oder Ende (Zverev A.)
+    # Entfernt Initialen am Anfang oder Ende für reinen Nachnamen-Vergleich
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     clean = re.sub(r'\s*[A-Z]\.$', '', clean).strip()
     parts = clean.split()
     return parts[-1].lower() if parts else ""
 
-# --- SILICON VALLEY IDENTITY LOGIC ---
-def smart_resolve_player(scraped_name_raw: str, tour_context: str) -> Optional[Dict]:
+# --- SILICON VALLEY PLAYER MATCHING V2 ---
+def find_player_smart(scraped_name_raw: str, all_players: List[Dict]) -> Optional[Dict]:
     """
-    Findet den korrekten Spieler basierend auf Nachname UND Initialen.
-    Verhindert ATP/WTA Mix-ups.
+    Versucht den Spieler zu finden. Priorisiert Eindeutigkeit, hat aber Fallback.
     """
-    # 1. Basis-Bereinigung
-    clean_name = clean_player_name(scraped_name_raw)
-    last_name_key = get_last_name(clean_name)
+    scraped_clean = scraped_name_raw.lower()
+    target_last_name = get_last_name(scraped_name_raw)
     
-    # 2. Kandidaten holen
-    candidates = PLAYER_CACHE.get(last_name_key)
+    # 1. Kandidaten finden (basierend auf Nachnamen)
+    candidates = []
+    for p in all_players:
+        db_last = get_last_name(p['last_name'])
+        if db_last == target_last_name:
+            candidates.append(p)
+            
     if not candidates:
         return None
-    
-    # Wenn nur einer da ist -> Treffer (90% der Fälle)
+        
+    # 2. Wenn nur einer -> Perfekt
     if len(candidates) == 1:
         return candidates[0]
         
-    # 3. Wenn mehrere da sind (Collision): Initialen prüfen
-    # Extrahiere Initial aus "Zverev A." -> "a"
-    initial_match = re.search(r'\b([A-Z])\.', clean_name)
-    scraped_initial = initial_match.group(1).lower() if initial_match else None
+    # 3. Kollisions-Lösung: Initialen prüfen
+    # Suche nach Format "A." in "Zverev A." oder "A. Zverev"
+    initial_match = re.search(r'\b([a-z])\.', scraped_clean)
     
-    filtered = []
-    if scraped_initial:
-        for p in candidates:
-            db_first = p.get('first_name', '').lower()
-            if db_first.startswith(scraped_initial):
-                filtered.append(p)
-    else:
-        filtered = candidates # Kein Initial im Scrape -> alle behalten
-
-    # 4. Wenn immer noch unklar: Versuche Tour-Matching (Optional, falls DB Tour-Daten hat)
-    # Da wir keine Tour-Daten in 'players' selecten (siehe get_db_data), verlassen wir uns auf Initialen.
+    if initial_match:
+        scraped_initial = initial_match.group(1)
+        for cand in candidates:
+            first_name = cand.get('first_name', '').lower()
+            if first_name and first_name.startswith(scraped_initial):
+                return cand
     
-    if len(filtered) == 1:
-        return filtered[0]
-    
-    # Safety: Wenn immer noch uneindeutig (z.B. zwei 'A. Zverev'), lieber überspringen als Datenmüll
-    return None
+    # 4. Fallback (Das fehlte in v3.0!):
+    # Wenn Initialen nicht matchen (oder fehlen), nimm den ersten Kandidaten,
+    # damit wir überhaupt Daten haben (wie im alten Code).
+    # Optional: Log Warning
+    return candidates[0]
 
 # =================================================================
 # 3. GEMINI ENGINE
@@ -187,24 +179,10 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        # Alles laden wie vorher
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
-        
-        # --- PLAYER CACHE BUILDEN (Für Smart Resolve) ---
-        # Wir bauen eine Map: "nadal" -> [PlayerObj]
-        global PLAYER_CACHE
-        PLAYER_CACHE = {}
-        for p in players:
-            lname = get_last_name(p['last_name']) # Nutze Helfer für Konsistenz
-            if lname:
-                if lname not in PLAYER_CACHE:
-                    PLAYER_CACHE[lname] = []
-                PLAYER_CACHE[lname].append(p)
-        
-        log(f"   🧠 Player Index built: {len(PLAYER_CACHE)} unique last names.")
         
         clean_skills = {}
         for entry in skills:
@@ -281,7 +259,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE (Original Aggressive Logic)
+# 6. RESULT VERIFICATION ENGINE (RESTORED V95.0 LOGIC)
 # =================================================================
 async def update_past_results(browser: Browser):
     log("🏆 Checking for Match Results (Restored v95.0 Aggressive Logic)...")
@@ -307,10 +285,12 @@ async def update_past_results(browser: Browser):
 
     log(f"   🔍 Searching results for {len(safe_matches)} pending matches...")
 
+    # Nutzung der v95.0 Logik, aber mit effizientem Browser-Sharing
     for day_offset in range(3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
+            # Benutze '/results/' um sicherzustellen, dass wir Ergebnisse sehen
             url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
@@ -324,6 +304,7 @@ async def update_past_results(browser: Browser):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row): continue
                 
+                # Wir prüfen gegen alle offenen Matches
                 for pm in safe_matches:
                     p1_last = get_last_name(pm['player1_name'])
                     p2_last = get_last_name(pm['player2_name'])
@@ -331,6 +312,7 @@ async def update_past_results(browser: Browser):
                     row_text = row.get_text(separator=" ", strip=True).lower()
                     next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                     
+                    # Identifikation des Matches (v95 Logic)
                     match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                   (p2_last in row_text and p1_last in next_row_text) or \
                                   (p1_last in row_text and p2_last in row_text)
@@ -341,6 +323,7 @@ async def update_past_results(browser: Browser):
                             cols1 = row.find_all('td')
                             cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                             
+                            # --- RESTORED AGGRESSIVE EXTRACTOR FROM V95 ---
                             def extract_scores_aggressive(columns):
                                 scores = []
                                 for col in columns:
@@ -349,6 +332,7 @@ async def update_past_results(browser: Browser):
                                     if '(' in txt: txt = txt.split('(')[0] 
                                     if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                 return scores
+                            # ---------------------------------------------
 
                             p1_scores = extract_scores_aggressive(cols1)
                             p2_scores = extract_scores_aggressive(cols2)
@@ -359,6 +343,7 @@ async def update_past_results(browser: Browser):
                                 elif p2_scores[k] > p1_scores[k]: p2_sets += 1
                             
                             winner_name = None
+                            # V95 Winner Logic
                             if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
                                 if p1_last in row_text: winner_name = pm['player1_name']
                                 elif p2_last in row_text: winner_name = pm['player2_name']
@@ -453,7 +438,6 @@ async def resolve_united_cup_via_country(p1):
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP SPECIAL PATH ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -508,13 +492,10 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
         await page.close()
 
 def parse_matches_locally(html, p_names):
-    """
-    Standard Scraper Logic (Aggressive & Simple)
-    """
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
-    # Set für schnellen Look-Up des reinen Nachnamens
+    # Pre-compute nur die Nachnamen für den groben Check
     target_players_last = set(get_last_name(p) for p in p_names)
     
     current_tour = "Unknown"
@@ -541,7 +522,6 @@ def parse_matches_locally(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
-            # Raw Name Scraping
             p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
             p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
 
@@ -575,18 +555,13 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v2.5 (Stable Core + Identity Fix) Starting...")
+    log(f"🚀 Neural Scout v2.6 (Stable Core + Safe Identity Check) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 1. Update Results (Uses aggressive v95 logic)
             await update_past_results(browser)
-            
-            # 2. Fetch Elo
             await fetch_elo_ratings(browser)
-            
-            # 3. Build Knowledge Graph
             await build_country_city_map(browser)
             
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -607,10 +582,9 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        # --- HIER IST DER FIX ---
-                        # Statt blind "next(...)" zu nehmen, nutzen wir smart_resolve_player
-                        p1_obj = smart_resolve_player(m['p1_raw'], m['tour'])
-                        p2_obj = smart_resolve_player(m['p2_raw'], m['tour'])
+                        # --- HIER IST DER SAFE FIX ---
+                        p1_obj = find_player_smart(m['p1_raw'], players)
+                        p2_obj = find_player_smart(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
                             m_odds1 = m['odds1']
