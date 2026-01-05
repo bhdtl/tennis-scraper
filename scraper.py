@@ -65,7 +65,6 @@ def normalize_text(text: str) -> str:
 
 def clean_player_name(raw: str) -> str:
     if not raw: return ""
-    # Entfernt Wettanbieter-Werbung und "Live streams" Müll
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
 def clean_tournament_name(raw: str) -> str:
@@ -74,7 +73,6 @@ def clean_tournament_name(raw: str) -> str:
 
 def get_last_name(full_name: str) -> str:
     if not full_name: return ""
-    # Entfernt Initialen (z.B. "A." oder "J.M.") am Anfang oder Ende
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip() 
     clean = re.sub(r'\s*[A-Z]\.$', '', clean).strip()
     parts = clean.split()
@@ -93,15 +91,12 @@ def find_player_robust(scraped_name_raw: str) -> Optional[Dict]:
     candidates = PLAYER_CACHE.get(target_last)
     
     if not candidates:
-        # Kein Spieler mit diesem Nachnamen in der DB
         return None
         
     if len(candidates) == 1:
-        # Eindeutiger Treffer
         return candidates[0]
         
     # 2. Mehrere Kandidaten (z.B. Zverev, Cerundolo)
-    # Versuche Initialen-Match ("Zverev A." -> Suche Firstname mit "A")
     initial_match = re.search(r'\b([A-Z])\.', clean_raw)
     if initial_match:
         initial = initial_match.group(1).lower()
@@ -111,9 +106,6 @@ def find_player_robust(scraped_name_raw: str) -> Optional[Dict]:
                 return cand # Smart Match!
     
     # 3. FALLBACK (Das hat in v3.0 gefehlt!)
-    # Wenn wir es nicht genau wissen, nehmen wir den ersten Kandidaten in der Liste.
-    # Das ist besser als gar nichts zu scrapen.
-    # (Optional: Hier könnte man noch Logik für ATP vs WTA einbauen, wenn DB das Feld hätte)
     return candidates[0]
 
 # =================================================================
