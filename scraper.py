@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V3.9 - Smart URL Discovery)...")
+log("🔌 Initialisiere Neural Scout (V4.0 - Self-Healing Identity)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -47,7 +47,6 @@ ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 FORM_CACHE: Dict[str, Dict[str, Any]] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
-PROFILE_URL_CACHE: Dict[str, str] = {} # NEU: Cache für gefundene URLs
 
 # --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
@@ -84,12 +83,12 @@ def get_last_name(full_name: str) -> str:
     parts = clean.split()
     return parts[-1].lower() if parts else ""
 
-# --- URL SLUG GENERATOR ---
+# --- STANDARD SLUGIFY ---
 def slugify_name(first: str, last: str) -> str:
     full = f"{first}-{last}".lower()
     return normalize_text(full).replace(' ', '-')
 
-# --- SILICON VALLEY IDENTITY FIX ---
+# --- IDENTITY FIX ---
 def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     candidates = []
@@ -134,29 +133,25 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # 4. CORE LOGIC & DATA FETCHING
 # =================================================================
 
-# --- NEU: SEARCH DISCOVERY FALLBACK ---
 async def resolve_profile_url_via_search(browser: Browser, player_name: str, tour: str) -> Optional[str]:
-    """
-    Sucht via DuckDuckGo Lite nach der korrekten URL auf tennisergebnisse.net.
-    Löst das 'Taylor Fritz' -> 'Taylor Harry Fritz' Problem.
-    """
+    """Sucht URL und gibt den Slug zurück (z.B. 'taylor-harry-fritz')"""
     search_page = await browser.new_page()
     try:
-        # Wir suchen spezifisch auf der Seite
         query = f"site:tennisergebnisse.net {tour} {player_name}"
-        # DDG Lite ist extrem schnell und hat kein JS-Bloat
         ddg_url = f"https://lite.duckduckgo.com/lite/?q={query}"
         
         await search_page.goto(ddg_url, timeout=10000)
         
-        # Wir nehmen den ersten Link, der passt
-        # DDG Lite hat simple Klassen
         link_element = search_page.locator(".result-link").first
         if await link_element.count() > 0:
             found_url = await link_element.get_attribute("href")
             if found_url and "tennisergebnisse.net" in found_url:
-                log(f"   🔎 URL Discovery: {player_name} -> {found_url}")
-                return found_url
+                # Extrahiere den Slug aus der URL
+                # URL ist meist https://www.tennisergebnisse.net/atp/slug/
+                parts = found_url.strip('/').split('/')
+                slug = parts[-1]
+                log(f"   🔎 Learned Identity: {player_name} -> {slug}")
+                return slug
     except Exception as e:
         log(f"   ⚠️ Discovery Failed: {e}")
     finally:
@@ -164,83 +159,98 @@ async def resolve_profile_url_via_search(browser: Browser, player_name: str, tou
     return None
 
 async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) -> float:
-    # 1. Check Caches
     cache_key = f"{p_obj['id']}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    # 2. Determine URL (Try Cache -> Try Guess -> Try Search)
-    url = None
-    if p_obj['id'] in PROFILE_URL_CACHE:
-        url = PROFILE_URL_CACHE[p_obj['id']]
+    # 1. INTELLIGENT URL RESOLUTION
+    # Zuerst schauen wir in die DB
+    db_slug = p_obj.get('stat_url_slug') # Neues Feld in DB
+    
+    slug = ""
+    prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
+
+    if db_slug and len(db_slug) > 2:
+        slug = db_slug
+        # log(f"   🧠 Using known identity for {p_obj['last_name']}: {slug}")
     else:
-        # Guess First (Fast Path)
+        # Standard Versuch
         slug = slugify_name(p_obj['first_name'], p_obj['last_name'])
-        prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
-        url = f"https://www.tennisergebnisse.net/{prefix}/{slug}/"
+
+    url = f"https://www.tennisergebnisse.net/{prefix}/{slug}/"
     
     page = await browser.new_page()
+    valid_page = False
+    
     try:
-        # log(f"🔍 Checking Stats for {p_obj['last_name']}...")
         response = await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        
-        # 3. Validate Page (Check for 404 or Search Page)
         title = await page.title()
-        # Wenn Titel "Seite nicht gefunden" oder wir auf der Suche gelandet sind -> Fallback
+        
+        # Check ob Seite gültig ist
         if response.status == 404 or "nicht gefunden" in title.lower() or "suche" in page.url.lower():
-            log(f"   ❌ Direct Link failed for {p_obj['last_name']}. Engaging Discovery Protocol...")
-            new_url = await resolve_profile_url_via_search(browser, f"{p_obj['first_name']} {p_obj['last_name']}", p_obj.get('tour', 'ATP'))
-            if new_url:
-                url = new_url
-                PROFILE_URL_CACHE[p_obj['id']] = url # Update Cache
-                await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+            # FAIL -> Start Discovery
+            log(f"   ❌ Standard URL failed for {p_obj['last_name']}. Learning new identity...")
+            
+            found_slug = await resolve_profile_url_via_search(browser, f"{p_obj['first_name']} {p_obj['last_name']}", p_obj.get('tour', 'ATP'))
+            
+            if found_slug:
+                # SUCCESS -> Save to DB for future use!
+                try:
+                    supabase.table("players").update({"stat_url_slug": found_slug}).eq("id", p_obj['id']).execute()
+                    log(f"   💾 Saved new identity for {p_obj['last_name']} to DB.")
+                    
+                    # Update local object for this run
+                    p_obj['stat_url_slug'] = found_slug
+                    url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug}/"
+                    await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                    valid_page = True
+                except Exception as db_e:
+                    log(f"   ⚠️ Could not save slug to DB: {db_e}")
             else:
-                return 0.5 # Give up
+                return 0.5 # Really not found
+        else:
+            valid_page = True
 
-        # 4. Extract Data with AI
-        text_content = await page.inner_text("body")
-        relevant_text = text_content[:20000] # Mehr Context
+        if valid_page:
+            # 4. Extract Data with AI
+            text_content = await page.inner_text("body")
+            relevant_text = text_content[:20000]
 
-        target_surf = "Hardcourt"
-        if "clay" in surface.lower(): target_surf = "Clay/Sand"
-        elif "grass" in surface.lower(): target_surf = "Grass"
-        elif "indoor" in surface.lower(): target_surf = "Indoor Hard"
+            target_surf = "Hardcourt"
+            if "clay" in surface.lower(): target_surf = "Clay/Sand"
+            elif "grass" in surface.lower(): target_surf = "Grass"
+            elif "indoor" in surface.lower(): target_surf = "Indoor Hard"
 
-        # Smarter Prompt
-        prompt = f"""
-        ANALYZE TENNIS STATS for {p_obj['last_name']}.
-        Target Surface: {target_surf}.
-        
-        DATA SOURCE:
-        {relevant_text}
-        
-        TASK:
-        1. Find Career W/L for {target_surf} (e.g. "Hartplatz: 150/100").
-        2. If Career not found, find Year 2024 or 2025 W/L.
-        3. Calculate Win% = Wins / (Wins + Losses).
-        
-        OUTPUT JSON ONLY: {{ "win_rate": 0.65, "matches": 250, "source": "career/year" }}
-        If NO DATA found, return {{ "win_rate": 0.5, "matches": 0 }}
-        """
-        
-        res = await call_gemini(prompt)
-        if res:
-             data = json.loads(res.replace("json", "").replace("", "").strip())
-             val = float(data.get('win_rate', 0.5))
-             matches = int(data.get('matches', 0))
-             
-             # Gewichtung nach Match-Anzahl (Silicon Valley Logic)
-             # Wenn er nur 2 Matches hat und 100% Win Rate, darf das nicht voll zählen.
-             # Wir "dämpfen" das Ergebnis Richtung 0.5 wenn wenig Daten da sind.
-             if matches < 10:
-                 # Bayesian Smoothing: (Wins + 5) / (Total + 10) -> zieht es Richtung 50%
-                 val = (val * matches + 0.5 * 10) / (matches + 10)
+            prompt = f"""
+            ANALYZE TENNIS STATS for {p_obj['last_name']}.
+            Target Surface: {target_surf}.
+            
+            DATA SOURCE:
+            {relevant_text}
+            
+            TASK:
+            1. Find Career W/L for {target_surf} (e.g. "Hartplatz: 150/100").
+            2. If Career not found, find Year 2024 or 2025 W/L.
+            3. Calculate Win% = Wins / (Wins + Losses).
+            
+            OUTPUT JSON ONLY: {{ "win_rate": 0.65, "matches": 250 }}
+            If NO DATA found, return {{ "win_rate": 0.5, "matches": 0 }}
+            """
+            
+            res = await call_gemini(prompt)
+            if res:
+                data = json.loads(res.replace("json", "").replace("", "").strip())
+                val = float(data.get('win_rate', 0.5))
+                matches = int(data.get('matches', 0))
+                
+                # Gewichtung nach Match-Anzahl
+                if matches < 10:
+                    val = (val * matches + 0.5 * 10) / (matches + 10)
 
-             # Hard Cap 5% - 95%
-             val = max(0.05, min(0.95, val))
-             
-             log(f"   📊 Stats ({p_obj['last_name']}@{target_surf}): {val:.2f} ({matches} matches)")
-             SURFACE_STATS_CACHE[cache_key] = val
-             return val
+                val = max(0.05, min(0.95, val))
+                
+                log(f"   📊 Stats ({p_obj['last_name']}@{target_surf}): {val:.2f} ({matches} matches)")
+                SURFACE_STATS_CACHE[cache_key] = val
+                return val
              
     except Exception as e:
         # log(f"⚠️ Stats Error {p_obj['last_name']}: {e}")
@@ -249,7 +259,6 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
         await page.close()
     
     return 0.5
-
 
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Surface-Specific Elo Ratings...")
@@ -398,11 +407,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    # --- NEW: SURFACE SPECIALIST COMPONENT (DER GAMECHANGER) ---
-    # Wir nehmen den echten Unterschied in der Win-Rate.
-    # Beispiel: Moller (0.80) vs Faria (0.50) -> Diff 0.30 -> Massive Advantage Moller
+    # --- SURFACE SPECIALIST COMPONENT ---
     surf_diff = surf_rate1 - surf_rate2
-    prob_surface_stats = 0.5 + (surf_diff * 0.8) # Starker Faktor
+    prob_surface_stats = 0.5 + (surf_diff * 0.7) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
     # 5. WEIGHTED FUSION (Surface Heavy)
@@ -412,7 +419,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo_weight = 0.10
     matchup_weight = 0.25
     form_weight = 0.10
-    surface_stats_weight = 0.25 # 25% sind jetzt nackte Fakten (Win Rates)
+    surface_stats_weight = 0.25 
     
     skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight + form_weight + surface_stats_weight)
 
@@ -564,7 +571,6 @@ async def resolve_united_cup_via_country(p1):
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
-    # --- UNITED CUP FIX (RESTORED OLD LOGIC) ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -574,10 +580,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
     for t in db_tours:
-        # EXACT MATCH (For Challenger Canberra etc.)
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
-    # --- AI FALLBACK (Nur wenn KEIN Treffer) ---
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
@@ -592,7 +596,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -692,7 +695,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v3.9 (Smart Discovery) Starting...")
+    log(f"🚀 Neural Scout v4.0 (Self-Healing Identity) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -736,21 +739,25 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
-                            # --- SMART SURFACE STATS ---
+                            # --- SMART SURFACE STATS (SELF-HEALING) ---
                             surf_rate1 = await fetch_surface_winrate_ai(browser, p1_obj, surf)
                             surf_rate2 = await fetch_surface_winrate_ai(browser, p2_obj, surf)
 
+                            # GET HYBRID FORM
                             f1_data = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
                             f2_data = await fetch_player_form_hybrid(browser, p2_obj['last_name'])
                             
+                            # GET ELO
                             elo_surf = 'Hard'
                             if 'clay' in surf.lower(): elo_surf = 'Clay'
                             elif 'grass' in surf.lower(): elo_surf = 'Grass'
                             elo1_val = ELO_CACHE.get("ATP", {}).get(p1_obj['last_name'].lower(), {}).get(elo_surf, 1500)
                             elo2_val = ELO_CACHE.get("ATP", {}).get(p2_obj['last_name'].lower(), {}).get(elo_surf, 1500)
 
+                            # ANALYZE WITH FULL INTEL
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, elo1_val, elo2_val, f1_data, f2_data)
                             
+                            # NEU: ÜBERGABE DER SURFACE RATES
                             prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2, surf_rate1, surf_rate2)
                             
                             entry = {
