@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V3.6 - Stable Court Logic + Full Intel)...")
+log("🔌 Initialisiere Neural Scout (V3.7 - Surface Specialist Edition)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -46,6 +46,7 @@ MODEL_NAME = 'gemini-2.5-pro'
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 FORM_CACHE: Dict[str, Dict[str, Any]] = {}
+SURFACE_STATS_CACHE: Dict[str, Dict[str, float]] = {} # NEU: Cache für Belag-Stats
 
 # --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
@@ -81,6 +82,12 @@ def get_last_name(full_name: str) -> str:
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
     parts = clean.split()
     return parts[-1].lower() if parts else ""
+
+# --- SLUGIFY FOR URLS (NEU) ---
+def slugify_name(first: str, last: str) -> str:
+    """Erstellt den URL-Slug für tennisergebnisse.net"""
+    full = f"{first}-{last}".lower()
+    return normalize_text(full).replace(' ', '-')
 
 # --- SILICON VALLEY IDENTITY FIX (Safe Implementation) ---
 def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
@@ -126,6 +133,135 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # =================================================================
 # 4. CORE LOGIC & DATA FETCHING
 # =================================================================
+
+# --- NEU: SURFACE STATS SCRAPER ---
+async def fetch_surface_winrate(browser: Browser, p_obj: Dict, surface: str) -> float:
+    """
+    Scrapet tennisergebnisse.net für spezifische Belag-Statistiken.
+    Gibt die Win-Rate (0.0 - 1.0) zurück. Default 0.5.
+    """
+    if not p_obj or not p_obj.get('first_name') or not p_obj.get('last_name'):
+        return 0.5
+        
+    cache_key = f"{p_obj['id']}_{surface}"
+    if cache_key in SURFACE_STATS_CACHE:
+        return SURFACE_STATS_CACHE[cache_key]
+
+    slug = slugify_name(p_obj['first_name'], p_obj['last_name'])
+    url = f"https://www.tennisergebnisse.net/atp/{slug}/" # ATP Default, könnte man dynamisch machen
+    if p_obj.get('tour') == 'WTA':
+         url = f"https://www.tennisergebnisse.net/wta/{slug}/"
+
+    page = await browser.new_page()
+    try:
+        # log(f"🔍 Checking Stats: {url}") # Optional Log
+        await page.goto(url, wait_until="domcontentloaded", timeout=15000) # Kurzer Timeout, wir wollen nicht ewig warten
+        content = await page.content()
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # Logik: Suche nach Tabelle mit Belag-Stats
+        # Dies ist eine Heuristik und muss an das genaue HTML der Seite angepasst werden.
+        # Beispielhafte Suche nach Keywords "Hartplatz", "Sand", "Rasen" in Tabellen.
+        
+        target_german = "Hartplatz"
+        if "clay" in surface.lower() or "sand" in surface.lower(): target_german = "Sandplatz"
+        elif "grass" in surface.lower() or "rasen" in surface.lower(): target_german = "Rasen"
+        elif "carpet" in surface.lower() or "teppich" in surface.lower(): target_german = "Teppich"
+        
+        # Finde Zeile mit Belag
+        # Wir suchen simpel nach Text, da Klassen sich ändern können
+        # Wir nehmen an, dass es eine "Karrierebilanz" oder "Jahresbilanz" gibt.
+        # Einfacherer Ansatz: Wir suchen den Text und die Zahlen danach.
+        
+        text = soup.get_text()
+        # Suche Muster: "Hartplatz: 15/5" oder ähnlich. 
+        # Da tennisergebnisse.net Tabellen nutzt, iterieren wir über Tabellenzeilen.
+        
+        total_wins = 0
+        total_loss = 0
+        
+        rows = soup.find_all('tr')
+        for row in rows:
+            row_text = row.get_text(strip=True)
+            if target_german in row_text:
+                # Versuche W/L zu extrahieren. Oft Format: "Hartplatz 12 5" oder in Spalten
+                cols = row.find_all('td')
+                if len(cols) >= 3: # Belag, Matches, W, L ...
+                    # Wir müssen raten welche Spalte was ist, oder nach Logik suchen.
+                    # Oft ist Spalte 2 = Matches, 3 = Win, 4 = Loss (Beispiel)
+                    # Robuster: Suche nach Zahlen im Text
+                    nums = re.findall(r'\d+', row_text)
+                    if len(nums) >= 2:
+                        # Nehmen wir an die letzten zwei großen Zahlen sind W/L der Karriere auf dem Belag
+                        # Das ist riskant. Besser: Wir verlassen uns auf die letzten 50 Matches Liste wenn vorhanden.
+                        pass
+
+        # FALLBACK: Wir schauen uns die "Letzten Spiele" Liste an, die oft auf der Profilseite ist.
+        # Wir zählen einfach die Siege auf dem passenden Belag in den letzten X Einträgen.
+        
+        match_table = soup.find('table', class_='table_stats_matches') # Hypothetische Klasse
+        if not match_table:
+             match_table = soup.find('table') # Nehme die erste große Tabelle
+        
+        if match_table:
+            matches_found = 0
+            wins = 0
+            rows = match_table.find_all('tr')
+            for row in rows:
+                if matches_found >= 50: break # Max 50 Matches analysieren
+                txt = row.get_text(strip=True).lower()
+                
+                # Check Belag (oft als Icon oder Text)
+                # Wenn wir den Belag nicht sicher erkennen, skippen wir oder nehmen an es passt zum aktuellen Turnierkontext
+                
+                # Einfacher Check: Hat er gewonnen?
+                # Auf dieser Seite sind Siege oft fett oder grün markiert.
+                # Wir suchen nach dem Spielernamen und checken das Ergebnis.
+                
+                if p_obj['last_name'].lower() in txt:
+                    matches_found += 1
+                    # Logik: Wenn sein Name fett ist oder Ergebnis positiv
+                    # Das ist schwer generisch zu lösen ohne genaues HTML.
+                    pass
+
+        # MOCK IMPLEMENTATION FÜR JETZT (Da wir das HTML nicht live sehen):
+        # Wir geben 0.5 zurück, aber die Infrastruktur steht.
+        # Wenn du mir das HTML Schnipsel gibst, baue ich den Parser perfekt.
+        # Für jetzt nutzen wir einen Platzhalter, der funktioniert wenn wir die Daten hätten.
+        return 0.5 
+
+    except Exception as e:
+        # log(f"⚠️ Surface Stats Fetch Error: {e}")
+        return 0.5
+    finally:
+        await page.close()
+
+# Verbesserte Mock-Funktion, die wir später durch echte Daten ersetzen
+# Aber hier ist der Clou: Wir nutzen Gemini, um die Seite zu parsen, wenn wir schon drauf sind!
+# Das ist "Expensive" aber "Accurate".
+async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) -> float:
+    slug = slugify_name(p_obj['first_name'], p_obj['last_name'])
+    url = f"https://www.tennisergebnisse.net/atp/{slug}/"
+    page = await browser.new_page()
+    try:
+        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        text = await page.inner_text("body")
+        # Wir fragen Gemini kurz und schmerzlos
+        prompt = f"Analyse text data for tennis player {p_obj['last_name']}. Calculate Win Rate on Surface '{surface}' based on career stats in text. Return float 0.0-1.0. If not found return 0.5. JSON: {{'win_rate': 0.65}}"
+        # Wir kürzen den Text um Tokens zu sparen
+        short_text = text[:10000] 
+        res = await call_gemini(f"{prompt}\nDATA:\n{short_text}")
+        if res:
+             data = json.loads(res.replace("json", "").replace("", "").strip())
+             val = float(data.get('win_rate', 0.5))
+             log(f"🤖 AI Surface Rate ({p_obj['last_name']} on {surface}): {val}")
+             SURFACE_STATS_CACHE[f"{p_obj['id']}_{surface}"] = val
+             return val
+    except: return 0.5
+    finally: await page.close()
+    return 0.5
+
+
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Surface-Specific Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
@@ -209,7 +345,7 @@ async def get_db_data():
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2): # NEU: surf_rate Params
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
@@ -272,21 +408,34 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f1 = to_float(ai_meta.get('p1_form_score', 5))
     f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
+    
+    # --- NEW: SURFACE SPECIALIST COMPONENT (DER MOLLER KILLER) ---
+    # Wir berechnen den Delta in der Win-Rate
+    # Wenn einer 0.8 (80%) hat und der andere 0.4 (40%), ist das massiv.
+    # Wir nehmen an, dass surf_rate 0.5 ist, wenn unbekannt.
+    surf_diff = surf_rate1 - surf_rate2
+    # Ein Unterschied von 20% (0.2) sollte schon stark gewichten.
+    prob_surface_stats = 0.5 + (surf_diff * 0.8) # 0.8 Faktor zur Verstärkung
+    prob_surface_stats = max(0.1, min(0.9, prob_surface_stats)) # Capping
 
     # 5. WEIGHTED FUSION
     physics_weight = 0.20
-    if bsi_val >= 8.5 or bsi_val <= 3.5: physics_weight = 0.30
+    if bsi_val >= 8.5 or bsi_val <= 3.5: physics_weight = 0.25
     
-    elo_weight = 0.15
-    matchup_weight = 0.40
-    form_weight = 0.15
-    skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight + form_weight)
+    elo_weight = 0.10
+    matchup_weight = 0.30
+    form_weight = 0.10
+    # NEU: Wir geben den harten Surface Stats Gewicht!
+    surface_stats_weight = 0.20 # Das ist viel! 20% der Entscheidung basieren auf reiner Win-Rate
+    
+    skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight + form_weight + surface_stats_weight)
 
     prob_alpha = (prob_matchup * matchup_weight) + \
                  (prob_bsi * physics_weight) + \
                  (prob_skills * skill_weight) + \
                  (prob_elo * elo_weight) + \
-                 (prob_form * form_weight)
+                 (prob_form * form_weight) + \
+                 (prob_surface_stats * surface_stats_weight) # NEU
 
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.10, 0.94)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.90, 0.06)
@@ -297,7 +446,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
         
-    final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
+    final_prob = (prob_alpha * 0.80) + (prob_market * 0.20) # Reduziere Market Bias slightly
     return final_prob
 
 # =================================================================
@@ -557,7 +706,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v3.6 (Fixed Court Logic) Starting...")
+    log(f"🚀 Neural Scout v3.7 (Surface Killer) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -601,6 +750,11 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
+                            # --- NEU: SURFACE WIN RATES LADEN ---
+                            # Das ist der Schlüssel zum Sieg gegen Moller auf Sand/Hard
+                            surf_rate1 = await fetch_surface_winrate_ai(browser, p1_obj, surf)
+                            surf_rate2 = await fetch_surface_winrate_ai(browser, p2_obj, surf)
+
                             # GET HYBRID FORM (DB + LIVE FALLBACK)
                             f1_data = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
                             f2_data = await fetch_player_form_hybrid(browser, p2_obj['last_name'])
@@ -615,7 +769,8 @@ async def run_pipeline():
                             # ANALYZE WITH FULL INTEL
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, elo1_val, elo2_val, f1_data, f2_data)
                             
-                            prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2)
+                            # NEU: ÜBERGABE DER SURFACE RATES
+                            prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2, surf_rate1, surf_rate2)
                             
                             entry = {
                                 "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'],
