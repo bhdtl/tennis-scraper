@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V4.0 - Self-Healing Identity)...")
+log("🔌 Initialisiere Neural Scout (V4.1 - Internal Search Protocol)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -133,27 +133,50 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # 4. CORE LOGIC & DATA FETCHING
 # =================================================================
 
+# --- NEU: VETERAN SEARCH STRATEGY (Direct Internal Search) ---
 async def resolve_profile_url_via_search(browser: Browser, player_name: str, tour: str) -> Optional[str]:
-    """Sucht URL und gibt den Slug zurück (z.B. 'taylor-harry-fritz')"""
+    """
+    Veteran Strategy: Nutze die interne Suche der Zielseite.
+    URL: https://www.tennisergebnisse.net/?s=Coco+Gauff
+    """
     search_page = await browser.new_page()
     try:
-        query = f"site:tennisergebnisse.net {tour} {player_name}"
-        ddg_url = f"https://lite.duckduckgo.com/lite/?q={query}"
+        # 1. Direct Search Query auf der Zielseite
+        encoded_name = player_name.replace(" ", "+")
+        target_url = f"https://www.tennisergebnisse.net/?s={encoded_name}"
         
-        await search_page.goto(ddg_url, timeout=10000)
+        # log(f"   🕵️‍♀️ Internal Search: {target_url}")
+        await search_page.goto(target_url, timeout=15000, wait_until="domcontentloaded")
         
-        link_element = search_page.locator(".result-link").first
-        if await link_element.count() > 0:
-            found_url = await link_element.get_attribute("href")
-            if found_url and "tennisergebnisse.net" in found_url:
-                # Extrahiere den Slug aus der URL
-                # URL ist meist https://www.tennisergebnisse.net/atp/slug/
-                parts = found_url.strip('/').split('/')
-                slug = parts[-1]
-                log(f"   🔎 Learned Identity: {player_name} -> {slug}")
-                return slug
+        # 2. Extract Links (Wir suchen nach Profil-Links im Content)
+        # Die Links haben meist die Form: .../atp/spieler-name/ oder .../wta/spieler-name/
+        
+        links = await search_page.locator("a[href*='/atp/'], a[href*='/wta/']").all()
+        
+        best_slug = None
+        
+        # Wir suchen den Link, der dem Namen am ähnlichsten ist
+        name_parts = normalize_text(player_name.lower()).split()
+        
+        for link in links:
+            href = await link.get_attribute("href")
+            if not href: continue
+            
+            # Slug extrahieren (letzter Teil der URL)
+            clean_href = href.strip("/")
+            slug = clean_href.split("/")[-1]
+            
+            # Validierung: Enthält der Slug den Nachnamen?
+            if name_parts[-1] in slug:
+                best_slug = slug
+                break # First match is usually best match
+        
+        if best_slug:
+            log(f"   🎯 TARGET ACQUIRED: {player_name} -> {best_slug}")
+            return best_slug
+            
     except Exception as e:
-        log(f"   ⚠️ Discovery Failed: {e}")
+        log(f"   ⚠️ Internal Search Failed: {e}")
     finally:
         await search_page.close()
     return None
@@ -163,17 +186,14 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
     # 1. INTELLIGENT URL RESOLUTION
-    # Zuerst schauen wir in die DB
-    db_slug = p_obj.get('stat_url_slug') # Neues Feld in DB
+    db_slug = p_obj.get('stat_url_slug') 
     
     slug = ""
     prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
 
     if db_slug and len(db_slug) > 2:
         slug = db_slug
-        # log(f"   🧠 Using known identity for {p_obj['last_name']}: {slug}")
     else:
-        # Standard Versuch
         slug = slugify_name(p_obj['first_name'], p_obj['last_name'])
 
     url = f"https://www.tennisergebnisse.net/{prefix}/{slug}/"
@@ -188,25 +208,33 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
         # Check ob Seite gültig ist
         if response.status == 404 or "nicht gefunden" in title.lower() or "suche" in page.url.lower():
             # FAIL -> Start Discovery
-            log(f"   ❌ Standard URL failed for {p_obj['last_name']}. Learning new identity...")
+            log(f"   ❌ Standard URL failed for {p_obj['last_name']}. Initiating Search Protocol...")
             
-            found_slug = await resolve_profile_url_via_search(browser, f"{p_obj['first_name']} {p_obj['last_name']}", p_obj.get('tour', 'ATP'))
+            # --- FIX: Suche mit Vor- UND Nachname ---
+            search_query = f"{p_obj['first_name']} {p_obj['last_name']}".strip()
+            found_slug = await resolve_profile_url_via_search(browser, search_query, p_obj.get('tour', 'ATP'))
             
             if found_slug:
-                # SUCCESS -> Save to DB for future use!
+                # SUCCESS -> Save to DB!
                 try:
                     supabase.table("players").update({"stat_url_slug": found_slug}).eq("id", p_obj['id']).execute()
-                    log(f"   💾 Saved new identity for {p_obj['last_name']} to DB.")
+                    log(f"   💾 Identity Saved to DB: {found_slug}")
                     
-                    # Update local object for this run
                     p_obj['stat_url_slug'] = found_slug
                     url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug}/"
                     await page.goto(url, timeout=15000, wait_until="domcontentloaded")
                     valid_page = True
-                except Exception as db_e:
-                    log(f"   ⚠️ Could not save slug to DB: {db_e}")
+                except: pass
             else:
-                return 0.5 # Really not found
+                # Letzter Versuch: Nur Nachname
+                if p_obj['first_name']:
+                     # log(f"   ⚠️ Retrying with Last Name only: {p_obj['last_name']}")
+                     found_slug_last = await resolve_profile_url_via_search(browser, p_obj['last_name'], p_obj.get('tour', 'ATP'))
+                     if found_slug_last:
+                        url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug_last}/"
+                        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                        valid_page = True
+                        supabase.table("players").update({"stat_url_slug": found_slug_last}).eq("id", p_obj['id']).execute()
         else:
             valid_page = True
 
@@ -242,7 +270,6 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                 val = float(data.get('win_rate', 0.5))
                 matches = int(data.get('matches', 0))
                 
-                # Gewichtung nach Match-Anzahl
                 if matches < 10:
                     val = (val * matches + 0.5 * 10) / (matches + 10)
 
@@ -571,6 +598,7 @@ async def resolve_united_cup_via_country(p1):
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
     
+    # --- UNITED CUP FIX (RESTORED OLD LOGIC) ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -580,8 +608,10 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
     for t in db_tours:
+        # EXACT MATCH (For Challenger Canberra etc.)
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
+    # --- AI FALLBACK (Nur wenn KEIN Treffer) ---
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
@@ -596,6 +626,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -695,7 +726,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v4.0 (Self-Healing Identity) Starting...")
+    log(f"🚀 Neural Scout v4.1 (Internal Search Protocol) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -739,7 +770,7 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
-                            # --- SMART SURFACE STATS (SELF-HEALING) ---
+                            # --- SMART SURFACE STATS (INTERNAL SEARCH) ---
                             surf_rate1 = await fetch_surface_winrate_ai(browser, p1_obj, surf)
                             surf_rate2 = await fetch_surface_winrate_ai(browser, p2_obj, surf)
 
