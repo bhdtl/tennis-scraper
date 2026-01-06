@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V4.2 - Raw HTML Injection)...")
+log("🔌 Initialisiere Neural Scout (V4.3 - Network Idle Protocol)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -142,7 +142,8 @@ async def resolve_profile_url_via_search(browser: Browser, player_name: str, tou
         encoded_name = player_name.replace(" ", "+")
         target_url = f"https://www.tennisergebnisse.net/?s={encoded_name}"
         
-        await search_page.goto(target_url, timeout=15000, wait_until="domcontentloaded")
+        # WICHTIG: networkidle warten, damit Ergebnisse da sind
+        await search_page.goto(target_url, timeout=20000, wait_until="networkidle")
         
         links = await search_page.locator("a[href*='/atp/'], a[href*='/wta/']").all()
         best_slug = None
@@ -173,7 +174,7 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
     cache_key = f"{p_obj['id']}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    # 1. DB Check
+    # 1. INTELLIGENT URL RESOLUTION
     db_slug = p_obj.get('stat_url_slug') 
     slug = ""
     prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
@@ -189,7 +190,8 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
     valid_page = False
     
     try:
-        response = await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        # WICHTIG: networkidle statt domcontentloaded
+        response = await page.goto(url, timeout=20000, wait_until="networkidle")
         title = await page.title()
         
         if response.status == 404 or "nicht gefunden" in title.lower() or "suche" in page.url.lower():
@@ -205,7 +207,7 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                     
                     p_obj['stat_url_slug'] = found_slug
                     url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug}/"
-                    await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                    await page.goto(url, timeout=20000, wait_until="networkidle")
                     valid_page = True
                 except: pass
             else:
@@ -213,28 +215,17 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                      found_slug_last = await resolve_profile_url_via_search(browser, p_obj['last_name'], p_obj.get('tour', 'ATP'))
                      if found_slug_last:
                         url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug_last}/"
-                        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
+                        await page.goto(url, timeout=20000, wait_until="networkidle")
                         valid_page = True
                         supabase.table("players").update({"stat_url_slug": found_slug_last}).eq("id", p_obj['id']).execute()
         else:
             valid_page = True
 
         if valid_page:
-            # --- VETERAN FIX: HTML EXTRACTION ---
-            # Wir suchen gezielt nach Tabellen, die "Bilanz" oder Stats enthalten
-            # Statt nur Text zu dumpen, holen wir das HTML der Tabellen
-            
-            # Suche nach Tabellen im Content
-            tables_html = await page.evaluate("""() => {
-                const tables = Array.from(document.querySelectorAll('table'));
-                return tables.map(t => t.outerHTML).join('\\n\\n');
-            }""")
-            
-            # Wenn keine Tabellen gefunden, fallback auf Body Text
-            if not tables_html or len(tables_html) < 50:
-                tables_html = await page.inner_text("body")
-                
-            relevant_data = tables_html[:25000] # HTML ist verbose, wir brauchen mehr buffer
+            # 4. Extract Data - BACK TO TEXT (ROBUSTEST METHOD)
+            # Wir nehmen den ganzen Text, das ist für Gemini am einfachsten, wenn keine Tabellen da sind.
+            text_content = await page.inner_text("body")
+            relevant_text = text_content[:25000]
 
             target_surf = "Hardcourt"
             if "clay" in surface.lower(): target_surf = "Clay/Sand"
@@ -242,15 +233,16 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
             elif "indoor" in surface.lower(): target_surf = "Indoor Hard"
 
             prompt = f"""
-            ANALYZE TENNIS STATS HTML for {p_obj['last_name']}. Target: {target_surf}.
+            ANALYZE TENNIS STATS for {p_obj['last_name']}.
+            Target Surface: {target_surf}.
             
-            DATA (HTML Tables):
-            {relevant_data}
+            DATA SOURCE:
+            {relevant_text}
             
             TASK:
-            1. Look for rows containing "Hartplatz", "Sandplatz", "Rasen", "Teppich" or "Hard", "Clay", "Grass".
-            2. Extract W/L (Wins/Losses). Example format might be "15/5" or "15 - 5".
-            3. Prioritize "Career" (Karriere) row. If not found, sum up recent years (2025, 2024).
+            1. Find Career W/L for {target_surf} (e.g. "Hartplatz: 150/100").
+            2. If Career not found, find Year 2024 or 2025 W/L.
+            3. Calculate Win% = Wins / (Wins + Losses).
             
             OUTPUT JSON ONLY: {{ "win_rate": 0.65, "matches": 250 }}
             If NO DATA found, return {{ "win_rate": 0.5, "matches": 0 }}
@@ -262,15 +254,17 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                 val = float(data.get('win_rate', 0.5))
                 matches = int(data.get('matches', 0))
                 
-                if matches < 10: val = (val * matches + 0.5 * 10) / (matches + 10)
+                if matches < 10:
+                    val = (val * matches + 0.5 * 10) / (matches + 10)
+
                 val = max(0.05, min(0.95, val))
                 
-                log(f"   📊 {p_obj['last_name']}@{target_surf}: {val:.2f} ({matches} matches)")
+                log(f"   📊 Stats ({p_obj['last_name']}@{target_surf}): {val:.2f} ({matches} matches)")
                 SURFACE_STATS_CACHE[cache_key] = val
                 return val
              
     except Exception as e:
-        log(f"   ⚠️ Stats Error: {e}")
+        log(f"   ⚠️ Stats Error {p_obj['last_name']}: {e}")
         pass
     finally:
         await page.close()
@@ -712,7 +706,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v4.1 (Internal Search Protocol) Starting...")
+    log(f"🚀 Neural Scout v4.3 (Network Idle Protocol) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
