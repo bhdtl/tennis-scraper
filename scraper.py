@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V3.7 - Full Integrated Physics & Logic)...")
+log("🔌 Initialisiere Neural Scout (V3.6 - Stable Court Logic + Full Intel)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -210,15 +210,15 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
-    n1 = p1_name.lower().split()[-1]
+    n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
-    tour = "ATP"
+    tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
     # 1. TACTICAL LAYER
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
+    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
     # 2. PHYSICS LAYER
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
@@ -428,6 +428,8 @@ async def resolve_united_cup_via_country(p1):
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
+    
+    # --- UNITED CUP FIX (RESTORED OLD LOGIC) ---
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
@@ -437,8 +439,10 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
     for t in db_tours:
+        # EXACT MATCH (For Challenger Canberra etc.)
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
+    # --- AI FALLBACK (Nur wenn KEIN Treffer) ---
     if "clay" in s_low: return "Red Clay", 3.5, "Local"
     if "hard" in s_low: return "Hard", 6.5, "Local"
     if "indoor" in s_low: return "Indoor", 8.0, "Local"
@@ -453,21 +457,11 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # NEU: CHALLENGER-PHYSICS-CONSTRAINT (INTEGRIERT IN SCRAPER)
-    # Da wir hier keinen "tournament_name" als direkte Variable haben, 
-    # müssen wir ihn aus dem Kontext (Function-Call oben) holen oder übergeben.
-    # Da dies ein Scraper ist, hat er keine "tournament_name" Variable in diesem Scope
-    # ABER wir können den "CTX"-String manipulieren.
-    
-    physics_warning = ""
-    if bsi > 7.2:
-        physics_warning = "PHYSICS CONSTRAINT: Fast Court. Favor AGGRESSOR over Defender. Defense is HARD here."
-    
+    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
     CTX: {surface} (BSI {bsi}).
-    {physics_warning}
     COURT INTEL: "{notes}"
     
     SURFACE ELO ({surface}):
