@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V2.8 - Stable Base + Identity Fix)...")
+log("🔌 Initialisiere Neural Scout (V2.9.5 - Veteran BSI Matrix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -195,7 +195,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE
+# 5. MATH CORE (SILICON VALLEY VETERAN EDITION)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -206,26 +206,79 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
+    # 1. TACTICAL LAYER (AI OPINION)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    c1_score = 0; c2_score = 0
-    if bsi_val <= 4.0:
-        c1_score = s1.get('stamina',50) + s1.get('speed',50) + s1.get('mental',50)
-        c2_score = s2.get('stamina',50) + s2.get('speed',50) + s2.get('mental',50)
-    elif bsi_val >= 7.5:
-        c1_score = s1.get('serve',50) + s1.get('power',50)
-        c2_score = s2.get('serve',50) + s2.get('power',50)
-    else:
-        c1_score = sum(s1.values())
-        c2_score = sum(s2.values())
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
+    # 2. PHYSICS LAYER (GRANULAR BSI MATRIX 0-10)
+    # Define Skill Clusters
+    # OFFENSE: Serve + Power (The Hammer)
+    # DEFENSE: Speed + Stamina + Mental (The Shield)
+    # TECH: Forehand + Backhand (The Sword)
+    
+    def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
+    def get_defense(s): return s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
+    def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
 
+    off1 = get_offense(s1); def1 = get_defense(s1); tech1 = get_tech(s1)
+    off2 = get_offense(s2); def2 = get_defense(s2); tech2 = get_tech(s2)
+
+    c1_score = 0
+    c2_score = 0
+
+    # --- THE SILICON VALLEY BSI MATRIX ---
+    
+    if bsi_val < 4.0:
+        # ZONE: THE MUD (Deep Clay)
+        # Logic: Serve is useless. You need lungs (Stamina) and legs (Speed).
+        # Weight: 70% Defense, 30% Tech, 0% Offense.
+        c1_score = (def1 * 0.7) + (tech1 * 0.3)
+        c2_score = (def2 * 0.7) + (tech2 * 0.3)
+        
+    elif 4.0 <= bsi_val < 5.5:
+        # ZONE: GRINDER (Slow Hard / Green Clay)
+        # Logic: Still defensive, but you can't push forever. Need some tech to finish.
+        # Weight: 50% Defense, 40% Tech, 10% Offense.
+        c1_score = (def1 * 0.5) + (tech1 * 0.4) + (off1 * 0.1)
+        c2_score = (def2 * 0.5) + (tech2 * 0.4) + (off2 * 0.1)
+        
+    elif 5.5 <= bsi_val < 7.0:
+        # ZONE: NEUTRAL (Indian Wells / Miami)
+        # Logic: Pure Meritocracy. The better tennis player wins.
+        # Weight: Balanced (33% / 33% / 33%)
+        c1_score = def1 + tech1 + off1
+        c2_score = def2 + tech2 + off2
+        
+    elif 7.0 <= bsi_val < 8.0:
+        # ZONE: FIRST STRIKE (Fast Indoor / Shanghai)
+        # Logic: Serve sets it up, Forehand finishes it. Defense is hard.
+        # Weight: 50% Offense, 40% Tech, 10% Defense.
+        c1_score = (off1 * 0.5) + (tech1 * 0.4) + (def1 * 0.1)
+        c2_score = (off2 * 0.5) + (tech2 * 0.4) + (def2 * 0.1)
+        
+    elif 8.0 <= bsi_val < 9.0:
+        # ZONE: SLICK (Grass / Skiddy Hard)
+        # Logic: Reaction time. If you defend, you lose. Serve & Volley territory.
+        # Weight: 75% Offense, 25% Tech (Returns). 0% Defense.
+        c1_score = (off1 * 0.75) + (tech1 * 0.25)
+        c2_score = (off2 * 0.75) + (tech2 * 0.25)
+        
+    else: # BSI >= 9.0
+        # ZONE: THE CASINO (Carpet / Lightning Fast)
+        # Logic: Isner vs Opelka. 1-2 shots max. Pure Physics.
+        # Weight: 100% Offense.
+        c1_score = off1
+        c2_score = off2
+
+    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.10) # Slightly lower sensitivity to handle large sums
+
+    # 3. SKILL BASELINE (Overall Quality)
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
+    # 4. ELO HISTORICAL LAYER
     elo1 = 1500.0; elo2 = 1500.0
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
@@ -237,19 +290,34 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    prob_alpha = (prob_matchup * 0.50) + (prob_bsi * 0.20) + (prob_skills * 0.15) + (prob_elo * 0.15)
+    # 5. WEIGHTED FUSION (THE ALGORITHM)
+    # We adjust the weight of the "BSI Probability" depending on how extreme the court is.
+    # On extreme courts (0 or 10), Physics matters MORE than Elo.
+    
+    physics_weight = 0.20
+    if bsi_val >= 8.5 or bsi_val <= 3.5:
+        physics_weight = 0.35 # Physics dominates on extreme surfaces
+    
+    elo_weight = 0.15
+    matchup_weight = 0.50
+    skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight) # Residual
 
+    prob_alpha = (prob_matchup * matchup_weight) + (prob_bsi * physics_weight) + (prob_skills * skill_weight) + (prob_elo * elo_weight)
+
+    # Market Correction (Aggressive Alpha Seeking)
     if prob_alpha > 0.60:
-        prob_alpha = min(prob_alpha * 1.10, 0.92)
+        prob_alpha = min(prob_alpha * 1.10, 0.94) # Confidence Boost for Favorites
     elif prob_alpha < 0.40:
-        prob_alpha = max(prob_alpha * 0.90, 0.08)
+        prob_alpha = max(prob_alpha * 0.90, 0.06) # Punishment for Weakness
 
+    # 6. MARKET CONSENSUS BLEND
     prob_market = 0.5 
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
         
+    # Final Formula: 75% Our Brain, 25% Market Wisdom
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     return final_prob
 
