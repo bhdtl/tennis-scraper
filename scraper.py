@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V2.9.5 - Veteran BSI Matrix)...")
+log("🔌 Initialisiere Neural Scout (V3.1 - Full Court Intel Integration)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -528,7 +528,9 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes):
     prompt = f"""
     ROLE: Elite Tennis Analyst. TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}). P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
+    CTX: {surface} (BSI {bsi}).
+    COURT INTEL: "{notes}"
+    P1 Style: {p1.get('play_style')}. P2 Style: {p2.get('play_style')}.
     METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
     JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
