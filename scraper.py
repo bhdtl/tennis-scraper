@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V4.4 - Stealth Mode)...")
+log("🔌 Initialisiere Neural Scout (V5.0 - Unified Source Architecture)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -83,12 +83,7 @@ def get_last_name(full_name: str) -> str:
     parts = clean.split()
     return parts[-1].lower() if parts else ""
 
-# --- STANDARD SLUGIFY ---
-def slugify_name(first: str, last: str) -> str:
-    full = f"{first}-{last}".lower()
-    return normalize_text(full).replace(' ', '-')
-
-# --- IDENTITY FIX ---
+# --- SILICON VALLEY IDENTITY FIX ---
 def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     candidates = []
@@ -133,149 +128,80 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # 4. CORE LOGIC & DATA FETCHING
 # =================================================================
 
-async def resolve_profile_url_via_search(browser: Browser, player_name: str, tour: str) -> Optional[str]:
-    search_page = await browser.new_page(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    try:
-        encoded_name = player_name.replace(" ", "+")
-        target_url = f"https://www.tennisergebnisse.net/?s={encoded_name}"
-        
-        await search_page.goto(target_url, timeout=20000, wait_until="domcontentloaded")
-        await asyncio.sleep(1) # Kurz warten für JS Render
-        
-        links = await search_page.locator("a[href*='/atp/'], a[href*='/wta/']").all()
-        best_slug = None
-        name_parts = normalize_text(player_name.lower()).split()
-        
-        for link in links:
-            href = await link.get_attribute("href")
-            if not href: continue
-            
-            clean_href = href.strip("/")
-            slug = clean_href.split("/")[-1]
-            
-            if name_parts[-1] in slug:
-                best_slug = slug
-                break 
-        
-        if best_slug:
-            log(f"   🎯 TARGET ACQUIRED: {player_name} -> {best_slug}")
-            return best_slug
-            
-    except Exception as e:
-        log(f"   ⚠️ Internal Search Failed: {e}")
-    finally:
-        await search_page.close()
-    return None
-
-async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) -> float:
-    cache_key = f"{p_obj['id']}_{surface}"
+async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
+    """
+    Holt Stats direkt von der TennisExplorer Profilseite.
+    URL kommt direkt aus dem Match-Schedule (kein Suchen nötig!).
+    """
+    if not relative_url: return 0.5
+    
+    # Cache Key: URL + Surface
+    cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    db_slug = p_obj.get('stat_url_slug') 
-    slug = ""
-    prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
-
-    if db_slug and len(db_slug) > 2:
-        slug = db_slug
-    else:
-        slug = slugify_name(p_obj['first_name'], p_obj['last_name'])
-
-    url = f"https://www.tennisergebnisse.net/{prefix}/{slug}/"
+    url = f"https://www.tennisexplorer.com{relative_url}?annual=all" # "all" für Career Stats
     
-    # STEALTH MODE: User Agent
-    page = await browser.new_page(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    valid_page = False
-    
+    page = await browser.new_page()
     try:
-        response = await page.goto(url, timeout=20000, wait_until="domcontentloaded")
-        await asyncio.sleep(1) # Anti-Bot Wait
-        title = await page.title()
+        # log(f"   🔍 Deep Scan (Unified): {url}")
+        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
         
-        if response.status == 404 or "nicht gefunden" in title.lower() or "suche" in page.url.lower():
-            log(f"   ❌ Identity Mismatch for {p_obj['last_name']}. Initiating Search Protocol...")
+        content = await page.content()
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # TennisExplorer Struktur: Tabelle id="balace" (typo in deren HTML oft "balance" oder class "result")
+        # Wir suchen nach der Tabelle mit "Summary" oder "Clay/Hard" im Header
+        
+        target_col_idx = -1
+        # Mapping Surface -> Column Name in TE
+        target_header = "Hard"
+        if "clay" in surface.lower(): target_header = "Clay"
+        elif "grass" in surface.lower(): target_header = "Grass"
+        elif "indoor" in surface.lower(): target_header = "Indoors"
+        
+        # Finde Tabelle
+        tables = soup.find_all('table', class_='result')
+        
+        total_wins = 0
+        total_matches = 0
+        
+        for table in tables:
+            headers = table.find_all('th')
+            header_texts = [h.get_text(strip=True) for h in headers]
             
-            search_query = f"{p_obj['first_name']} {p_obj['last_name']}".strip()
-            found_slug = await resolve_profile_url_via_search(browser, search_query, p_obj.get('tour', 'ATP'))
-            
-            if found_slug:
+            if "Summary" in header_texts and target_header in header_texts:
+                # Wir haben die richtige Tabelle!
                 try:
-                    supabase.table("players").update({"stat_url_slug": found_slug}).eq("id", p_obj['id']).execute()
-                    log(f"   💾 Identity Saved to DB: {found_slug}")
+                    col_idx = header_texts.index(target_header)
                     
-                    p_obj['stat_url_slug'] = found_slug
-                    url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug}/"
-                    await page.goto(url, timeout=20000, wait_until="domcontentloaded")
-                    await asyncio.sleep(1)
-                    valid_page = True
+                    # Suche die "Summary" Zeile (meist im tfoot oder erste tr im body mit class)
+                    rows = table.find_all('tr')
+                    for row in rows:
+                        if "Summary" in row.get_text():
+                            cols = row.find_all(['td', 'th'])
+                            if len(cols) > col_idx:
+                                stats_text = cols[col_idx].get_text(strip=True)
+                                # Format: "256/178" (W/L)
+                                if "/" in stats_text:
+                                    w, l = map(int, stats_text.split('/'))
+                                    total_wins = w
+                                    total_matches = w + l
+                                    break
                 except: pass
-            else:
-                if p_obj['first_name']:
-                     found_slug_last = await resolve_profile_url_via_search(browser, p_obj['last_name'], p_obj.get('tour', 'ATP'))
-                     if found_slug_last:
-                        url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug_last}/"
-                        await page.goto(url, timeout=20000, wait_until="domcontentloaded")
-                        await asyncio.sleep(1)
-                        valid_page = True
-                        supabase.table("players").update({"stat_url_slug": found_slug_last}).eq("id", p_obj['id']).execute()
-        else:
-            valid_page = True
-
-        if valid_page:
-            # FIX: HTML CONTENT DUMP + AGGRESSIVE PARSING
-            # Wir holen das HTML, weil Gemini HTML besser lesen kann als "visuellen" Text bei komplexen Tabellen
-            content = await page.content()
+                break # Tabelle gefunden
+        
+        if total_matches > 0:
+            rate = total_wins / total_matches
+            log(f"   📊 Direct Stats ({target_header}): {rate:.2f} ({total_matches} matches)")
+            SURFACE_STATS_CACHE[cache_key] = rate
+            return rate
             
-            # Wir kürzen das HTML, behalten aber den relevanten "Content" Bereich
-            # Oft ist der Body zu groß, aber wir versuchen es erstmal.
-            # Um Tokens zu sparen, suchen wir nach dem Wort "Bilanz" oder "Statistik" im HTML und nehmen den Bereich drumherum.
-            
-            target_surf = "Hardcourt"
-            if "clay" in surface.lower(): target_surf = "Clay/Sand"
-            elif "grass" in surface.lower(): target_surf = "Grass"
-            elif "indoor" in surface.lower(): target_surf = "Indoor Hard"
-
-            prompt = f"""
-            ANALYZE TENNIS HTML SOURCE for {p_obj['last_name']}.
-            Target Surface: {target_surf}.
-            
-            SOURCE HTML (Snippet):
-            {content[:25000]} 
-            
-            TASK:
-            1. Look for TABLE ROWS (<tr>) with surface names like "Hartplatz", "Sandplatz", "Hard", "Clay".
-            2. Extract Wins/Losses (e.g. 15-5 or 15/5).
-            3. Calculate Win%.
-            4. LOOK FOR 'Karriere' or Total Stats first. If missing, sum up '2024' and '2023'.
-            
-            OUTPUT JSON ONLY: {{ "win_rate": 0.65, "matches": 250 }}
-            If NO DATA found, return {{ "win_rate": 0.5, "matches": 0 }}
-            """
-            
-            res = await call_gemini(prompt)
-            if res:
-                data = json.loads(res.replace("json", "").replace("", "").strip())
-                val = float(data.get('win_rate', 0.5))
-                matches = int(data.get('matches', 0))
-                
-                if matches < 10:
-                    val = (val * matches + 0.5 * 10) / (matches + 10)
-
-                val = max(0.05, min(0.95, val))
-                
-                log(f"   📊 Stats ({p_obj['last_name']}@{target_surf}): {val:.2f} ({matches} matches)")
-                SURFACE_STATS_CACHE[cache_key] = val
-                return val
-             
     except Exception as e:
-        log(f"   ⚠️ Stats Error {p_obj['last_name']}: {e}")
+        log(f"   ⚠️ TE Stats Error: {e}")
         pass
     finally:
         await page.close()
-    
+        
     return 0.5
 
 async def fetch_elo_ratings(browser: Browser):
@@ -425,9 +351,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    # --- SURFACE SPECIALIST COMPONENT ---
+    # --- SURFACE SPECIALIST COMPONENT (REAL DATA) ---
     surf_diff = surf_rate1 - surf_rate2
-    prob_surface_stats = 0.5 + (surf_diff * 0.7) 
+    prob_surface_stats = 0.5 + (surf_diff * 0.8) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
     # 5. WEIGHTED FUSION (Surface Heavy)
@@ -661,7 +587,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
         return None
     finally: await page.close()
 
-def parse_matches_locally(html, p_names):
+def parse_matches_locally_v5(html, p_names): # V5 Parser: Extracts Links
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
@@ -687,8 +613,19 @@ def parse_matches_locally(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
-            p1_raw = clean_player_name(row_text.split('1.')[0] if '1.' in row_text else row_text)
-            p2_raw = clean_player_name(normalize_text(rows[i+1].get_text(separator=' ', strip=True)))
+            # EXTRACT LINKS HERE
+            p1_cell = row.find_all('td')[1] # Usually name is here
+            p2_cell = rows[i+1].find_all('td')[0] # P2 is in next row
+
+            # Cleaner Extraction
+            p1_link_tag = p1_cell.find('a')
+            p2_link_tag = p2_cell.find('a')
+            
+            p1_raw = clean_player_name(p1_cell.get_text(strip=True))
+            p2_raw = clean_player_name(p2_cell.get_text(strip=True))
+            
+            p1_href = p1_link_tag['href'] if p1_link_tag else None
+            p2_href = p2_link_tag['href'] if p2_link_tag else None
 
             if '/' in p1_raw or '/' in p2_raw: i += 1; continue
 
@@ -706,14 +643,15 @@ def parse_matches_locally(html, p_names):
                 
                 found.append({
                     "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
-                    "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0
+                    "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0,
+                    "p1_href": p1_href, "p2_href": p2_href # NEW: Pass URLs
                 })
                 i += 2 
             else: i += 1 
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v4.4 (Stealth + HTML Dump) Starting...")
+    log(f"🚀 Neural Scout v5.0 (Unified Source Architecture) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -732,7 +670,8 @@ async def run_pipeline():
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
 
-                matches = parse_matches_locally(html, player_names)
+                # USE NEW PARSER
+                matches = parse_matches_locally_v5(html, player_names)
                 log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
                 
                 for m in matches:
@@ -757,9 +696,10 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
-                            # --- SMART SURFACE STATS (HTML DUMP MODE) ---
-                            surf_rate1 = await fetch_surface_winrate_ai(browser, p1_obj, surf)
-                            surf_rate2 = await fetch_surface_winrate_ai(browser, p2_obj, surf)
+                            # --- V5: UNIFIED SOURCE STATS ---
+                            # Wir nutzen die URL direkt aus dem Match-Objekt
+                            surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
+                            surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
 
                             # GET HYBRID FORM
                             f1_data = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
