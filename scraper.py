@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V3.5 - Live Form Scraping Activated)...")
+log("🔌 Initialisiere Neural Scout (V3.6 - Stable Court Logic + Full Intel)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -45,7 +45,7 @@ MODEL_NAME = 'gemini-2.5-pro'
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
-FORM_CACHE: Dict[str, Dict[str, Any]] = {} # Cache für Live-Scraping Ergebnisse
+FORM_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # --- TOPOLOGY MAP ---
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
@@ -156,74 +156,7 @@ async def fetch_elo_ratings(browser: Browser):
         finally:
             await page.close()
 
-# --- LIVE FORM SCRAPER (FALLBACK) ---
-async def scrape_real_time_form(browser: Browser, player_last_name: str) -> Dict[str, Any]:
-    # Wenn wir keine DB-Daten haben, suchen wir auf Tennis Explorer nach dem Spieler
-    # Das ist der "Plan B", den du wolltest.
-    
-    if player_last_name in FORM_CACHE: return FORM_CACHE[player_last_name]
-    
-    page = await browser.new_page()
-    try:
-        # 1. Suche Spieler
-        search_url = f"https://www.tennisexplorer.com/search/?query={player_last_name}"
-        await page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-        
-        # Wir nehmen an, der erste Treffer ist richtig (meistens korrekt bei einzigartigen Nachnamen)
-        # Wenn wir auf einer Spielerseite sind, parsen wir direkt.
-        if "player/" in page.url:
-            pass
-        else:
-            # Click first result if list
-            try:
-                await page.click("table.result tr:nth-child(1) a", timeout=2000)
-            except: 
-                FORM_CACHE[player_last_name] = {"text": "No live data found (Search fail)"}
-                return FORM_CACHE[player_last_name]
-
-        # 2. Parse Ergebnisse (letzte 5 Zeilen der 'matches' Tabelle)
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        matches_table = soup.find('table', class_='result')
-        
-        wins = 0; losses = 0
-        if matches_table:
-            rows = matches_table.find_all('tr')
-            valid_matches = 0
-            for row in rows:
-                if 'flags' in str(row) or 'head' in str(row): continue
-                if valid_matches >= 5: break
-                
-                # Einfacher Check: Hat er gewonnen? (Klasse 'not-result' ist Header, wir wollen Matches)
-                # Bei Tennis Explorer ist der Sieger fett gedruckt (tag <strong> oder class?)
-                # Einfacher: Score check.
-                
-                # Wir machen es simpel: KI soll den Text interpretieren oder wir nutzen DB.
-                # Um den Code schlank zu halten und nicht zu komplex zu werden:
-                # Wir loggen nur, dass wir Live-Daten haben. Die 'Real Form' Logik ist komplex zu parsen.
-                # BESSERER WEG FÜR V3.5: Wir nutzen Gemini, um die Seite zu lesen!
-                pass # Placeholder for complex logic.
-                
-        # GEMINI SHORTCUT: Wir geben den Text der letzten Matches an Gemini weiter.
-        text_dump = matches_table.get_text()[:1000] if matches_table else "No data"
-        
-        # KI soll entscheiden: Ist er gut drauf?
-        prompt = f"Analyze recent form of tennis player '{player_last_name}' from this raw data: {text_dump}. Output: 'Good' or 'Bad' or 'Neutral' and 1 sentence why."
-        res = await call_gemini(prompt)
-        ai_verdict = json.loads(res.replace("json","").replace("","").strip()).get("text", "Unknown") if res and "{" in res else "Live Form Checked"
-        
-        result = {"text": f"LIVE CHECK: {ai_verdict}"}
-        FORM_CACHE[player_last_name] = result
-        return result
-
-    except Exception as e:
-        return {"text": "Live check failed"}
-    finally:
-        await page.close()
-
-# --- HYBRID FORM CHECKER (DB FIRST, THEN LIVE) ---
 async def fetch_player_form_hybrid(browser: Browser, player_last_name: str) -> Dict[str, Any]:
-    # 1. DB Check
     try:
         res = supabase.table("market_odds")\
             .select("actual_winner_name, match_time")\
@@ -234,7 +167,7 @@ async def fetch_player_form_hybrid(browser: Browser, player_last_name: str) -> D
             .execute()
             
         matches = res.data
-        if matches and len(matches) >= 3: # Wenn wir mind. 3 Matches haben, reicht das
+        if matches and len(matches) >= 3: 
             wins = 0
             for m in matches:
                 if player_last_name.lower() in m['actual_winner_name'].lower(): wins += 1
@@ -246,13 +179,6 @@ async def fetch_player_form_hybrid(browser: Browser, player_last_name: str) -> D
             
             return {"text": f"{trend} (DB: {wins}/{len(matches)} wins)"}
     except: pass
-
-    # 2. Fallback: Live Scraping (Wenn DB leer ist)
-    # log(f"   🌍 Live-Scraping Form für {player_last_name}...") 
-    # return await scrape_real_time_form(browser, player_last_name)
-    
-    # ACHTUNG: Live Scraping ist auskommentiert für Stabilität im MVP (Rate Limits!)
-    # Wenn du es aktivieren willst, entferne das '#' in der Zeile oben.
     return {"text": "No recent DB data."}
 
 async def get_db_data():
@@ -284,15 +210,15 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
-    n1 = p1_name.lower().split()[-1]
+    n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
-    tour = "ATP"
+    tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
     # 1. TACTICAL LAYER
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
+    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
     # 2. PHYSICS LAYER
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
@@ -502,21 +428,36 @@ async def resolve_united_cup_via_country(p1):
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
+    
+    # --- UNITED CUP FIX (RESTORED OLD LOGIC) ---
     if "united cup" in s_low:
-        arena = await resolve_united_cup_via_country(p1)
-        if arena:
+        arena_target = await resolve_united_cup_via_country(p1)
+        if arena_target:
             for t in db_tours:
-                if "united cup" in t['name'].lower() and arena.lower() in t.get('location', '').lower():
-                    return t['surface'], t['bsi_rating'], f"United Cup ({arena})"
+                if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
     for t in db_tours:
+        # EXACT MATCH (For Challenger Canberra etc.)
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
+    # --- AI FALLBACK (Nur wenn KEIN Treffer) ---
+    if "clay" in s_low: return "Red Clay", 3.5, "Local"
+    if "hard" in s_low: return "Hard", 6.5, "Local"
+    if "indoor" in s_low: return "Indoor", 8.0, "Local"
+    
+    ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
+    if ai_loc and ai_loc.get('city'):
+        city = ai_loc['city'].lower()
+        surf = ai_loc.get('surface_guessed', 'Hard')
+        for t in db_tours:
+            if city in t['name'].lower(): return t['surface'], t['bsi_rating'], f"AI: {city}"
+        return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # FINAL PROMPT (V3.5): THE COMPLETE PICTURE
+    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -616,7 +557,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v3.5 (The Holy Grail Edition) Starting...")
+    log(f"🚀 Neural Scout v3.6 (Fixed Court Logic) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
