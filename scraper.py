@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V4.3 - Network Idle Protocol)...")
+log("🔌 Initialisiere Neural Scout (V4.4 - Stealth Mode)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -134,16 +134,15 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # =================================================================
 
 async def resolve_profile_url_via_search(browser: Browser, player_name: str, tour: str) -> Optional[str]:
-    """
-    Veteran Strategy: Nutze die interne Suche der Zielseite.
-    """
-    search_page = await browser.new_page()
+    search_page = await browser.new_page(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     try:
         encoded_name = player_name.replace(" ", "+")
         target_url = f"https://www.tennisergebnisse.net/?s={encoded_name}"
         
-        # WICHTIG: networkidle warten, damit Ergebnisse da sind
-        await search_page.goto(target_url, timeout=20000, wait_until="networkidle")
+        await search_page.goto(target_url, timeout=20000, wait_until="domcontentloaded")
+        await asyncio.sleep(1) # Kurz warten für JS Render
         
         links = await search_page.locator("a[href*='/atp/'], a[href*='/wta/']").all()
         best_slug = None
@@ -174,7 +173,6 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
     cache_key = f"{p_obj['id']}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    # 1. INTELLIGENT URL RESOLUTION
     db_slug = p_obj.get('stat_url_slug') 
     slug = ""
     prefix = "wta" if p_obj.get('tour') == 'WTA' else "atp"
@@ -186,12 +184,15 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
 
     url = f"https://www.tennisergebnisse.net/{prefix}/{slug}/"
     
-    page = await browser.new_page()
+    # STEALTH MODE: User Agent
+    page = await browser.new_page(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     valid_page = False
     
     try:
-        # WICHTIG: networkidle statt domcontentloaded
-        response = await page.goto(url, timeout=20000, wait_until="networkidle")
+        response = await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+        await asyncio.sleep(1) # Anti-Bot Wait
         title = await page.title()
         
         if response.status == 404 or "nicht gefunden" in title.lower() or "suche" in page.url.lower():
@@ -207,7 +208,8 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                     
                     p_obj['stat_url_slug'] = found_slug
                     url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug}/"
-                    await page.goto(url, timeout=20000, wait_until="networkidle")
+                    await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                    await asyncio.sleep(1)
                     valid_page = True
                 except: pass
             else:
@@ -215,34 +217,39 @@ async def fetch_surface_winrate_ai(browser: Browser, p_obj: Dict, surface: str) 
                      found_slug_last = await resolve_profile_url_via_search(browser, p_obj['last_name'], p_obj.get('tour', 'ATP'))
                      if found_slug_last:
                         url = f"https://www.tennisergebnisse.net/{prefix}/{found_slug_last}/"
-                        await page.goto(url, timeout=20000, wait_until="networkidle")
+                        await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                        await asyncio.sleep(1)
                         valid_page = True
                         supabase.table("players").update({"stat_url_slug": found_slug_last}).eq("id", p_obj['id']).execute()
         else:
             valid_page = True
 
         if valid_page:
-            # 4. Extract Data - BACK TO TEXT (ROBUSTEST METHOD)
-            # Wir nehmen den ganzen Text, das ist für Gemini am einfachsten, wenn keine Tabellen da sind.
-            text_content = await page.inner_text("body")
-            relevant_text = text_content[:25000]
-
+            # FIX: HTML CONTENT DUMP + AGGRESSIVE PARSING
+            # Wir holen das HTML, weil Gemini HTML besser lesen kann als "visuellen" Text bei komplexen Tabellen
+            content = await page.content()
+            
+            # Wir kürzen das HTML, behalten aber den relevanten "Content" Bereich
+            # Oft ist der Body zu groß, aber wir versuchen es erstmal.
+            # Um Tokens zu sparen, suchen wir nach dem Wort "Bilanz" oder "Statistik" im HTML und nehmen den Bereich drumherum.
+            
             target_surf = "Hardcourt"
             if "clay" in surface.lower(): target_surf = "Clay/Sand"
             elif "grass" in surface.lower(): target_surf = "Grass"
             elif "indoor" in surface.lower(): target_surf = "Indoor Hard"
 
             prompt = f"""
-            ANALYZE TENNIS STATS for {p_obj['last_name']}.
+            ANALYZE TENNIS HTML SOURCE for {p_obj['last_name']}.
             Target Surface: {target_surf}.
             
-            DATA SOURCE:
-            {relevant_text}
+            SOURCE HTML (Snippet):
+            {content[:25000]} 
             
             TASK:
-            1. Find Career W/L for {target_surf} (e.g. "Hartplatz: 150/100").
-            2. If Career not found, find Year 2024 or 2025 W/L.
-            3. Calculate Win% = Wins / (Wins + Losses).
+            1. Look for TABLE ROWS (<tr>) with surface names like "Hartplatz", "Sandplatz", "Hard", "Clay".
+            2. Extract Wins/Losses (e.g. 15-5 or 15/5).
+            3. Calculate Win%.
+            4. LOOK FOR 'Karriere' or Total Stats first. If missing, sum up '2024' and '2023'.
             
             OUTPUT JSON ONLY: {{ "win_rate": 0.65, "matches": 250 }}
             If NO DATA found, return {{ "win_rate": 0.5, "matches": 0 }}
@@ -706,7 +713,7 @@ def parse_matches_locally(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v4.3 (Network Idle Protocol) Starting...")
+    log(f"🚀 Neural Scout v4.4 (Stealth + HTML Dump) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -750,7 +757,7 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
-                            # --- SMART SURFACE STATS (INTERNAL SEARCH) ---
+                            # --- SMART SURFACE STATS (HTML DUMP MODE) ---
                             surf_rate1 = await fetch_surface_winrate_ai(browser, p1_obj, surf)
                             surf_rate2 = await fetch_surface_winrate_ai(browser, p2_obj, surf)
 
