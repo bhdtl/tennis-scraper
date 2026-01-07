@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V5.0 - Unified Source Architecture)...")
+log("🔌 Initialisiere Neural Scout (V5.1 - Unified Physics Logic)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -129,37 +129,24 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 # =================================================================
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
-    """
-    Holt Stats direkt von der TennisExplorer Profilseite.
-    URL kommt direkt aus dem Match-Schedule (kein Suchen nötig!).
-    """
     if not relative_url: return 0.5
     
-    # Cache Key: URL + Surface
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    url = f"https://www.tennisexplorer.com{relative_url}?annual=all" # "all" für Career Stats
+    url = f"https://www.tennisexplorer.com{relative_url}?annual=all"
     
     page = await browser.new_page()
     try:
-        # log(f"   🔍 Deep Scan (Unified): {url}")
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
         
-        # TennisExplorer Struktur: Tabelle id="balace" (typo in deren HTML oft "balance" oder class "result")
-        # Wir suchen nach der Tabelle mit "Summary" oder "Clay/Hard" im Header
-        
-        target_col_idx = -1
-        # Mapping Surface -> Column Name in TE
         target_header = "Hard"
         if "clay" in surface.lower(): target_header = "Clay"
         elif "grass" in surface.lower(): target_header = "Grass"
         elif "indoor" in surface.lower(): target_header = "Indoors"
         
-        # Finde Tabelle
         tables = soup.find_all('table', class_='result')
         
         total_wins = 0
@@ -170,25 +157,21 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
             header_texts = [h.get_text(strip=True) for h in headers]
             
             if "Summary" in header_texts and target_header in header_texts:
-                # Wir haben die richtige Tabelle!
                 try:
                     col_idx = header_texts.index(target_header)
-                    
-                    # Suche die "Summary" Zeile (meist im tfoot oder erste tr im body mit class)
                     rows = table.find_all('tr')
                     for row in rows:
                         if "Summary" in row.get_text():
                             cols = row.find_all(['td', 'th'])
                             if len(cols) > col_idx:
                                 stats_text = cols[col_idx].get_text(strip=True)
-                                # Format: "256/178" (W/L)
                                 if "/" in stats_text:
                                     w, l = map(int, stats_text.split('/'))
                                     total_wins = w
                                     total_matches = w + l
                                     break
                 except: pass
-                break # Tabelle gefunden
+                break
         
         if total_matches > 0:
             rate = total_wins / total_matches
@@ -282,7 +265,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE (SILICON VALLEY VETERAN EDITION)
+# 5. MATH CORE (SILICON VALLEY VETERAN EDITION - UPGRADED)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -298,7 +281,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    # 2. PHYSICS LAYER
+    # 2. PHYSICS LAYER (WITH VETERAN ANTI-GRINDER LOGIC)
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     def get_defense(s): return s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
     def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
@@ -317,17 +300,18 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elif 5.5 <= bsi_val < 7.0: # NEUTRAL
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
-    elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE
-        c1_score = (off1 * 0.5) + (tech1 * 0.4) + (def1 * 0.1)
-        c2_score = (off2 * 0.5) + (tech2 * 0.4) + (def2 * 0.1)
+    elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE (HARD)
+        # HIER IST DER FIX: Serve wird extrem wichtig
+        c1_score = (off1 * 0.6) + (tech1 * 0.3) + (def1 * 0.1)
+        c2_score = (off2 * 0.6) + (tech2 * 0.3) + (def2 * 0.1)
     elif 8.0 <= bsi_val < 9.0: # SLICK
-        c1_score = (off1 * 0.75) + (tech1 * 0.25)
-        c2_score = (off2 * 0.75) + (tech2 * 0.25)
+        c1_score = (off1 * 0.8) + (tech1 * 0.2)
+        c2_score = (off2 * 0.8) + (tech2 * 0.2)
     else: # THE CASINO
         c1_score = off1
         c2_score = off2
 
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.10)
+    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
 
     # 3. SKILL BASELINE
     score_p1 = sum(s1.values())
@@ -353,17 +337,23 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     
     # --- SURFACE SPECIALIST COMPONENT (REAL DATA) ---
     surf_diff = surf_rate1 - surf_rate2
-    prob_surface_stats = 0.5 + (surf_diff * 0.8) 
+    # Ein 20% Delta (0.2) wird hier zu einem massiven Vorteil (0.66)
+    # Das gleicht den Overall Rating Bias aus.
+    prob_surface_stats = 0.5 + (surf_diff * 0.9) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
-    # 5. WEIGHTED FUSION (Surface Heavy)
+    # 5. WEIGHTED FUSION (Unified Source Architecture)
     physics_weight = 0.20
-    if bsi_val >= 8.5 or bsi_val <= 3.5: physics_weight = 0.25
-    
     elo_weight = 0.10
-    matchup_weight = 0.25
+    matchup_weight = 0.20
     form_weight = 0.10
-    surface_stats_weight = 0.25 
+    # Wir erhöhen den Einfluss der echten Scraper-Daten massiv (30%)
+    surface_stats_weight = 0.30 
+    
+    # Auf schnellen Plätzen zählt Physik noch mehr
+    if bsi_val > 7.5:
+        physics_weight = 0.25
+        matchup_weight = 0.15 # Taktik ist weniger wichtig als purer Speed
     
     skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight + form_weight + surface_stats_weight)
 
@@ -540,6 +530,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -651,7 +642,7 @@ def parse_matches_locally_v5(html, p_names): # V5 Parser: Extracts Links
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v5.0 (Unified Source Architecture) Starting...")
+    log(f"🚀 Neural Scout v5.1 (Unified Physics Logic) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
