@@ -28,7 +28,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V5.1 - Unified Physics Logic)...")
+log("🔌 Initialisiere Neural Scout (V5.3 - Specialist Delta Logic)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -265,7 +265,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE (SILICON VALLEY VETERAN EDITION - UPGRADED)
+# 5. MATH CORE (SILICON VALLEY VETERAN EDITION - V5.3)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -276,18 +276,40 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
+    # --- SPECIALIST DELTA CHECK (THE MOLLER vs MEDVEDEV FIX) ---
+    # Wir prüfen das ELO auf verschiedenen Belägen, um den Typ zu bestimmen.
+    p1_stats = ELO_CACHE.get(tour, {}).get(n1, {})
+    p2_stats = ELO_CACHE.get(tour, {}).get(n2, {})
+    
+    p1_hard_elo = p1_stats.get('Hard', 1500)
+    p1_clay_elo = p1_stats.get('Clay', 1500)
+    p2_hard_elo = p2_stats.get('Hard', 1500)
+    p2_clay_elo = p2_stats.get('Clay', 1500)
+
+    # Identifiziere "Clay Specialists" (Mehr als 80 Punkte Unterschied)
+    p1_is_clay_specialist = (p1_clay_elo - p1_hard_elo) > 80
+    p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
+
     # 1. TACTICAL LAYER
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
 
-    # 2. PHYSICS LAYER (WITH VETERAN ANTI-GRINDER LOGIC)
+    # 2. PHYSICS LAYER (ADAPTIVE)
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
-    def get_defense(s): return s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
+    
+    # Adaptive Defense: Penalize Clay Specialist on Hard
+    def get_defense(s, is_clay_spec, bsi_now): 
+        base_def = s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
+        # Wenn wir auf FAST HARD sind (BSI > 7) und der Spieler ein Clay Specialist ist:
+        if bsi_now > 7.0 and is_clay_spec:
+            return base_def * 0.75 # Massive Penalty: Speed bringt nix, wenn Technik zu langsam
+        return base_def # Medvedev Case: Defense ist gut auf Hard
+
     def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
 
-    off1 = get_offense(s1); def1 = get_defense(s1); tech1 = get_tech(s1)
-    off2 = get_offense(s2); def2 = get_defense(s2); tech2 = get_tech(s2)
+    off1 = get_offense(s1); def1 = get_defense(s1, p1_is_clay_specialist, bsi_val); tech1 = get_tech(s1)
+    off2 = get_offense(s2); def2 = get_defense(s2, p2_is_clay_specialist, bsi_val); tech2 = get_tech(s2)
 
     c1_score = 0; c2_score = 0
 
@@ -301,9 +323,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
     elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE (HARD)
-        # HIER IST DER FIX: Serve wird extrem wichtig
-        c1_score = (off1 * 0.6) + (tech1 * 0.3) + (def1 * 0.1)
-        c2_score = (off2 * 0.6) + (tech2 * 0.3) + (def2 * 0.1)
+        # Medvedev Logic: Gute Defense zählt, aber Clay Specialists wurden oben schon bestraft (def1)
+        c1_score = (off1 * 0.5) + (tech1 * 0.3) + (def1 * 0.2)
+        c2_score = (off2 * 0.5) + (tech2 * 0.3) + (def2 * 0.2)
     elif 8.0 <= bsi_val < 9.0: # SLICK
         c1_score = (off1 * 0.8) + (tech1 * 0.2)
         c2_score = (off2 * 0.8) + (tech2 * 0.2)
@@ -319,14 +341,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
     # 4. ELO HISTORICAL LAYER
-    elo1 = 1500.0; elo2 = 1500.0
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
     
-    for name, stats in ELO_CACHE.get(tour, {}).items():
-        if n1 in name: elo1 = stats.get(elo_surf, 1500.0)
-        if n2 in name: elo2 = stats.get(elo_surf, 1500.0)
+    elo1 = p1_stats.get(elo_surf, 1500.0)
+    elo2 = p2_stats.get(elo_surf, 1500.0)
         
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
@@ -337,23 +357,23 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     
     # --- SURFACE SPECIALIST COMPONENT (REAL DATA) ---
     surf_diff = surf_rate1 - surf_rate2
-    # Ein 20% Delta (0.2) wird hier zu einem massiven Vorteil (0.66)
-    # Das gleicht den Overall Rating Bias aus.
     prob_surface_stats = 0.5 + (surf_diff * 0.9) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
-    # 5. WEIGHTED FUSION (Unified Source Architecture)
+    # 5. WEIGHTED FUSION (Data-Driven)
     physics_weight = 0.20
     elo_weight = 0.10
     matchup_weight = 0.20
     form_weight = 0.10
-    # Wir erhöhen den Einfluss der echten Scraper-Daten massiv (30%)
     surface_stats_weight = 0.30 
     
-    # Auf schnellen Plätzen zählt Physik noch mehr
+    if abs(surf_diff) > 0.2: # Massive Stat Difference overrides other factors
+        surface_stats_weight = 0.45
+        matchup_weight = 0.10
+    
+    # Auf schnellen Plätzen zählt Physik mehr
     if bsi_val > 7.5:
-        physics_weight = 0.25
-        matchup_weight = 0.15 # Taktik ist weniger wichtig als purer Speed
+        physics_weight = 0.25 
     
     skill_weight = 1.0 - (physics_weight + elo_weight + matchup_weight + form_weight + surface_stats_weight)
 
@@ -530,7 +550,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # FINAL PROMPT: ALL INTEL INCLUDED
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -578,7 +597,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
         return None
     finally: await page.close()
 
-def parse_matches_locally_v5(html, p_names): # V5 Parser: Extracts Links
+def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     tables = soup.find_all("table", class_="result")
     found = []
@@ -605,10 +624,9 @@ def parse_matches_locally_v5(html, p_names): # V5 Parser: Extracts Links
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
             # EXTRACT LINKS HERE
-            p1_cell = row.find_all('td')[1] # Usually name is here
-            p2_cell = rows[i+1].find_all('td')[0] # P2 is in next row
+            p1_cell = row.find_all('td')[1] 
+            p2_cell = rows[i+1].find_all('td')[0] 
 
-            # Cleaner Extraction
             p1_link_tag = p1_cell.find('a')
             p2_link_tag = p2_cell.find('a')
             
@@ -635,14 +653,14 @@ def parse_matches_locally_v5(html, p_names): # V5 Parser: Extracts Links
                 found.append({
                     "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
                     "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0,
-                    "p1_href": p1_href, "p2_href": p2_href # NEW: Pass URLs
+                    "p1_href": p1_href, "p2_href": p2_href 
                 })
                 i += 2 
             else: i += 1 
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v5.1 (Unified Physics Logic) Starting...")
+    log(f"🚀 Neural Scout v5.3 (Unified Source + Specialist Logic) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -661,7 +679,6 @@ async def run_pipeline():
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
 
-                # USE NEW PARSER
                 matches = parse_matches_locally_v5(html, player_names)
                 log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
                 
@@ -688,7 +705,6 @@ async def run_pipeline():
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
                             # --- V5: UNIFIED SOURCE STATS ---
-                            # Wir nutzen die URL direkt aus dem Match-Objekt
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
 
