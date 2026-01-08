@@ -664,7 +664,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v8.5 (Fixed Indentation) Starting...")
+    log(f"🚀 Neural Scout v8.6 (Final Polish) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -693,18 +693,15 @@ async def run_pipeline():
                         
                         if p1_obj and p2_obj:
                             # -----------------------------------------------------------
-                            # 0. QUALITY GATE: MÜLL DRAUSSEN LASSEN
+                            # 0. QUALITY GATE: MÜLL-DATEN FILTERN
                             # -----------------------------------------------------------
-                            # Wenn beide Odds extrem niedrig sind (z.B. 1.03 vs 1.03), ist das ein Datenfehler.
-                            # Wir ignorieren diesen Scrape-Durchlauf für dieses Match.
+                            # Wenn beide Odds < 1.05 sind, ist das ein Buchmacher-Fehler -> Ignorieren.
                             if m['odds1'] < 1.05 and m['odds2'] < 1.05:
-                                # log(f"⚠️ Ignoriere Placeholder-Odds: {p1_obj['last_name']} vs {p2_obj['last_name']} ({m['odds1']}/{m['odds2']})")
                                 continue
 
                             # -----------------------------------------------------------
-                            # 1. KOSTEN-BREMSE & INTELLIGENTES UPDATE
+                            # 1. DB CHECK (KOSTEN-BREMSE)
                             # -----------------------------------------------------------
-                            # Wir holen ID, Winner UND die aktuellen Odds aus der DB
                             existing = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             db_match_id = None
@@ -712,17 +709,17 @@ async def run_pipeline():
                             if existing.data and len(existing.data) > 0:
                                 record = existing.data[0]
                                 
-                                # A) Match ist schon vorbei? -> SKIP
+                                # A) Match ist vorbei? -> SKIP (Keine Kosten)
                                 if record.get('actual_winner_name'):
                                     continue 
                                 
-                                # B) Haben sich die Odds überhaupt geändert? -> SKIP (Spart AI Kosten!)
-                                # Wenn die neuen Odds fast gleich sind (weniger als 2% Unterschied) UND wir schon AI-Text haben, machen wir nix.
-                                # ABER: Wenn in der DB "1.03" (Müll) steht, und wir jetzt "1.80" haben, ist die Differenz groß -> Wir machen weiter!
+                                # B) Haben sich die Odds signifikant geändert?
+                                # Wir updaten nur, wenn die Differenz > 0.02 ist, ODER wenn die alten Odds "Quatsch" waren (< 1.05).
                                 db_o1 = record.get('odds1', 0)
                                 diff = abs(db_o1 - m['odds1'])
-                                if diff < 0.05:
-                                    # log(f"💤 Keine Änderung: {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                                
+                                # Wenn die alten Odds ok waren UND sich kaum was geändert hat -> SKIP
+                                if db_o1 > 1.05 and diff < 0.02:
                                     continue
                                 
                                 db_match_id = record['id']
@@ -772,7 +769,9 @@ async def run_pipeline():
                                 log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (New Odds: {m_odds1}/{m_odds2})")
                             else:
                                 supabase.table("market_odds").insert(entry).execute()
-                                log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})") Exception as e:
+                                log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
+
+                    except Exception as e:
                         log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     
