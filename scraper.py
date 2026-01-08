@@ -730,15 +730,24 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # CHECK FOR DUPLICATES
-                            existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
+                            # CHECK FOR DUPLICATES UND STATUS
+                            # Wir holen jetzt auch 'actual_winner_name' dazu
+                            existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data and len(existing.data) > 0:
-                                # Update existing record with new odds and analysis
-                                match_id = existing.data[0]['id']
+                                record = existing.data[0]
+                                
+                                # 🔒 STATE LOCK: Wenn das Match schon entschieden ist, NICHTS ändern!
+                                if record.get('actual_winner_name'):
+                                    # log(f"🔒 Match settled (Skipping Update): {entry['player1_name']} vs {entry['player2_name']}")
+                                    continue 
+
+                                # Match ist noch offen -> Update erlaubt (Live Odds Anpassung)
+                                match_id = record['id']
                                 supabase.table("market_odds").update(entry).eq("id", match_id).execute()
                                 log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (New Odds: {m_odds1}/{m_odds2})")
                             else:
+                                # Neues Match -> Speichern
                                 supabase.table("market_odds").insert(entry).execute()
                                 log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
 
