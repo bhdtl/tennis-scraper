@@ -30,7 +30,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V7.2 - Sanitized & Robust)...")
+log("🔌 Initialisiere Neural Scout (V7.3 - Clean & Optimized)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,6 +42,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# UPGRADE: Wir nutzen Flash für Speed & Kostenersparnis
 MODEL_NAME = 'gemini-2.0-flash' 
 
 # Global Caches
@@ -108,7 +109,7 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -136,11 +137,11 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    timestamp = int(time.time())
-    # FIX: String construction hardened
+    # SAFE URL CONSTRUCTION (No Markdown Injection)
+    ts = int(time.time())
     base_url = "https://www.tennisexplorer.com"
-    clean_rel_url = relative_url.strip()
-    url = f"{base_url}{clean_rel_url}?annual=all&t={timestamp}"
+    clean_path = relative_url.strip()
+    url = f"{base_url}{clean_path}?annual=all&t={ts}"
     
     page = await browser.new_page()
     try:
@@ -199,11 +200,10 @@ async def fetch_elo_ratings(browser: Browser):
     for tour, url in urls.items():
         page = await browser.new_page()
         try:
-            # FIX: Clean URL
-            clean_url = url.strip()
             ts = int(time.time())
+            # Safe URL
+            clean_url = url.strip()
             await page.goto(f"{clean_url}?t={ts}", wait_until="domcontentloaded", timeout=60000)
-            
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', {'id': 'reportable'})
@@ -297,7 +297,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     p1_is_clay_specialist = (p1_clay_elo - p1_hard_elo) > 80
     p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
 
-    # 1. TACTICAL LAYER
+    # FIX: Safety check for ai_meta (List vs Dict)
+    # Falls ai_meta None oder Liste ist, fangen wir das hier (oder im Aufrufer) ab.
+    # Hier gehen wir davon aus, dass ai_meta ein Dict ist.
+    if isinstance(ai_meta, list):
+        ai_meta = ai_meta[0] if len(ai_meta) > 0 else {}
+
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
@@ -418,8 +423,9 @@ async def update_past_results(browser: Browser):
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
-            # FIX: Clean URL
-            url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
+            # FIX: Safe URL construction
+            base = "https://www.tennisexplorer.com/results/"
+            url = f"{base}?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
@@ -548,7 +554,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # OPTIMIZED V7.0 PROMPT
+    # OPTIMIZED V7.0 PROMPT: RAW INTEL
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -575,7 +581,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
-        # THE BULLETPROOF LIST FIX (V7.1)
+        # UPGRADE: Robust List Handling (fixes 'list object has no get')
         if isinstance(data, list):
             data = data[0] if len(data) > 0 else default_res
         return data
@@ -584,9 +590,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        # FIX: Clean URL Construction
-        timestamp = int(time.time())
-        url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
+        # FIX: Safe URL Construction
+        ts = int(time.time())
+        base = "[https://www.tennisexplorer.com/matches/](https://www.tennisexplorer.com/matches/)"
+        url = f"{base}?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={ts}"
         
         log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
         await page.goto(url, wait_until="networkidle", timeout=60000)
@@ -659,7 +666,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v7.2 (Sanitized & Robust) Starting...")
+    log(f"🚀 Neural Scout v7.3 (Clean & Optimized) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -723,7 +730,7 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # UPSERT LOGIC
+                            # UPDATED UPSERT LOGIC
                             existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data and len(existing.data) > 0:
