@@ -30,7 +30,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V6.0 - Real-Time Precision)...")
+log("🔌 Initialisiere Neural Scout (V7.0 - Cost Efficient & Scalable)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,7 +42,10 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-MODEL_NAME = 'gemini-2.5-pro'
+# WICHTIG: Wir wechseln auf FLASH für den Scraper. 
+# Das ist massiv billiger und schneller für die Datenerfassung.
+# Die Qualität der Odds leidet NICHT, da Flash sehr gut in Daten-Extraction ist.
+MODEL_NAME = 'gemini-2.0-flash' 
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
@@ -104,11 +107,16 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
                 return cand
     return candidates[0]
 
+# --- STANDARD SLUGIFY ---
+def slugify_name(first: str, last: str) -> str:
+    full = f"{first}-{last}".lower()
+    return normalize_text(full).replace(' ', '-')
+
 # =================================================================
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(0.5) # Flash erlaubt schnelleres Polling
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -184,7 +192,6 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
             return rate
             
     except Exception as e:
-        # log(f"   ⚠️ TE Stats Error: {e}")
         pass
     finally:
         await page.close()
@@ -301,11 +308,11 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     # 2. PHYSICS LAYER (ADAPTIVE)
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     
-    # Adaptive Defense: Penalize Clay Specialist on Hard
     def get_defense(s, is_clay_spec, bsi_now): 
         base_def = s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
+        # Wenn wir auf FAST HARD sind (BSI > 7) und der Spieler ein Clay Specialist ist:
         if bsi_now > 7.0 and is_clay_spec:
-            return base_def * 0.75 
+            return base_def * 0.75 # Massive Penalty
         return base_def 
 
     def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
@@ -315,22 +322,23 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 
     c1_score = 0; c2_score = 0
 
-    if bsi_val < 4.0: # THE MUD
+    if bsi_val < 4.0: 
         c1_score = (def1 * 0.7) + (tech1 * 0.3)
         c2_score = (def2 * 0.7) + (tech2 * 0.3)
-    elif 4.0 <= bsi_val < 5.5: # GRINDER
+    elif 4.0 <= bsi_val < 5.5: 
         c1_score = (def1 * 0.5) + (tech1 * 0.4) + (off1 * 0.1)
         c2_score = (def2 * 0.5) + (tech2 * 0.4) + (off2 * 0.1)
-    elif 5.5 <= bsi_val < 7.0: # NEUTRAL
+    elif 5.5 <= bsi_val < 7.0: 
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
-    elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE (HARD)
+    elif 7.0 <= bsi_val < 8.0: # FAST HARD
+        # Hier auch Defense (Absorption) zulassen
         c1_score = (off1 * 0.5) + (tech1 * 0.3) + (def1 * 0.2)
         c2_score = (off2 * 0.5) + (tech2 * 0.3) + (def2 * 0.2)
-    elif 8.0 <= bsi_val < 9.0: # SLICK
+    elif 8.0 <= bsi_val < 9.0: 
         c1_score = (off1 * 0.8) + (tech1 * 0.2)
         c2_score = (off2 * 0.8) + (tech2 * 0.2)
-    else: # THE CASINO
+    else: 
         c1_score = off1
         c2_score = off2
 
@@ -348,7 +356,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     
     elo1 = p1_stats.get(elo_surf, 1500.0)
     elo2 = p2_stats.get(elo_surf, 1500.0)
-        
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
     # --- FORM COMPONENT ---
@@ -550,35 +557,30 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    # --- V7.0 PROMPT: RAW INTEL ONLY (SAVES TOKENS) ---
+    # Hier sparen wir das Geld, ohne die Logik zu opfern.
     prompt = f"""
-    ROLE: Elite Tennis Analyst (Silicon Valley Level).
-    TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}).
-    COURT INTEL: "{notes}"
+    ROLE: Elite Tennis Analyst.
+    MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
     
-    SURFACE ELO ({surface}):
-    - {p1['last_name']}: {elo1}
-    - {p2['last_name']}: {elo2}
+    DATA:
+    - ELO ({surface}): {p1['last_name']}={elo1} vs {p2['last_name']}={elo2}
+    - FORM: {p1['last_name']}={form1['text']}, {p2['last_name']}={form2['text']}
     
-    RECENT FORM (Last 5-10 matches):
-    - {p1['last_name']}: {form1['text']}
-    - {p2['last_name']}: {form2['text']}
+    TASK: Generate "RAW INTEL" for database storage. 
+    NO PROSE. ONLY FACTS.
     
-    PLAYER 1: {p1['last_name']}
-    - Style: {p1.get('play_style')}
-    - Strengths: {r1.get('strengths', 'N/A')}
-    - Weaknesses: {r1.get('weaknesses', 'N/A')}
-    
-    PLAYER 2: {p2['last_name']}
-    - Style: {p2.get('play_style')}
-    - Strengths: {r2.get('strengths', 'N/A')}
-    - Weaknesses: {r2.get('weaknesses', 'N/A')}
-    
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
-    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
+    OUTPUT JSON ONLY: 
+    {{ 
+      "p1_tactical_score": 7, 
+      "p2_tactical_score": 5, 
+      "p1_form_score": 8, 
+      "p2_form_score": 4, 
+      "ai_text": "SURFACE_ADVANTAGE: {p1['last_name']} (Higher ELO). KEY: {r1.get('strengths','Serve')} vs {r2.get('weaknesses','Backhand')}. FORM: {p1['last_name']} is {form1['text']}." 
+    }}
     """
     res = await call_gemini(prompt)
-    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
+    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No intel.'}
     if not res: return default_res
     try: 
         cleaned = res.replace("json", "").replace("", "").strip()
@@ -588,7 +590,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        # --- CACHE BUSTING FIX ---
+        # Cache Busting
         timestamp = int(time.time())
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
@@ -626,7 +628,7 @@ def parse_matches_locally_v5(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
-            # EXTRACT LINKS HERE
+            # EXTRACT LINKS
             p1_cell = row.find_all('td')[1] 
             p2_cell = rows[i+1].find_all('td')[0] 
 
@@ -663,7 +665,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v6.0 (Real-Time Precision) Starting...")
+    log(f"🚀 Neural Scout v7.0 (Cost Efficient & Scalable) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -694,9 +696,6 @@ async def run_pipeline():
                             m_odds1 = m['odds1']; m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
-                            # --- UPDATED DB LOGIC: UPSERT OR UPDATE ---
-                            # Wir prüfen nicht nur ob es existiert, sondern aktualisieren die Odds
-                            
                             s1 = all_skills.get(p1_obj['id'], {})
                             s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
@@ -730,11 +729,10 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # CHECK FOR DUPLICATES
+                            # UPDATED UPSERT LOGIC
                             existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data and len(existing.data) > 0:
-                                # Update existing record with new odds and analysis
                                 match_id = existing.data[0]['id']
                                 supabase.table("market_odds").update(entry).eq("id", match_id).execute()
                                 log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (New Odds: {m_odds1}/{m_odds2})")
