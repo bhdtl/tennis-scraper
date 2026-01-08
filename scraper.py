@@ -277,6 +277,9 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
+    # Safety Check
+    if not isinstance(ai_meta, dict):
+        ai_meta = {}
     n1 = p1_name.lower().split()[-1] 
     n2 = p2_name.lower().split()[-1]
     tour = "ATP" 
@@ -551,18 +554,15 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # KÜRZERER PROMPT (Spart Geld)
+    # Prompt bleibt gleich (Sparsam)
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
-    
     DATA:
     - ELO ({surface}): {p1['last_name']}={elo1} vs {p2['last_name']}={elo2}
     - FORM: {p1['last_name']}={form1['text']}, {p2['last_name']}={form2['text']}
     
-    TASK: Generate "RAW INTEL" for database storage. 
-    NO PROSE. ONLY FACTS.
-    
+    TASK: Generate "RAW INTEL" for database. NO PROSE.
     OUTPUT JSON ONLY: 
     {{ 
       "p1_tactical_score": 7, 
@@ -574,18 +574,26 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     """
     res = await call_gemini(prompt)
     default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No intel.'}
+    
     if not res: return default_res
+    
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
-        # HIER IST DER FIX FÜR DEN ABSTURZ (List vs Dict):
+        # --- BULLETPROOF FIX ---
         if isinstance(data, list):
-            data = data[0] if len(data) > 0 else default_res
+            if len(data) > 0 and isinstance(data[0], dict):
+                return data[0]
+            else:
+                return default_res # Leere Liste oder Liste mit Müll -> Default
+        
+        if not isinstance(data, dict):
+            return default_res # Weder Liste noch Dict -> Default
             
         return data
     except: return default_res
-
+        
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
@@ -713,13 +721,19 @@ async def run_pipeline():
                                 if record.get('actual_winner_name'):
                                     continue 
                                 
-                                # B) Haben sich die Odds signifikant geändert?
-                                # Wir updaten nur, wenn die Differenz > 0.02 ist, ODER wenn die alten Odds "Quatsch" waren (< 1.05).
+                               # B) Haben sich die Odds geändert?
                                 db_o1 = record.get('odds1', 0)
                                 diff = abs(db_o1 - m['odds1'])
                                 
-                                # Wenn die alten Odds ok waren UND sich kaum was geändert hat -> SKIP
-                                if db_o1 > 1.05 and diff < 0.02:
+                                # LOGIK-FIX:
+                                # 1. Haben wir "Bad Data" in der DB (z.B. 1.03)? Wenn ja, und neue Odds sind > 1.1 -> UPDATE!
+                                bad_data_in_db = db_o1 < 1.1 and m['odds1'] > 1.1
+                                
+                                # 2. Haben sich die Odds signifikant geändert (> 5%)? -> UPDATE!
+                                significant_change = diff > 0.05
+                                
+                                # Wenn weder Bad Data noch signifikante Änderung vorliegt -> SKIP
+                                if not bad_data_in_db and not significant_change:
                                     continue
                                 
                                 db_match_id = record['id']
