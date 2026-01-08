@@ -7,6 +7,8 @@ import unicodedata
 import math
 import logging
 import sys
+import random
+import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Tuple
 
@@ -28,7 +30,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V5.3 - Specialist Delta Logic)...")
+log("🔌 Initialisiere Neural Scout (V6.0 - Real-Time Precision)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -134,7 +136,9 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    url = f"https://www.tennisexplorer.com{relative_url}?annual=all"
+    # CACHE BUSTING HERE
+    timestamp = int(time.time())
+    url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={timestamp}"
     
     page = await browser.new_page()
     try:
@@ -180,7 +184,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
             return rate
             
     except Exception as e:
-        log(f"   ⚠️ TE Stats Error: {e}")
+        # log(f"   ⚠️ TE Stats Error: {e}")
         pass
     finally:
         await page.close()
@@ -194,7 +198,8 @@ async def fetch_elo_ratings(browser: Browser):
     for tour, url in urls.items():
         page = await browser.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # CACHE BUSTING
+            await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', {'id': 'reportable'})
@@ -276,8 +281,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     tour = "ATP" 
     bsi_val = to_float(bsi, 6.0)
 
-    # --- SPECIALIST DELTA CHECK (THE MOLLER vs MEDVEDEV FIX) ---
-    # Wir prüfen das ELO auf verschiedenen Belägen, um den Typ zu bestimmen.
+    # --- SPECIALIST DELTA CHECK ---
     p1_stats = ELO_CACHE.get(tour, {}).get(n1, {})
     p2_stats = ELO_CACHE.get(tour, {}).get(n2, {})
     
@@ -286,7 +290,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     p2_hard_elo = p2_stats.get('Hard', 1500)
     p2_clay_elo = p2_stats.get('Clay', 1500)
 
-    # Identifiziere "Clay Specialists" (Mehr als 80 Punkte Unterschied)
     p1_is_clay_specialist = (p1_clay_elo - p1_hard_elo) > 80
     p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
 
@@ -301,10 +304,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     # Adaptive Defense: Penalize Clay Specialist on Hard
     def get_defense(s, is_clay_spec, bsi_now): 
         base_def = s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
-        # Wenn wir auf FAST HARD sind (BSI > 7) und der Spieler ein Clay Specialist ist:
         if bsi_now > 7.0 and is_clay_spec:
-            return base_def * 0.75 # Massive Penalty: Speed bringt nix, wenn Technik zu langsam
-        return base_def # Medvedev Case: Defense ist gut auf Hard
+            return base_def * 0.75 
+        return base_def 
 
     def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
 
@@ -323,7 +325,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
     elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE (HARD)
-        # Medvedev Logic: Gute Defense zählt, aber Clay Specialists wurden oben schon bestraft (def1)
         c1_score = (off1 * 0.5) + (tech1 * 0.3) + (def1 * 0.2)
         c2_score = (off2 * 0.5) + (tech2 * 0.3) + (def2 * 0.2)
     elif 8.0 <= bsi_val < 9.0: # SLICK
@@ -367,11 +368,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     form_weight = 0.10
     surface_stats_weight = 0.30 
     
-    if abs(surf_diff) > 0.2: # Massive Stat Difference overrides other factors
+    if abs(surf_diff) > 0.2: 
         surface_stats_weight = 0.45
         matchup_weight = 0.10
     
-    # Auf schnellen Plätzen zählt Physik mehr
     if bsi_val > 7.5:
         physics_weight = 0.25 
     
@@ -588,7 +588,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
+        # --- CACHE BUSTING FIX ---
+        timestamp = int(time.time())
+        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
+        
         log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
         await page.goto(url, wait_until="networkidle", timeout=60000)
         return await page.content()
@@ -660,7 +663,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v5.3 (Unified Source + Specialist Logic) Starting...")
+    log(f"🚀 Neural Scout v6.0 (Real-Time Precision) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -691,12 +694,9 @@ async def run_pipeline():
                             m_odds1 = m['odds1']; m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
-                            existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
+                            # --- UPDATED DB LOGIC: UPSERT OR UPDATE ---
+                            # Wir prüfen nicht nur ob es existiert, sondern aktualisieren die Odds
                             
-                            if existing.data: continue 
-                            if m_odds1 <= 1.0: continue
-                            
-                            log(f"✨ New Match: {p1_obj['last_name']} vs {p2_obj['last_name']}")
                             s1 = all_skills.get(p1_obj['id'], {})
                             s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
@@ -704,25 +704,20 @@ async def run_pipeline():
                             
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             
-                            # --- V5: UNIFIED SOURCE STATS ---
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
 
-                            # GET HYBRID FORM
                             f1_data = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
                             f2_data = await fetch_player_form_hybrid(browser, p2_obj['last_name'])
                             
-                            # GET ELO
                             elo_surf = 'Hard'
                             if 'clay' in surf.lower(): elo_surf = 'Clay'
                             elif 'grass' in surf.lower(): elo_surf = 'Grass'
                             elo1_val = ELO_CACHE.get("ATP", {}).get(p1_obj['last_name'].lower(), {}).get(elo_surf, 1500)
                             elo2_val = ELO_CACHE.get("ATP", {}).get(p2_obj['last_name'].lower(), {}).get(elo_surf, 1500)
 
-                            # ANALYZE WITH FULL INTEL
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, elo1_val, elo2_val, f1_data, f2_data)
                             
-                            # NEU: ÜBERGABE DER SURFACE RATES
                             prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2, surf_rate1, surf_rate2)
                             
                             entry = {
@@ -734,8 +729,18 @@ async def run_pipeline():
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "match_time": iso_timestamp 
                             }
-                            supabase.table("market_odds").insert(entry).execute()
-                            log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
+                            
+                            # CHECK FOR DUPLICATES
+                            existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
+                            
+                            if existing.data and len(existing.data) > 0:
+                                # Update existing record with new odds and analysis
+                                match_id = existing.data[0]['id']
+                                supabase.table("market_odds").update(entry).eq("id", match_id).execute()
+                                log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (New Odds: {m_odds1}/{m_odds2})")
+                            else:
+                                supabase.table("market_odds").insert(entry).execute()
+                                log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
 
                     except Exception as e:
                         log(f"⚠️ Match Error: {e}")
