@@ -551,39 +551,39 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    # KÜRZERER PROMPT (Spart Geld)
     prompt = f"""
-    ROLE: Elite Tennis Analyst (Silicon Valley Level).
-    TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}).
-    COURT INTEL: "{notes}"
+    ROLE: Elite Tennis Analyst.
+    MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
     
-    SURFACE ELO ({surface}):
-    - {p1['last_name']}: {elo1}
-    - {p2['last_name']}: {elo2}
+    DATA:
+    - ELO ({surface}): {p1['last_name']}={elo1} vs {p2['last_name']}={elo2}
+    - FORM: {p1['last_name']}={form1['text']}, {p2['last_name']}={form2['text']}
     
-    RECENT FORM (Last 5-10 matches):
-    - {p1['last_name']}: {form1['text']}
-    - {p2['last_name']}: {form2['text']}
+    TASK: Generate "RAW INTEL" for database storage. 
+    NO PROSE. ONLY FACTS.
     
-    PLAYER 1: {p1['last_name']}
-    - Style: {p1.get('play_style')}
-    - Strengths: {r1.get('strengths', 'N/A')}
-    - Weaknesses: {r1.get('weaknesses', 'N/A')}
-    
-    PLAYER 2: {p2['last_name']}
-    - Style: {p2.get('play_style')}
-    - Strengths: {r2.get('strengths', 'N/A')}
-    - Weaknesses: {r2.get('weaknesses', 'N/A')}
-    
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
-    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
+    OUTPUT JSON ONLY: 
+    {{ 
+      "p1_tactical_score": 7, 
+      "p2_tactical_score": 5, 
+      "p1_form_score": 8, 
+      "p2_form_score": 4, 
+      "ai_text": "SURFACE_ADVANTAGE: {p1['last_name']} (Higher ELO). KEY: {r1.get('strengths','Serve')} vs {r2.get('weaknesses','Backhand')}. FORM: {p1['last_name']} is {form1['text']}." 
+    }}
     """
     res = await call_gemini(prompt)
-    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
+    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No intel.'}
     if not res: return default_res
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
-        return json.loads(cleaned)
+        data = json.loads(cleaned)
+        
+        # HIER IST DER FIX FÜR DEN ABSTURZ (List vs Dict):
+        if isinstance(data, list):
+            data = data[0] if len(data) > 0 else default_res
+            
+        return data
     except: return default_res
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
