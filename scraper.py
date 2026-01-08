@@ -30,7 +30,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V7.1 - Bulletproof JSON Logic)...")
+log("🔌 Initialisiere Neural Scout (V7.2 - Sanitized & Robust)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -136,9 +136,11 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    # CACHE BUSTING HERE
     timestamp = int(time.time())
-    url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={timestamp}"
+    # FIX: String construction hardened
+    base_url = "https://www.tennisexplorer.com"
+    clean_rel_url = relative_url.strip()
+    url = f"{base_url}{clean_rel_url}?annual=all&t={timestamp}"
     
     page = await browser.new_page()
     try:
@@ -197,8 +199,11 @@ async def fetch_elo_ratings(browser: Browser):
     for tour, url in urls.items():
         page = await browser.new_page()
         try:
-            # CACHE BUSTING
-            await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
+            # FIX: Clean URL
+            clean_url = url.strip()
+            ts = int(time.time())
+            await page.goto(f"{clean_url}?t={ts}", wait_until="domcontentloaded", timeout=60000)
+            
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', {'id': 'reportable'})
@@ -293,8 +298,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
 
     # 1. TACTICAL LAYER
-    # HIER IST DER SCHUTZ VOR DEM ABSTURZ:
-    # Wir nutzen .get() sicher, weil wir ai_meta vorher im "analyze_match_with_ai" prüfen werden.
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
@@ -415,6 +418,7 @@ async def update_past_results(browser: Browser):
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
+            # FIX: Clean URL
             url = f"https://www.tennisexplorer.com/results/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
@@ -571,7 +575,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
-        # THE BULLETPROOF LIST FIX
+        # THE BULLETPROOF LIST FIX (V7.1)
         if isinstance(data, list):
             data = data[0] if len(data) > 0 else default_res
         return data
@@ -580,7 +584,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        # Cache Busting
+        # FIX: Clean URL Construction
         timestamp = int(time.time())
         url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
@@ -655,7 +659,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v7.1 (Robust & Optimized) Starting...")
+    log(f"🚀 Neural Scout v7.2 (Sanitized & Robust) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -719,7 +723,7 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # UPDATED UPSERT LOGIC
+                            # UPSERT LOGIC
                             existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data and len(existing.data) > 0:
