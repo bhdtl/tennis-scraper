@@ -664,7 +664,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v6.0 (Real-Time Precision) Starting...")
+    log(f"🚀 Neural Scout v8.5 (Fixed Indentation) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -692,26 +692,19 @@ async def run_pipeline():
                         p2_obj = find_player_safe(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
-                            # -----------------------------------------------------------
-                            # SCHRITT 1: KOSTEN-BREMSE (Zuerst DB checken!)
-                            # -----------------------------------------------------------
-                            # Wir prüfen SOFORT, ob das Match schon existiert und entschieden ist.
+                            # 1. KOSTEN-BREMSE: Zuerst DB checken!
                             existing = supabase.table("market_odds").select("id, actual_winner_name").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             db_match_id = None
                             
                             if existing.data and len(existing.data) > 0:
                                 record = existing.data[0]
-                                # WENN GEWINNER SCHON FESTSTEHT -> STOPP! Keine AI-Kosten verursachen.
+                                # WENN GEWINNER SCHON FESTSTEHT -> STOPP!
                                 if record.get('actual_winner_name'):
-                                    # log(f"🔒 Match settled (Skipping): {p1_obj['last_name']} vs {p2_obj['last_name']}")
                                     continue 
-                                
                                 db_match_id = record['id']
 
-                            # -----------------------------------------------------------
-                            # SCHRITT 2: DATEN LADEN & AI (Nur wenn Match noch offen)
-                            # -----------------------------------------------------------
+                            # 2. DATEN LADEN & AI (Nur wenn Match noch offen)
                             m_odds1 = m['odds1']; m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
@@ -734,7 +727,6 @@ async def run_pipeline():
                             elo1_val = ELO_CACHE.get("ATP", {}).get(p1_obj['last_name'].lower(), {}).get(elo_surf, 1500)
                             elo2_val = ELO_CACHE.get("ATP", {}).get(p2_obj['last_name'].lower(), {}).get(elo_surf, 1500)
 
-                            # HIER PASSIERT DIE MAGIE (KOSTET GELD)
                             ai_meta = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, elo1_val, elo2_val, f1_data, f2_data)
                             
                             prob_p1 = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai_meta, m_odds1, m_odds2, surf_rate1, surf_rate2)
@@ -749,19 +741,18 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # -----------------------------------------------------------
-                            # SCHRITT 3: SPEICHERN (Update oder Insert)
-                            # -----------------------------------------------------------
+                            # 3. SPEICHERN (Update oder Insert)
                             if db_match_id:
                                 supabase.table("market_odds").update(entry).eq("id", db_match_id).execute()
                                 log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (Live Odds)")
                             else:
                                 supabase.table("market_odds").insert(entry).execute()
                                 log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
+
+                    except Exception as e:
                         log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     
     log("🏁 Cycle Finished.")
-
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
