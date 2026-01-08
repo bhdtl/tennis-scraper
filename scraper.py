@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+
 import asyncio
 import json
 import os
@@ -30,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V8.0 - Safe & Robust)...")
+log("🔌 Initialisiere Neural Scout (V6.0 - Real-Time Precision)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,8 +43,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# MODEL SWITCH: Flash is cheaper & faster
-MODEL_NAME = 'gemini-2.0-flash' 
+MODEL_NAME = 'gemini-2.0-flash'
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
@@ -109,7 +109,7 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(1.0)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -137,7 +137,9 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
-    url = f"https://www.tennisexplorer.com{relative_url}?annual=all"
+    # CACHE BUSTING HERE
+    timestamp = int(time.time())
+    url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={timestamp}"
     
     page = await browser.new_page()
     try:
@@ -183,6 +185,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
             return rate
             
     except Exception as e:
+        # log(f"   ⚠️ TE Stats Error: {e}")
         pass
     finally:
         await page.close()
@@ -196,7 +199,8 @@ async def fetch_elo_ratings(browser: Browser):
     for tour, url in urls.items():
         page = await browser.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # CACHE BUSTING
+            await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', {'id': 'reportable'})
@@ -290,10 +294,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     p1_is_clay_specialist = (p1_clay_elo - p1_hard_elo) > 80
     p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
 
-    # SAFETY FIX HERE: Handle if ai_meta is a list
-    if isinstance(ai_meta, list):
-        ai_meta = ai_meta[0] if len(ai_meta) > 0 else {}
-
+    # 1. TACTICAL LAYER
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
@@ -301,6 +302,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     # 2. PHYSICS LAYER (ADAPTIVE)
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     
+    # Adaptive Defense: Penalize Clay Specialist on Hard
     def get_defense(s, is_clay_spec, bsi_now): 
         base_def = s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
         if bsi_now > 7.0 and is_clay_spec:
@@ -314,27 +316,28 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 
     c1_score = 0; c2_score = 0
 
-    if bsi_val < 4.0: 
+    if bsi_val < 4.0: # THE MUD
         c1_score = (def1 * 0.7) + (tech1 * 0.3)
         c2_score = (def2 * 0.7) + (tech2 * 0.3)
-    elif 4.0 <= bsi_val < 5.5: 
+    elif 4.0 <= bsi_val < 5.5: # GRINDER
         c1_score = (def1 * 0.5) + (tech1 * 0.4) + (off1 * 0.1)
         c2_score = (def2 * 0.5) + (tech2 * 0.4) + (off2 * 0.1)
-    elif 5.5 <= bsi_val < 7.0: 
+    elif 5.5 <= bsi_val < 7.0: # NEUTRAL
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
-    elif 7.0 <= bsi_val < 8.0: 
+    elif 7.0 <= bsi_val < 8.0: # FIRST STRIKE (HARD)
         c1_score = (off1 * 0.5) + (tech1 * 0.3) + (def1 * 0.2)
         c2_score = (off2 * 0.5) + (tech2 * 0.3) + (def2 * 0.2)
-    elif 8.0 <= bsi_val < 9.0: 
+    elif 8.0 <= bsi_val < 9.0: # SLICK
         c1_score = (off1 * 0.8) + (tech1 * 0.2)
         c2_score = (off2 * 0.8) + (tech2 * 0.2)
-    else: 
+    else: # THE CASINO
         c1_score = off1
         c2_score = off2
 
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
 
+    # 3. SKILL BASELINE
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
@@ -346,16 +349,20 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     
     elo1 = p1_stats.get(elo_surf, 1500.0)
     elo2 = p2_stats.get(elo_surf, 1500.0)
+        
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
+    # --- FORM COMPONENT ---
     f1 = to_float(ai_meta.get('p1_form_score', 5))
     f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
+    # --- SURFACE SPECIALIST COMPONENT (REAL DATA) ---
     surf_diff = surf_rate1 - surf_rate2
     prob_surface_stats = 0.5 + (surf_diff * 0.9) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
+    # 5. WEIGHTED FUSION (Data-Driven)
     physics_weight = 0.20
     elo_weight = 0.10
     matchup_weight = 0.20
@@ -485,14 +492,14 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     res = await call_gemini(prompt)
     if not res: return None
     try:
-        data = json.loads(res.replace("json", "").replace("", "").strip())
+        data = json.loads(res.replace("json", "").replace("```", "").strip())
         TOURNAMENT_LOC_CACHE[scraped_name] = data
         return data
     except: return None
 
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
-    url = "https://www.unitedcup.com/en/scores/group-standings"
+    url = "[https://www.unitedcup.com/en/scores/group-standings](https://www.unitedcup.com/en/scores/group-standings)"
     page = await browser.new_page()
     try:
         await page.goto(url, timeout=20000, wait_until="networkidle")
@@ -500,7 +507,7 @@ async def build_country_city_map(browser: Browser):
         prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
         res = await call_gemini(prompt)
         if res:
-            COUNTRY_TO_CITY_MAP.update(json.loads(res.replace("json", "").replace("", "").strip()))
+            COUNTRY_TO_CITY_MAP.update(json.loads(res.replace("json", "").replace("```", "").strip()))
     except: pass
     finally: await page.close()
 
@@ -510,7 +517,7 @@ async def resolve_united_cup_via_country(p1):
     if cache_key in TOURNAMENT_LOC_CACHE: country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
         res = await call_gemini(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
-        country = json.loads(res.replace("json", "").replace("", "").strip()).get("country", "Unknown") if res else "Unknown"
+        country = json.loads(res.replace("json", "").replace("```", "").strip()).get("country", "Unknown") if res else "Unknown"
         TOURNAMENT_LOC_CACHE[cache_key] = country
             
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
@@ -544,45 +551,47 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # OPTIMIZED V7.0 PROMPT: RAW INTEL
     prompt = f"""
-    ROLE: Elite Tennis Analyst.
-    MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
+    ROLE: Elite Tennis Analyst (Silicon Valley Level).
+    TASK: {p1['last_name']} vs {p2['last_name']}.
+    CTX: {surface} (BSI {bsi}).
+    COURT INTEL: "{notes}"
     
-    DATA:
-    - ELO ({surface}): {p1['last_name']}={elo1} vs {p2['last_name']}={elo2}
-    - FORM: {p1['last_name']}={form1['text']}, {p2['last_name']}={form2['text']}
+    SURFACE ELO ({surface}):
+    - {p1['last_name']}: {elo1}
+    - {p2['last_name']}: {elo2}
     
-    TASK: Generate "RAW INTEL" for database storage. 
-    NO PROSE. ONLY FACTS.
+    RECENT FORM (Last 5-10 matches):
+    - {p1['last_name']}: {form1['text']}
+    - {p2['last_name']}: {form2['text']}
     
-    OUTPUT JSON ONLY: 
-    {{ 
-      "p1_tactical_score": 7, 
-      "p2_tactical_score": 5, 
-      "p1_form_score": 8, 
-      "p2_form_score": 4, 
-      "ai_text": "SURFACE_ADVANTAGE: {p1['last_name']} (Higher ELO). KEY: {r1.get('strengths','Serve')} vs {r2.get('weaknesses','Backhand')}. FORM: {p1['last_name']} is {form1['text']}." 
-    }}
+    PLAYER 1: {p1['last_name']}
+    - Style: {p1.get('play_style')}
+    - Strengths: {r1.get('strengths', 'N/A')}
+    - Weaknesses: {r1.get('weaknesses', 'N/A')}
+    
+    PLAYER 2: {p2['last_name']}
+    - Style: {p2.get('play_style')}
+    - Strengths: {r2.get('strengths', 'N/A')}
+    - Weaknesses: {r2.get('weaknesses', 'N/A')}
+    
+    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
+    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
     res = await call_gemini(prompt)
-    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No intel.'}
+    default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'p1_utr': 10, 'p2_utr': 10}
     if not res: return default_res
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
-        data = json.loads(cleaned)
-        # CRITICAL FIX FOR LIST ERROR
-        if isinstance(data, list):
-            data = data[0] if len(data) > 0 else default_res
-        return data
+        return json.loads(cleaned)
     except: return default_res
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        # Cache Busting (Safe string concat)
-        ts = int(time.time())
-        url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){target_date.year}&month={target_date.month}&day={target_date.day}&t={ts}"
+        # --- CACHE BUSTING FIX ---
+        timestamp = int(time.time())
+        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
         log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
         await page.goto(url, wait_until="networkidle", timeout=60000)
@@ -618,7 +627,7 @@ def parse_matches_locally_v5(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
-            # EXTRACT LINKS
+            # EXTRACT LINKS HERE
             p1_cell = row.find_all('td')[1] 
             p2_cell = rows[i+1].find_all('td')[0] 
 
@@ -655,7 +664,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v8.0 (Safe & Robust) Starting...")
+    log(f"🚀 Neural Scout v6.0 (Real-Time Precision) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -686,6 +695,8 @@ async def run_pipeline():
                             m_odds1 = m['odds1']; m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
+                            # --- UPDATED DB LOGIC: UPSERT OR UPDATE ---
+                            
                             s1 = all_skills.get(p1_obj['id'], {})
                             s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if r['player_id'] == p1_obj['id']), {})
@@ -719,10 +730,11 @@ async def run_pipeline():
                                 "match_time": iso_timestamp 
                             }
                             
-                            # UPDATED UPSERT LOGIC
+                            # CHECK FOR DUPLICATES
                             existing = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             if existing.data and len(existing.data) > 0:
+                                # Update existing record with new odds and analysis
                                 match_id = existing.data[0]['id']
                                 supabase.table("market_odds").update(entry).eq("id", match_id).execute()
                                 log(f"🔄 Updated: {entry['player1_name']} vs {entry['player2_name']} (New Odds: {m_odds1}/{m_odds2})")
