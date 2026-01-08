@@ -30,7 +30,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V7.0 - Cost Efficient & Scalable)...")
+log("🔌 Initialisiere Neural Scout (V7.1 - Bulletproof JSON Logic)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,9 +42,6 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# WICHTIG: Wir wechseln auf FLASH für den Scraper. 
-# Das ist massiv billiger und schneller für die Datenerfassung.
-# Die Qualität der Odds leidet NICHT, da Flash sehr gut in Daten-Extraction ist.
 MODEL_NAME = 'gemini-2.0-flash' 
 
 # Global Caches
@@ -107,16 +104,11 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
                 return cand
     return candidates[0]
 
-# --- STANDARD SLUGIFY ---
-def slugify_name(first: str, last: str) -> str:
-    full = f"{first}-{last}".lower()
-    return normalize_text(full).replace(' ', '-')
-
 # =================================================================
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5) # Flash erlaubt schnelleres Polling
+    await asyncio.sleep(0.5)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -301,6 +293,8 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     p2_is_clay_specialist = (p2_clay_elo - p2_hard_elo) > 80
 
     # 1. TACTICAL LAYER
+    # HIER IST DER SCHUTZ VOR DEM ABSTURZ:
+    # Wir nutzen .get() sicher, weil wir ai_meta vorher im "analyze_match_with_ai" prüfen werden.
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8) 
@@ -310,9 +304,8 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     
     def get_defense(s, is_clay_spec, bsi_now): 
         base_def = s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
-        # Wenn wir auf FAST HARD sind (BSI > 7) und der Spieler ein Clay Specialist ist:
         if bsi_now > 7.0 and is_clay_spec:
-            return base_def * 0.75 # Massive Penalty
+            return base_def * 0.75 
         return base_def 
 
     def get_tech(s): return s.get('forehand', 50) + s.get('backhand', 50)
@@ -331,8 +324,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elif 5.5 <= bsi_val < 7.0: 
         c1_score = def1 + tech1 + off1
         c2_score = def2 + tech2 + off2
-    elif 7.0 <= bsi_val < 8.0: # FAST HARD
-        # Hier auch Defense (Absorption) zulassen
+    elif 7.0 <= bsi_val < 8.0: 
         c1_score = (off1 * 0.5) + (tech1 * 0.3) + (def1 * 0.2)
         c2_score = (off2 * 0.5) + (tech2 * 0.3) + (def2 * 0.2)
     elif 8.0 <= bsi_val < 9.0: 
@@ -344,12 +336,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
 
-    # 3. SKILL BASELINE
     score_p1 = sum(s1.values())
     score_p2 = sum(s2.values())
     prob_skills = sigmoid_prob(score_p1 - score_p2, sensitivity=0.08)
 
-    # 4. ELO HISTORICAL LAYER
     elo_surf = 'Hard'
     if 'clay' in surface.lower(): elo_surf = 'Clay'
     elif 'grass' in surface.lower(): elo_surf = 'Grass'
@@ -358,17 +348,14 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo2 = p2_stats.get(elo_surf, 1500.0)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
 
-    # --- FORM COMPONENT ---
     f1 = to_float(ai_meta.get('p1_form_score', 5))
     f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    # --- SURFACE SPECIALIST COMPONENT (REAL DATA) ---
     surf_diff = surf_rate1 - surf_rate2
     prob_surface_stats = 0.5 + (surf_diff * 0.9) 
     prob_surface_stats = max(0.1, min(0.9, prob_surface_stats))
 
-    # 5. WEIGHTED FUSION (Data-Driven)
     physics_weight = 0.20
     elo_weight = 0.10
     matchup_weight = 0.20
@@ -557,8 +544,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # --- V7.0 PROMPT: RAW INTEL ONLY (SAVES TOKENS) ---
-    # Hier sparen wir das Geld, ohne die Logik zu opfern.
+    # OPTIMIZED V7.0 PROMPT
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -583,8 +569,12 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     default_res = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No intel.'}
     if not res: return default_res
     try: 
-        cleaned = res.replace("json", "").replace("", "").strip()
-        return json.loads(cleaned)
+        cleaned = res.replace("json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        # THE BULLETPROOF LIST FIX
+        if isinstance(data, list):
+            data = data[0] if len(data) > 0 else default_res
+        return data
     except: return default_res
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
@@ -592,7 +582,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     try:
         # Cache Busting
         timestamp = int(time.time())
-        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
+        url = f"[https://www.tennisexplorer.com/matches/?type=all&year=](https://www.tennisexplorer.com/matches/?type=all&year=){target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
         log(f"📡 Scanning: {target_date.strftime('%Y-%m-%d')}")
         await page.goto(url, wait_until="networkidle", timeout=60000)
@@ -665,7 +655,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v7.0 (Cost Efficient & Scalable) Starting...")
+    log(f"🚀 Neural Scout v7.1 (Robust & Optimized) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
