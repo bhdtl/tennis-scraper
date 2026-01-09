@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V11.0 - Production Grade)...")
+log("🔌 Initialisiere Neural Scout (V11.1 - Hotfix Restore)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -249,8 +249,7 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
-    if not isinstance(ai_meta, dict): ai_meta = {} # CRITICAL FIX
-    
+    if not isinstance(ai_meta, dict): ai_meta = {}
     n1 = p1_name.lower().split()[-1]; n2 = p2_name.lower().split()[-1]
     tour = "ATP"; bsi_val = to_float(bsi, 6.0)
 
@@ -295,7 +294,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     surf_diff = surf_rate1 - surf_rate2
     prob_surface_stats = max(0.1, min(0.9, 0.5 + (surf_diff * 0.9)))
 
-    weights = [0.20, 0.20, 0.10, 0.10, 0.10, 0.30]
+    weights = [0.20, 0.20, 0.10, 0.10, 0.10, 0.30] 
     if abs(surf_diff) > 0.2: weights = [0.10, 0.20, 0.10, 0.10, 0.05, 0.45]
     if bsi_val > 7.5: weights[1] = 0.25
 
@@ -316,8 +315,34 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return (prob_alpha * 0.75) + (prob_market * 0.25)
 
 # =================================================================
-# 6. PIPELINE UTILS (Fixed & Robust)
+# 6. PIPELINE UTILS & RESTORED FUNCTIONS
 # =================================================================
+async def build_country_city_map(browser: Browser):
+    if COUNTRY_TO_CITY_MAP: return
+    url = "https://www.unitedcup.com/en/scores/group-standings"
+    page = await browser.new_page()
+    try:
+        await page.goto(url, timeout=20000, wait_until="networkidle")
+        text_content = await page.inner_text("body")
+        prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
+        res = await call_gemini(prompt)
+        if res:
+            COUNTRY_TO_CITY_MAP.update(json.loads(res.replace("json", "").replace("```", "").strip()))
+    except: pass
+    finally: await page.close()
+
+async def resolve_united_cup_via_country(p1):
+    if not COUNTRY_TO_CITY_MAP: return None
+    cache_key = f"COUNTRY_{p1}"
+    if cache_key in TOURNAMENT_LOC_CACHE: country = TOURNAMENT_LOC_CACHE[cache_key]
+    else:
+        res = await call_gemini(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
+        country = json.loads(res.replace("json", "").replace("```", "").strip()).get("country", "Unknown") if res else "Unknown"
+        TOURNAMENT_LOC_CACHE[cache_key] = country
+            
+    if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
+    return None
+
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     res = await call_gemini(f"Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\" }}")
@@ -328,6 +353,15 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2):
     s_low = clean_tournament_name(tour).lower().strip()
+    
+    if "united cup" in s_low:
+        arena_target = await resolve_united_cup_via_country(p1)
+        if arena_target:
+            for t in db_tours:
+                if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
+        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
+
     for t in db_tours:
         if t['name'].lower() == s_low: return t['surface'], t['bsi_rating'], t.get('notes', '')
     
@@ -347,12 +381,11 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     
     if not res: return default
     
-    # --- CRITICAL FIX FOR CRASHING MATCHES ---
+    # CRASH FIX: LIST HANDLING
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
-        # Handle if AI returns a List instead of Dict (The "List object has no attribute get" Fix)
         if isinstance(data, list):
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
@@ -411,18 +444,17 @@ def parse_matches_locally_v5(html, p_names):
                 tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
-            # Jodar Fix: Check if ANY valid player is involved
             p1_match = any(tp in p1_raw.lower() for tp in target_players)
             p2_match = any(tp in p2_raw.lower() for tp in target_players)
 
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # FIX: Lax Regex for Jodar/ITF Odds (accepts 1.5, 12, etc)
+                    # FIX: LAX REGEX FOR JODAR (Accepts 1.5, 12, etc)
                     txt = row.get_text(" ") + " " + row2.get_text(" ")
                     nums = [float(x) for x in re.findall(r'\b\d+(?:\.\d+)?\b', txt) if 1.01 <= float(x) < 50.0 and ":" not in x]
                     if len(nums) >= 2:
-                        odds = [nums[-2], nums[-1]] # Take last two
+                        odds = [nums[-2], nums[-1]]
                 except: pass
                 
                 found.append({
@@ -436,10 +468,10 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 # =================================================================
-# 7. MAIN LOOP & RESULT CHECKER
+# 7. MAIN LOOP & RESULT CHECKER (TIME AWARE)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V11.0)...")
+    log("🏆 Checking for Match Results (V11.1)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
 
@@ -448,11 +480,14 @@ async def update_past_results(browser: Browser):
     for pm in pending:
         if not isinstance(pm, dict): continue
         try:
-            # FIX: Fritz Time-Travel Preventer
+            # FUTURE MATCH GUARD
             m_time = pm.get('match_time')
             if m_time:
                 mdt = datetime.fromisoformat(m_time.replace('Z', '+00:00'))
-                if mdt > (now - timedelta(hours=2)): continue # Match in Future? Skip!
+                if mdt > (now - timedelta(hours=2)): continue # Skip Future
+            else:
+                cat = datetime.fromisoformat(pm['created_at'].replace('Z', '+00:00'))
+                if (now - cat).total_seconds() < 3600*3: continue
             safe.append(pm)
         except: continue
 
@@ -481,7 +516,7 @@ async def update_past_results(browser: Browser):
                 nrt = next_row.get_text(separator=" ", strip=True).lower()
                 
                 if not any(c.isdigit() for c in rt): continue
-                if "h2h" in rt or "head" in rt: continue # H2H Filter
+                if "h2h" in rt or "head" in rt: continue
 
                 for pm in safe:
                     p1 = get_last_name(pm['player1_name']); p2 = get_last_name(pm['player2_name'])
@@ -520,7 +555,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v11.0 (Production) Starting...")
+    log(f"🚀 Neural Scout v11.1 (Final) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -546,10 +581,8 @@ async def run_pipeline():
                         p2_obj = find_player_safe(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
-                            # Quality Gate (Laxer for testing)
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
 
-                            # DB Check
                             res = supabase.table("market_odds").select("id, actual_winner_name, odds1").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             existing = res.data if res else []
                             
@@ -560,7 +593,6 @@ async def run_pipeline():
                                 if abs(rec.get('odds1', 0) - m['odds1']) < 0.05 and rec.get('odds1', 0) > 1.1: continue
                                 db_match_id = rec['id']
 
-                            # AI Analysis
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             
