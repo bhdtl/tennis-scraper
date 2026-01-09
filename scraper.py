@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V12.0 - Resurrection)...")
+log("🔌 Initialisiere Neural Scout (V12.1 - 24h Delay Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -401,35 +401,40 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE
+# 6. RESULT VERIFICATION ENGINE (24H DELAY FIX)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V12.0 - Resurrection)...")
+    log("🏆 Checking for Match Results (V12.1 - 24h Delay Logic)...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches: return
 
     safe_matches = []
     now_utc = datetime.now(timezone.utc)
+    
     for pm in pending_matches:
         try:
-            # FIX #1: Time Travel Protection (Fritz vs Hurkacz Fix)
+            # FIX: Nur Matches prüfen, die vor 24h+ begonnen haben
             match_time_str = pm.get('match_time')
             if match_time_str:
-                 match_dt = datetime.fromisoformat(match_time_str.replace('Z', '+00:00'))
-                 # Wenn das Spiel in der Zukunft liegt (plus 2h Puffer), überspringen!
-                 if match_dt > (now_utc - timedelta(hours=2)):
-                     continue
+                match_dt = datetime.fromisoformat(match_time_str.replace('Z', '+00:00'))
+                # Wenn Match weniger als 24h her ist -> SKIP (zu riskant für Phantom-Scores)
+                if (now_utc - match_dt).total_seconds() < 86400: # 86400 sek = 24h
+                    continue
             
+            # Fallback (Created At Check - 30h)
             created_at_str = pm['created_at'].replace('Z', '+00:00')
             created_at = datetime.fromisoformat(created_at_str)
-            if (now_utc - created_at).total_seconds() / 60 > 65:
-                safe_matches.append(pm)
+            if (now_utc - created_at).total_seconds() / 3600 < 30: # 30h Puffer
+                continue
+
+            safe_matches.append(pm)
         except: continue
 
     if not safe_matches: return
 
-    for day_offset in range(3):
+    # Scrape Gestern und Vorgestern
+    for day_offset in range(1, 3): 
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
@@ -449,10 +454,6 @@ async def update_past_results(browser: Browser):
                     p1_last = get_last_name(pm['player1_name'])
                     p2_last = get_last_name(pm['player2_name'])
                     row_text = row.get_text(separator=" ", strip=True).lower()
-                    
-                    # FIX #1 (Teil 2): H2H und Zeit-Texte ignorieren
-                    if "h2h" in row_text or "head" in row_text: continue
-                    
                     next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                     
                     match_found = (p1_last in row_text and p2_last in next_row_text) or \
@@ -461,6 +462,9 @@ async def update_past_results(browser: Browser):
                     
                     if match_found:
                         try:
+                            # H2H Filter (Just in case)
+                            if "h2h" in row_text or "head" in row_text: continue
+
                             is_retirement = "ret." in row_text or "w.o." in row_text
                             cols1 = row.find_all('td')
                             cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
@@ -470,8 +474,7 @@ async def update_past_results(browser: Browser):
                                 for col in columns:
                                     txt = col.get_text(strip=True)
                                     if len(txt) > 4: continue
-                                    # Filter für Uhrzeiten
-                                    if ":" in txt: continue 
+                                    if ":" in txt: continue # Uhrzeit-Filter
                                     if '(' in txt: txt = txt.split('(')[0]
                                     if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                 return scores
@@ -568,7 +571,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # Prompt bleibt gleich (Sparsam)
+    # CRITICAL FIX: List Handling
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -595,7 +598,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
-        # FIX #2: Crash verhindern (List vs Dict)
+        # --- BULLETPROOF LIST FIX ---
         if isinstance(data, list):
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
@@ -667,21 +670,12 @@ def parse_matches_locally_v5(html, p_names):
             if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                 odds = []
                 try:
-                    # FIX #3: Jodar Fix - Regex lockern
-                    # Alter Regex: r'\d+\.\d+' (zwingt Punkt)
-                    # Neuer Regex: r'\b\d+(?:\.\d+)?\b' (erlaubt 1.85 und 12)
-                    
-                    text_p1 = row.get_text(separator=' ')
-                    text_p2 = rows[i+1].get_text(separator=' ')
-
-                    nums1 = re.findall(r'\b\d+(?:\.\d+)?\b', text_p1)
-                    nums2 = re.findall(r'\b\d+(?:\.\d+)?\b', text_p2)
-                    
-                    valid1 = [float(x) for x in nums1 if 1.01 <= float(x) < 50.0]
-                    valid2 = [float(x) for x in nums2 if 1.01 <= float(x) < 50.0]
-                    
-                    if len(valid1) > 0 and len(valid2) > 0:
-                        odds = [valid1[-1], valid2[-1]] # Nimm die letzten (Closing) Odds
+                    # FIX JODAR ODDS: Lax Regex
+                    # Search entire block for numbers like 1.5, 12, 1.85 (ignore time)
+                    block_text = row.get_text(" ") + " " + rows[i+1].get_text(" ")
+                    nums = [float(x) for x in re.findall(r'\b\d+(?:\.\d+)?\b', block_text) if 1.01 <= float(x) < 50.0 and ":" not in x]
+                    if len(nums) >= 2:
+                        odds = [nums[-2], nums[-1]] # Last two are usually closing odds
                 except: pass
                 
                 found.append({
@@ -694,7 +688,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v12.0 (Resurrection) Starting...")
+    log(f"🚀 Neural Scout v12.1 (24h Delay Logic) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -708,7 +702,8 @@ async def run_pipeline():
             current_date = datetime.now()
             player_names = [p['last_name'] for p in players]
             
-            for day_offset in range(11): 
+            # SCANNEN VON GESTERN BIS +10 TAGE (Damit wir Ergebnisse von gestern finden)
+            for day_offset in range(-1, 11): 
                 target_date = current_date + timedelta(days=day_offset)
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
@@ -806,10 +801,6 @@ async def run_pipeline():
                             else:
                                 supabase.table("market_odds").insert(entry).execute()
                                 log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
-                        
-                        # LOGGING FÜR UNBEKANNTE SPIELER (Debugging)
-                        else:
-                             pass
 
                     except Exception as e:
                         log(f"⚠️ Match Error: {e}")
