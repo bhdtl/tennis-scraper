@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V12.1 - 24h Delay Fix)...")
+log("🔌 Initialisiere Neural Scout (V13.0 - Conservative Time Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -404,7 +404,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
 # 6. RESULT VERIFICATION ENGINE (24H DELAY FIX)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V12.1 - 24h Delay Logic)...")
+    log("🏆 Checking for Match Results (V13.0 - 24h Delay Logic)...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches: return
@@ -571,7 +571,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # CRITICAL FIX: List Handling
+    # Prompt bleibt gleich (Sparsam)
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -603,10 +603,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
             else:
-                return default_res 
+                return default_res # Leere Liste oder Liste mit Müll -> Default
         
         if not isinstance(data, dict):
-            return default_res 
+            return default_res # Weder Liste noch Dict -> Default
             
         return data
     except: return default_res
@@ -670,12 +670,13 @@ def parse_matches_locally_v5(html, p_names):
             if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                 odds = []
                 try:
-                    # FIX JODAR ODDS: Lax Regex
-                    # Search entire block for numbers like 1.5, 12, 1.85 (ignore time)
-                    block_text = row.get_text(" ") + " " + rows[i+1].get_text(" ")
-                    nums = [float(x) for x in re.findall(r'\b\d+(?:\.\d+)?\b', block_text) if 1.01 <= float(x) < 50.0 and ":" not in x]
-                    if len(nums) >= 2:
-                        odds = [nums[-2], nums[-1]] # Last two are usually closing odds
+                    nums = re.findall(r'\d+\.\d+', row_text)
+                    valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
+                    if len(valid) >= 2: odds = valid[:2]
+                    else:
+                        nums2 = re.findall(r'\d+\.\d+', rows[i+1].get_text())
+                        valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
+                        if valid and valid2: odds = [valid[0], valid2[0]]
                 except: pass
                 
                 found.append({
