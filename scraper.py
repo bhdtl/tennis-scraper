@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V6.0 - Real-Time Precision)...")
+log("🔌 Initialisiere Neural Scout (V7.0 - Silicon Valley Edition)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -401,27 +401,47 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE
+# 6. RESULT VERIFICATION ENGINE (V7.0 - TIME TRAVEL FIX)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (Restored v95.0 Aggressive Logic)...")
+    log("🏆 Checking for Match Results (V7.0 - Time-Aware)...")
+    
+    # Nur Matches laden, die KEINEN Winner haben
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches: return
 
     safe_matches = []
     now_utc = datetime.now(timezone.utc)
+    
     for pm in pending_matches:
         try:
+            # FIX: Wir prüfen match_time (Wann das Spiel stattfindet)
+            match_time_str = pm.get('match_time')
+            if match_time_str:
+                match_dt = datetime.fromisoformat(match_time_str.replace('Z', '+00:00'))
+                # Wenn das Spiel noch nicht mal angefangen hat (+ 2 Stunden Puffer für Dauer), nicht checken!
+                # Dies verhindert, dass Matches von MORGEN als fertig erkannt werden.
+                if match_dt > (now_utc - timedelta(hours=2)):
+                    continue
+            
+            # Fallback: created_at check (falls match_time fehlt)
             created_at_str = pm['created_at'].replace('Z', '+00:00')
             created_at = datetime.fromisoformat(created_at_str)
-            if (now_utc - created_at).total_seconds() / 60 > 65:
+            
+            # Doppelte Sicherheit: Match muss vor mind. 3 Stunden erstellt worden sein
+            if (now_utc - created_at).total_seconds() / 3600 > 3:
                 safe_matches.append(pm)
         except: continue
 
-    if not safe_matches: return
+    if not safe_matches: 
+        log("   💤 Keine Matches zur Auswertung bereit (alle in Zukunft oder zu frisch).")
+        return
 
-    for day_offset in range(3):
+    log(f"   🔍 Prüfe {len(safe_matches)} vergangene Matches auf Ergebnisse...")
+
+    # Wir scannen nur heute und gestern. Matches von morgen können keine Ergebnisse haben.
+    for day_offset in range(2): 
         target_date = datetime.now() - timedelta(days=day_offset)
         page = await browser.new_page()
         try:
@@ -436,12 +456,18 @@ async def update_past_results(browser: Browser):
             for i in range(len(rows)):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row): continue
+                if i+1 >= len(rows): break
                 
+                next_row = rows[i+1]
+                row_text = row.get_text(separator=" ", strip=True).lower()
+                next_row_text = next_row.get_text(separator=" ", strip=True).lower()
+                
+                # HARD FILTER: Wenn kein Ergebnis, überspringen
+                if not any(char.isdigit() for char in row_text): continue
+
                 for pm in safe_matches:
                     p1_last = get_last_name(pm['player1_name'])
                     p2_last = get_last_name(pm['player2_name'])
-                    row_text = row.get_text(separator=" ", strip=True).lower()
-                    next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                     
                     match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                   (p2_last in row_text and p1_last in next_row_text) or \
@@ -449,45 +475,54 @@ async def update_past_results(browser: Browser):
                     
                     if match_found:
                         try:
-                            is_retirement = "ret." in row_text or "w.o." in row_text
+                            # CRITICAL FIX: Filtere H2H und Future Times raus
+                            if "h2h" in row_text or "head" in row_text: continue
+                            if ":" in row_text and not "ret." in row_text: continue 
+
                             cols1 = row.find_all('td')
-                            cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
+                            cols2 = next_row.find_all('td')
                             
-                            def extract_scores_aggressive(columns):
+                            def extract_scores_strict(columns):
                                 scores = []
                                 for col in columns:
                                     txt = col.get_text(strip=True)
-                                    if len(txt) > 4: continue
-                                    if '(' in txt: txt = txt.split('(')[0]
-                                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
+                                    # Filter: Keine Zeiten (:), Keine Klammern
+                                    if ":" in txt or "(" in txt: continue
+                                    # Strikt einstellig (0-7)
+                                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
+                                        scores.append(int(txt))
                                 return scores
 
-                            p1_scores = extract_scores_aggressive(cols1)
-                            p2_scores = extract_scores_aggressive(cols2)
+                            p1_scores = extract_scores_strict(cols1)
+                            p2_scores = extract_scores_strict(cols2)
                             
+                            if len(p1_scores) < 1: continue
+
                             p1_sets = 0; p2_sets = 0
                             for k in range(min(len(p1_scores), len(p2_scores))):
                                 if p1_scores[k] > p2_scores[k]: p1_sets += 1
                                 elif p2_scores[k] > p1_scores[k]: p2_sets += 1
                             
                             winner_name = None
-                            if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
+                            is_ret = "ret." in row_text or "ret." in next_row_text
+                            
+                            if (p1_sets >= 2 and p1_sets > p2_sets) or (is_ret and p1_sets > p2_sets):
                                 if p1_last in row_text: winner_name = pm['player1_name']
                                 elif p2_last in row_text: winner_name = pm['player2_name']
-                            elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_retirement and p2_sets > p1_sets):
+                            elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_ret and p2_sets > p1_sets):
                                 if p1_last in next_row_text: winner_name = pm['player1_name']
                                 elif p2_last in next_row_text: winner_name = pm['player2_name']
                             
                             if winner_name:
                                 supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
                                 safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
-                                log(f"      ✅ Verified Winner: {winner_name}")
-                        except: pass
+                                log(f"      ✅ Verified Winner: {winner_name} (Score: {p1_scores}-{p2_scores})")
+                        except Exception as e: pass
         except: pass
         finally: await page.close()
 
 # =================================================================
-# 7. MAIN PIPELINE
+# 7. MAIN PIPELINE (V7.0 - JODAR FIX)
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
@@ -554,7 +589,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # Prompt bleibt gleich (Sparsam)
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -581,15 +615,14 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
-        # --- BULLETPROOF FIX ---
         if isinstance(data, list):
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
             else:
-                return default_res # Leere Liste oder Liste mit Müll -> Default
+                return default_res 
         
         if not isinstance(data, dict):
-            return default_res # Weder Liste noch Dict -> Default
+            return default_res 
             
         return data
     except: return default_res
@@ -597,7 +630,6 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
-        # --- CACHE BUSTING FIX ---
         timestamp = int(time.time())
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
@@ -627,7 +659,39 @@ def parse_matches_locally_v5(html, p_names):
             if "doubles" in current_tour.lower(): i += 1; continue
             if i + 1 >= len(rows): break
 
-            row_text = normalize_text(row.get_text(separator=' ', strip=True))
+            row2 = rows[i+1] # Wir schauen uns immer 2 Reihen gleichzeitig an für ein Match
+            
+            # Sicherheitscheck: Hat die Reihe genug Spalten?
+            cols1 = row.find_all('td')
+            cols2 = row2.find_all('td')
+            
+            if len(cols1) < 2 or len(cols2) < 1:
+                i += 1; continue
+
+            # Extraktion Spieler 1
+            p1_cell = None
+            for col in cols1:
+                if col.find('a') and not 'time' in col.get('class', []):
+                    p1_cell = col; break
+            if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
+
+            # Extraktion Spieler 2
+            p2_cell = None
+            for col in cols2:
+                if col.find('a'): p2_cell = col; break
+            if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
+
+            if not p1_cell or not p2_cell: 
+                i+=1; continue
+
+            p1_raw = clean_player_name(p1_cell.get_text(strip=True))
+            p2_raw = clean_player_name(p2_cell.get_text(strip=True))
+            
+            # Check auf "unfinished" oder "canceled" im Text
+            full_row_text = row.get_text().lower() + row2.get_text().lower()
+            if "canc" in full_row_text or "w.o." in full_row_text:
+                i += 2; continue
+
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
             if first_col and 'time' in first_col.get('class', []):
@@ -635,31 +699,30 @@ def parse_matches_locally_v5(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
-            # EXTRACT LINKS HERE
-            p1_cell = row.find_all('td')[1] 
-            p2_cell = rows[i+1].find_all('td')[0] 
-
             p1_link_tag = p1_cell.find('a')
             p2_link_tag = p2_cell.find('a')
-            
-            p1_raw = clean_player_name(p1_cell.get_text(strip=True))
-            p2_raw = clean_player_name(p2_cell.get_text(strip=True))
-            
             p1_href = p1_link_tag['href'] if p1_link_tag else None
             p2_href = p2_link_tag['href'] if p2_link_tag else None
 
             if '/' in p1_raw or '/' in p2_raw: i += 1; continue
 
-            if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
+            # Jodar/Fritz Fix: Prüfen ob wenigstens EINER der Spieler in unserer DB ist
+            p1_match = any(tp in p1_raw.lower() for tp in target_players)
+            p2_match = any(tp in p2_raw.lower() for tp in target_players)
+
+            if p1_match and p2_match:
                 odds = []
                 try:
-                    nums = re.findall(r'\d+\.\d+', row_text)
-                    valid = [float(x) for x in nums if 1.0 < float(x) < 50.0]
-                    if len(valid) >= 2: odds = valid[:2]
-                    else:
-                        nums2 = re.findall(r'\d+\.\d+', rows[i+1].get_text())
-                        valid2 = [float(x) for x in nums2 if 1.0 < float(x) < 50.0]
-                        if valid and valid2: odds = [valid[0], valid2[0]]
+                    # Verbesserte Odds-Suche (Sucht nach 1.XX - 40.00)
+                    odds_text_1 = row.get_text(separator=' ')
+                    odds_text_2 = row2.get_text(separator=' ')
+                    nums1 = re.findall(r'\b\d+\.\d{2}\b', odds_text_1)
+                    nums2 = re.findall(r'\b\d+\.\d{2}\b', odds_text_2)
+                    valid1 = [float(x) for x in nums1 if 1.01 <= float(x) < 50.0]
+                    valid2 = [float(x) for x in nums2 if 1.01 <= float(x) < 50.0]
+                    
+                    if valid1 and valid2:
+                        odds = [valid1[0], valid2[0]]
                 except: pass
                 
                 found.append({
@@ -672,7 +735,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v8.6 (Final Polish) Starting...")
+    log(f"🚀 Neural Scout v8.7 (Silicon Valley Fix) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -700,47 +763,31 @@ async def run_pipeline():
                         p2_obj = find_player_safe(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
-                            # -----------------------------------------------------------
-                            # 0. QUALITY GATE: MÜLL-DATEN FILTERN
-                            # -----------------------------------------------------------
-                            # Wenn beide Odds < 1.05 sind, ist das ein Buchmacher-Fehler -> Ignorieren.
+                            # 0. QUALITY GATE
                             if m['odds1'] < 1.05 and m['odds2'] < 1.05:
                                 continue
 
-                            # -----------------------------------------------------------
-                            # 1. DB CHECK (KOSTEN-BREMSE)
-                            # -----------------------------------------------------------
+                            # 1. DB CHECK
                             existing = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             
                             db_match_id = None
                             
                             if existing.data and len(existing.data) > 0:
                                 record = existing.data[0]
-                                
-                                # A) Match ist vorbei? -> SKIP (Keine Kosten)
                                 if record.get('actual_winner_name'):
                                     continue 
                                 
-                               # B) Haben sich die Odds geändert?
                                 db_o1 = record.get('odds1', 0)
                                 diff = abs(db_o1 - m['odds1'])
-                                
-                                # LOGIK-FIX:
-                                # 1. Haben wir "Bad Data" in der DB (z.B. 1.03)? Wenn ja, und neue Odds sind > 1.1 -> UPDATE!
                                 bad_data_in_db = db_o1 < 1.1 and m['odds1'] > 1.1
-                                
-                                # 2. Haben sich die Odds signifikant geändert (> 5%)? -> UPDATE!
                                 significant_change = diff > 0.05
                                 
-                                # Wenn weder Bad Data noch signifikante Änderung vorliegt -> SKIP
                                 if not bad_data_in_db and not significant_change:
                                     continue
                                 
                                 db_match_id = record['id']
 
-                            # -----------------------------------------------------------
-                            # 2. DATEN LADEN & AI (Nur wenn nötig!)
-                            # -----------------------------------------------------------
+                            # 2. DATEN LADEN & AI
                             m_odds1 = m['odds1']; m_odds2 = m['odds2']
                             iso_timestamp = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
 
