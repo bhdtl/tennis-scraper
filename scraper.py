@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V8.8 - Odds Parsing Hotfix)...")
+log("🔌 Initialisiere Neural Scout (V10.0 - Stable Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -137,6 +137,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
+    # CACHE BUSTING HERE
     timestamp = int(time.time())
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={timestamp}"
     
@@ -179,11 +180,12 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         
         if total_matches > 0:
             rate = total_wins / total_matches
-            # log(f"   📊 Direct Stats ({target_header}): {rate:.2f} ({total_matches} matches)")
+            log(f"   📊 Direct Stats ({target_header}): {rate:.2f} ({total_matches} matches)")
             SURFACE_STATS_CACHE[cache_key] = rate
             return rate
             
     except Exception as e:
+        # log(f"   ⚠️ TE Stats Error: {e}")
         pass
     finally:
         await page.close()
@@ -197,6 +199,7 @@ async def fetch_elo_ratings(browser: Browser):
     for tour, url in urls.items():
         page = await browser.new_page()
         try:
+            # CACHE BUSTING
             await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
             soup = BeautifulSoup(content, 'html.parser')
@@ -398,11 +401,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE (V8.8 - Time Travel Fix)
+# 6. RESULT VERIFICATION ENGINE (UPDATED: Future Match Protection)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V8.8 - Time-Aware)...")
-    
+    log("🏆 Checking for Match Results (V10.0 - Time-Aware)...")
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches: return
@@ -412,14 +414,15 @@ async def update_past_results(browser: Browser):
     
     for pm in pending_matches:
         try:
-            # FIX: Match-Zeit prüfen. Wenn Zukunft -> SKIP
+            # FIX: Strikter Check auf match_time
+            # Wenn das Match-Datum in der Zukunft liegt (+2h Puffer), nicht prüfen!
             match_time_str = pm.get('match_time')
             if match_time_str:
                 match_dt = datetime.fromisoformat(match_time_str.replace('Z', '+00:00'))
-                if match_dt > (now_utc - timedelta(hours=2)): # Match hat noch nicht begonnen
+                if match_dt > (now_utc - timedelta(hours=2)):
                     continue
             
-            # Fallback
+            # Fallback für alte Einträge
             created_at_str = pm['created_at'].replace('Z', '+00:00')
             created_at = datetime.fromisoformat(created_at_str)
             if (now_utc - created_at).total_seconds() / 3600 > 3:
@@ -443,17 +446,12 @@ async def update_past_results(browser: Browser):
             for i in range(len(rows)):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row): continue
-                if i+1 >= len(rows): break
                 
-                next_row = rows[i+1]
-                row_text = row.get_text(separator=" ", strip=True).lower()
-                next_row_text = next_row.get_text(separator=" ", strip=True).lower()
-                
-                if not any(char.isdigit() for char in row_text): continue
-
                 for pm in safe_matches:
                     p1_last = get_last_name(pm['player1_name'])
                     p2_last = get_last_name(pm['player2_name'])
+                    row_text = row.get_text(separator=" ", strip=True).lower()
+                    next_row_text = rows[i+1].get_text(separator=" ", strip=True).lower() if i+1 < len(rows) else ""
                     
                     match_found = (p1_last in row_text and p2_last in next_row_text) or \
                                   (p2_last in row_text and p1_last in next_row_text) or \
@@ -461,26 +459,28 @@ async def update_past_results(browser: Browser):
                     
                     if match_found:
                         try:
-                            # FIX: Filtere H2H und Zeitangaben
+                            # FIX: Filtere H2H und Zeitangaben raus
                             if "h2h" in row_text or "head" in row_text: continue
-                            if ":" in row_text and not "ret." in row_text: continue 
+                            if ":" in row_text and "ret." not in row_text: continue
 
+                            is_retirement = "ret." in row_text or "w.o." in row_text
                             cols1 = row.find_all('td')
-                            cols2 = next_row.find_all('td')
+                            cols2 = rows[i+1].find_all('td') if i+1 < len(rows) else []
                             
                             def extract_scores_strict(columns):
                                 scores = []
                                 for col in columns:
                                     txt = col.get_text(strip=True)
-                                    if ":" in txt or "(" in txt: continue
-                                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7:
-                                        scores.append(int(txt))
+                                    if len(txt) > 4: continue
+                                    if ":" in txt: continue # Keine Zeit!
+                                    if '(' in txt: txt = txt.split('(')[0]
+                                    if txt.isdigit() and len(txt) == 1 and int(txt) <= 7: scores.append(int(txt))
                                 return scores
 
                             p1_scores = extract_scores_strict(cols1)
                             p2_scores = extract_scores_strict(cols2)
                             
-                            if len(p1_scores) < 1: continue
+                            if not p1_scores or not p2_scores: continue
 
                             p1_sets = 0; p2_sets = 0
                             for k in range(min(len(p1_scores), len(p2_scores))):
@@ -488,25 +488,23 @@ async def update_past_results(browser: Browser):
                                 elif p2_scores[k] > p1_scores[k]: p2_sets += 1
                             
                             winner_name = None
-                            is_ret = "ret." in row_text or "ret." in next_row_text
-                            
-                            if (p1_sets >= 2 and p1_sets > p2_sets) or (is_ret and p1_sets > p2_sets):
+                            if (p1_sets >= 2 and p1_sets > p2_sets) or (is_retirement and p1_sets > p2_sets):
                                 if p1_last in row_text: winner_name = pm['player1_name']
                                 elif p2_last in row_text: winner_name = pm['player2_name']
-                            elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_ret and p2_sets > p1_sets):
+                            elif (p2_sets >= 2 and p2_sets > p1_sets) or (is_retirement and p2_sets > p1_sets):
                                 if p1_last in next_row_text: winner_name = pm['player1_name']
                                 elif p2_last in next_row_text: winner_name = pm['player2_name']
                             
                             if winner_name:
                                 supabase.table("market_odds").update({"actual_winner_name": winner_name}).eq("id", pm['id']).execute()
                                 safe_matches = [x for x in safe_matches if x['id'] != pm['id']]
-                                log(f"      ✅ Verified Winner: {winner_name} (Score: {p1_scores}-{p2_scores})")
-                        except Exception as e: pass
+                                log(f"      ✅ Verified Winner: {winner_name}")
+                        except: pass
         except: pass
         finally: await page.close()
 
 # =================================================================
-# 7. MAIN PIPELINE (V8.8 - ODDS FIX)
+# 7. MAIN PIPELINE (UPDATED: Jodar Odds Fix)
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
@@ -573,6 +571,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     return 'Hard', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    # Prompt bleibt gleich (Sparsam)
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     MATCH: {p1['last_name']} vs {p2['last_name']} ({surface}).
@@ -599,14 +598,15 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
+        # --- BULLETPROOF FIX ---
         if isinstance(data, list):
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
             else:
-                return default_res 
+                return default_res # Leere Liste oder Liste mit Müll -> Default
         
         if not isinstance(data, dict):
-            return default_res 
+            return default_res # Weder Liste noch Dict -> Default
             
         return data
     except: return default_res
@@ -614,6 +614,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
     try:
+        # --- CACHE BUSTING FIX ---
         timestamp = int(time.time())
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}&t={timestamp}"
         
@@ -643,38 +644,11 @@ def parse_matches_locally_v5(html, p_names):
             if "doubles" in current_tour.lower(): i += 1; continue
             if i + 1 >= len(rows): break
 
-            row2 = rows[i+1] # Wir schauen uns immer 2 Reihen gleichzeitig an für ein Match
+            row_text = normalize_text(row.get_text(separator=' ', strip=True))
             
-            # Sicherheitscheck: Hat die Reihe genug Spalten?
-            cols1 = row.find_all('td')
-            cols2 = row2.find_all('td')
-            
-            if len(cols1) < 2 or len(cols2) < 1:
-                i += 1; continue
-
-            # Extraktion Spieler 1
-            p1_cell = None
-            for col in cols1:
-                if col.find('a') and not 'time' in col.get('class', []):
-                    p1_cell = col; break
-            if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
-
-            # Extraktion Spieler 2
-            p2_cell = None
-            for col in cols2:
-                if col.find('a'): p2_cell = col; break
-            if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
-
-            if not p1_cell or not p2_cell: 
-                i+=1; continue
-
-            p1_raw = clean_player_name(p1_cell.get_text(strip=True))
-            p2_raw = clean_player_name(p2_cell.get_text(strip=True))
-            
-            # Check auf "unfinished" oder "canceled" im Text
-            full_row_text = row.get_text().lower() + row2.get_text().lower()
-            if "canc" in full_row_text or "w.o." in full_row_text:
-                i += 2; continue
+            # --- FIX: Robustere Odds-Suche für Jodar/ITF ---
+            row2 = rows[i+1]
+            row2_text = normalize_text(row2.get_text(separator=' ', strip=True))
 
             match_time_str = "00:00"
             first_col = row.find('td', class_='first')
@@ -683,33 +657,48 @@ def parse_matches_locally_v5(html, p_names):
                 time_match = re.search(r'(\d{1,2}:\d{2})', raw_time)
                 if time_match: match_time_str = time_match.group(1).zfill(5) 
 
+            # EXTRACT LINKS HERE
+            p1_cell = row.find_all('td')[1] 
+            p2_cell = rows[i+1].find_all('td')[0] 
+            
+            # Fallback bei ITF: Manchmal ist Spalte 0 leer oder verrutscht
+            if not p2_cell.get_text(strip=True):
+                 if len(rows[i+1].find_all('td')) > 1:
+                     p2_cell = rows[i+1].find_all('td')[1]
+
             p1_link_tag = p1_cell.find('a')
             p2_link_tag = p2_cell.find('a')
+            
+            p1_raw = clean_player_name(p1_cell.get_text(strip=True))
+            p2_raw = clean_player_name(p2_cell.get_text(strip=True))
+            
             p1_href = p1_link_tag['href'] if p1_link_tag else None
             p2_href = p2_link_tag['href'] if p2_link_tag else None
 
             if '/' in p1_raw or '/' in p2_raw: i += 1; continue
 
-            # Jodar/Fritz Fix: Prüfen ob wenigstens EINER der Spieler in unserer DB ist
-            p1_match = any(tp in p1_raw.lower() for tp in target_players)
-            p2_match = any(tp in p2_raw.lower() for tp in target_players)
-
-            if p1_match and p2_match:
+            if any(tp in p1_raw.lower() for tp in target_players) and any(tp in p2_raw.lower() for tp in target_players):
                 odds = []
                 try:
-                    # FIX: LAX REGEX FÜR ODDS (Akzeptiert auch 1.5 oder 15)
-                    # Suche in BEIDEN Zeilen separat
-                    nums1 = re.findall(r'\b\d+(?:\.\d+)?\b', row.get_text(separator=' '))
-                    nums2 = re.findall(r'\b\d+(?:\.\d+)?\b', row2.get_text(separator=' '))
+                    # FIX: Regex lockern, um auch 1.5 oder 12 zu finden
+                    # Suche in BEIDEN Zeilen separat nach Zahlen
+                    # \b\d+(?:\.\d+)?\b findet 1.85, 12, 1.5 etc.
+                    nums1 = re.findall(r'\b\d+(?:\.\d+)?\b', row_text)
+                    nums2 = re.findall(r'\b\d+(?:\.\d+)?\b', row2_text)
                     
                     valid1 = [float(x) for x in nums1 if 1.01 <= float(x) < 50.0]
                     valid2 = [float(x) for x in nums2 if 1.01 <= float(x) < 50.0]
                     
                     if valid1 and valid2:
-                        odds = [valid1[-1], valid2[-1]] # Nimm die letzten validen Odds (Closing)
+                        odds = [valid1[0], valid2[0]]
+                    else:
+                        # Ultima Ratio: Suche im ganzen Block
+                        all_nums = re.findall(r'\b\d+(?:\.\d+)?\b', row_text + " " + row2_text)
+                        valid_all = [float(x) for x in all_nums if 1.01 <= float(x) < 50.0]
+                        if len(valid_all) >= 2:
+                            odds = valid_all[:2]
                 except: pass
                 
-                # Auch 0.0 zurückgeben (für Schedule)
                 found.append({
                     "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
                     "time": match_time_str, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0,
@@ -720,7 +709,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v8.8 (Odds Parsing Hotfix) Starting...")
+    log(f"🚀 Neural Scout v10.0 (Stable Fix) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -748,9 +737,8 @@ async def run_pipeline():
                         p2_obj = find_player_safe(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
-                            # 0. QUALITY GATE (Gelockert für Debugging: < 1.01 statt 1.05)
-                            if m['odds1'] < 1.01 and m['odds2'] < 1.01:
-                                # log(f"   🛑 Skip Low Odds: {m['p1_raw']} vs {m['p2_raw']}")
+                            # 0. QUALITY GATE
+                            if m['odds1'] < 1.05 and m['odds2'] < 1.05:
                                 continue
 
                             # 1. DB CHECK
@@ -817,12 +805,6 @@ async def run_pipeline():
                             else:
                                 supabase.table("market_odds").insert(entry).execute()
                                 log(f"💾 Saved: {entry['player1_name']} vs {entry['player2_name']} (BSI: {bsi})")
-                        else:
-                             # VERBOSE LOGGING
-                             missing = []
-                             if not p1_obj: missing.append(m['p1_raw'])
-                             if not p2_obj: missing.append(m['p2_raw'])
-                             log(f"   ❌ Unbekannte Spieler: {', '.join(missing)}")
 
                     except Exception as e:
                         log(f"⚠️ Match Error: {e}")
