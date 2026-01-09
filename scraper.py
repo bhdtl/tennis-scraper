@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V7.0 - Silicon Valley Edition)...")
+log("🔌 Initialisiere Neural Scout (V8.7 - Silicon Valley Fix)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -401,12 +401,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     return final_prob
 
 # =================================================================
-# 6. RESULT VERIFICATION ENGINE (V7.0 - TIME TRAVEL FIX)
+# 6. RESULT VERIFICATION ENGINE (V8.7 - TIME TRAVEL FIX)
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V7.0 - Time-Aware)...")
+    log("🏆 Checking for Match Results (V8.7 - Time-Aware)...")
     
-    # Nur Matches laden, die KEINEN Winner haben
+    # 1. Nur Matches laden, die KEINEN Winner haben
     pending_matches = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending_matches: return
@@ -522,7 +522,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 # =================================================================
-# 7. MAIN PIPELINE (V7.0 - JODAR FIX)
+# 7. MAIN PIPELINE (V8.7 - JODAR FIX)
 # =================================================================
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
