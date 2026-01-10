@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V23.0 - Fortress Edition)...")
+log("🔌 Initialisiere Neural Scout (V25.0 - Iron Dome Stability)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -57,7 +57,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS & FUZZY MATCHING
+# 2. HELPER FUNCTIONS & SAFETY GUARDS
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -74,7 +74,12 @@ def clean_player_name(raw: str) -> str:
 
 def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
-    clean = re.sub(r'\bS\d+\b', '', raw) 
+    # Entferne typischen Müll
+    clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
+    # Entferne Suffixe wie S1, S2, aber auch "Challenger", "Men"
+    clean = re.sub(r'\b(S\d+|Challenger|Men|Women|Singles)\b', '', clean, flags=re.IGNORECASE)
+    # Entferne einzelne Zahlen am Ende (z.B. "Nonthaburi 3" -> "Nonthaburi")
+    clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
 def get_last_name(full_name: str) -> str:
@@ -82,6 +87,16 @@ def get_last_name(full_name: str) -> str:
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
     parts = clean.split()
     return parts[-1].lower() if parts else ""
+
+# --- SAFETY GUARD (THE CRASH FIXER) ---
+def ensure_dict(data: Any) -> Dict:
+    """Zwingt Daten IMMER in ein Dictionary, egal was die AI liefert."""
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        if len(data) > 0 and isinstance(data[0], dict):
+            return data[0]
+    return {} # Leeres Dict als Fallback -> Kein Crash bei .get()
 
 def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
@@ -105,31 +120,26 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
             if first_name in clean_scrape: return cand
     return candidates[0]
 
-def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
-    s_norm = normalize_text(scraped_name).lower()
+# --- V24.0 FUZZY MATCHER ---
+def get_similarity_score(scraped: str, db_name: str) -> int:
+    s_norm = normalize_text(scraped).lower()
     d_norm = normalize_text(db_name).lower()
+    
+    # 1. Perfect Substring (Strongest Signal)
+    if d_norm in s_norm and len(d_norm) > 3:
+        return 100 
+    
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
-    stop_words = {'atp', 'wta', 'challenger', 'open', 'tour', '2025', '2026'}
-    s_tokens -= stop_words
-    d_tokens -= stop_words
+    
+    # Filter numbers & generics
+    s_tokens = {t for t in s_tokens if not t.isdigit() and len(t) > 2}
+    d_tokens = {t for t in d_tokens if not t.isdigit() and len(t) > 2}
     
     if not s_tokens or not d_tokens: return 0
+    
     common = s_tokens.intersection(d_tokens)
-    score = len(common) * 10
-    
-    if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
-    if "grass" in s_tokens and "grass" in d_tokens: score += 20
-    if "clay" in s_tokens and "clay" in d_tokens: score += 20
-    
-    surfaces = ['clay', 'grass', 'hard', 'indoor']
-    s_surf = [x for x in surfaces if x in s_tokens]
-    d_surf = [x for x in surfaces if x in d_tokens]
-    if s_surf and d_surf:
-        if not set(s_surf).intersection(set(d_surf)): return -100
-            
-    if "nottingham" in s_tokens and "nottingham" in d_tokens: score += 30
-    return score
+    return len(common) * 10
 
 # =================================================================
 # 3. GEMINI ENGINE
@@ -140,7 +150,7 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.3}
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
     }
     async with httpx.AsyncClient() as client:
         try:
@@ -275,9 +285,8 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
-    # CRASH FIX: Force valid dictionary
-    if not ai_meta or not isinstance(ai_meta, dict): 
-        ai_meta = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5}
+    # SAFETY: Ensure ai_meta is valid
+    ai_meta = ensure_dict(ai_meta)
     
     n1 = p1_name.lower().split()[-1]; n2 = p2_name.lower().split()[-1]
     tour = "ATP"; bsi_val = to_float(bsi, 6.0)
@@ -356,7 +365,10 @@ async def build_country_city_map(browser: Browser):
         prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
         res = await call_gemini(prompt)
         if res:
-            COUNTRY_TO_CITY_MAP.update(json.loads(res.replace("json", "").replace("```", "").strip()))
+            try:
+                data = json.loads(res.replace("json", "").replace("```", "").strip())
+                COUNTRY_TO_CITY_MAP.update(ensure_dict(data))
+            except: pass
     except: pass
     finally: await page.close()
 
@@ -366,7 +378,11 @@ async def resolve_united_cup_via_country(p1):
     if cache_key in TOURNAMENT_LOC_CACHE: country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
         res = await call_gemini(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
-        country = json.loads(res.replace("json", "").replace("```", "").strip()).get("country", "Unknown") if res else "Unknown"
+        try:
+            data = json.loads(res.replace("json", "").replace("```", "").strip())
+            data = ensure_dict(data)
+            country = data.get("country", "Unknown")
+        except: country = "Unknown"
         TOURNAMENT_LOC_CACHE[cache_key] = country
             
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
@@ -376,7 +392,11 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     res = await call_gemini(f"Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\" }}")
     if res:
-        try: TOURNAMENT_LOC_CACHE[scraped_name] = json.loads(res.replace("json","").replace("```","").strip()); return TOURNAMENT_LOC_CACHE[scraped_name]
+        try: 
+            data = json.loads(res.replace("json", "").replace("```", "").strip())
+            data = ensure_dict(data)
+            TOURNAMENT_LOC_CACHE[scraped_name] = data
+            return data
         except: pass
     return None
 
@@ -392,15 +412,16 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
-    # 2. FUZZY MATCHING (SOLVES NOTTINGHAM/CHALLENGER ISSUES)
+    # 2. V24.0 FUZZY MATCHING (SOLVES CHALLENGER)
     best_match = None
     best_score = 0
+    
     for t in db_tours:
-        score = calculate_fuzzy_score(s_low, t['name'])
+        score = get_similarity_score(s_low, t['name'])
         if score > best_score:
             best_score = score
             best_match = t
-    
+            
     if best_match and best_score >= 20:
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
@@ -416,22 +437,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     return 'Hard', 6.5, 'Fallback'
 
-# --- THE FIX: SAFE WRAPPER FOR AI ANALYSIS ---
-def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
-    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No analysis.'}
-    if not res_text: return default
-    try:
-        cleaned = res_text.replace("json", "").replace("```", "").strip()
-        data = json.loads(cleaned)
-        if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], dict): return data[0]
-            else: return default
-        if isinstance(data, dict): return data
-        return default
-    except: return default
-
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # THE GOOD PROMPT FROM V3.6
+    # V3.6 PROMPT
     prompt = f"""
     ROLE: Elite Tennis Analyst (Silicon Valley Level).
     TASK: {p1['last_name']} vs {p2['last_name']}.
@@ -460,7 +467,13 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "..." }}
     """
     res = await call_gemini(prompt)
-    return safe_get_ai_data(res) # NEVER CRASH
+    if not res: return ensure_dict(None)
+    
+    try: 
+        cleaned = res.replace("json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        return ensure_dict(data) # SAFE!
+    except: return ensure_dict(None)
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
@@ -512,26 +525,22 @@ def parse_matches_locally_v5(html, p_names):
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # FIX: DOM-AWARE PARSING (Cleanest Method)
+                    # DOM PARSING
                     course_cells = row.find_all('td', class_='course') + row2.find_all('td', class_='course')
-                    
                     if course_cells:
                         vals = []
                         for c in course_cells:
                             txt = c.get_text(strip=True)
-                            if not txt: continue
-                            if '{' in txt or 'click' in txt: continue 
+                            if not txt or '{' in txt or 'click' in txt: continue 
                             try:
                                 v = float(txt)
                                 if 1.01 <= v <= 100.0: vals.append(v)
                             except: pass
                         if len(vals) >= 2: odds = vals[:2]
                     
-                    # Fallback for ITF (No 'course' class)
                     if not odds:
                         cells1 = row.find_all('td'); cells2 = row2.find_all('td')
                         cand1 = None; cand2 = None
-                        
                         for c in reversed(cells1):
                             t = c.get_text(strip=True)
                             if ":" in t or t.count(".") > 1 or len(t) > 5: continue
@@ -539,7 +548,6 @@ def parse_matches_locally_v5(html, p_names):
                                 val = float(t)
                                 if 1.01 <= val <= 100.0: cand1 = val; break
                             except: pass
-                        
                         for c in reversed(cells2):
                             t = c.get_text(strip=True)
                             if ":" in t or t.count(".") > 1 or len(t) > 5: continue
@@ -547,9 +555,7 @@ def parse_matches_locally_v5(html, p_names):
                                 val = float(t)
                                 if 1.01 <= val <= 100.0: cand2 = val; break
                             except: pass
-                        
                         if cand1 and cand2: odds = [cand1, cand2]
-
                 except: pass
                 
                 found.append({
@@ -562,11 +568,8 @@ def parse_matches_locally_v5(html, p_names):
             else: i += 1 
     return found
 
-# =================================================================
-# 7. MAIN LOOP & RESULT CHECKER
-# =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V23.0 - Strict 24h)...")
+    log("🏆 Checking for Match Results (V25.0 - Strict 24h)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
 
@@ -649,7 +652,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v23.0 (Fortress Edition) Starting...")
+    log(f"🚀 Neural Scout v25.0 (Iron Dome) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
