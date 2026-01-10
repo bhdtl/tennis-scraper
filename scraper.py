@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V33.0 - Precision Odds Parser)...")
+log("🔌 Initialisiere Neural Scout (V34.0 - The Sanitizer)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -72,11 +72,19 @@ def clean_player_name(raw: str) -> str:
     if not raw: return ""
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
+# --- V34.0 GARBAGE COLLECTOR ---
 def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
-    clean = re.sub(r'\bS\d+\b', '', raw) 
-    clean = re.sub(r'\b(Challenger|Men|Women|Singles)\b', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\s\d+$', '', clean)
+    clean = raw
+    # 1. Remove known prefixes/suffixes
+    clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
+    # 2. Kill the specific "S123..." garbage patterns found in logs
+    # This regex looks for 'S' followed by digits and 'H2H' garbage
+    clean = re.sub(r'S\d+.*$', '', clean) 
+    clean = re.sub(r'H2H.*$', '', clean)
+    # 3. Standard cleanup
+    clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\s\d+$', '', clean) # Remove trailing numbers like " 2"
     return clean.strip()
 
 def get_last_name(full_name: str) -> str:
@@ -96,6 +104,7 @@ def ensure_dict(data: Any) -> Dict:
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
     clean_scrape = clean_player_name(scraped_name_raw).lower()
+    
     candidates = []
     for p in db_players:
         if not isinstance(p, dict): continue
@@ -103,6 +112,8 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
             candidates.append(p)
             
     if not candidates: return None
+    
+    # Priority: Report Exists
     for cand in candidates:
         if cand['id'] in report_ids: return cand
     return candidates[0]
@@ -361,6 +372,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
     if best_match and best_score >= 20:
+        log(f"   🏟️ Tournament Matched: '{s_low}' -> '{best_match['name']}' (Score: {best_score})")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
@@ -416,7 +428,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V33.0: PRECISION PARSER (DOM-Based + Class Check) ---
+# --- V34.0: PRECISION PARSER (DOM-Based + Class Check) ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -428,7 +440,9 @@ def parse_matches_locally_v5(html, p_names):
         i = 0
         while i < len(rows):
             row = rows[i]
-            if "head" in row.get("class", []): current_tour = row.get_text(strip=True); i+=1; continue
+            if "head" in row.get("class", []): 
+                current_tour = row.get_text(strip=True)
+                i += 1; continue
             if "doubles" in current_tour.lower() or i+1 >= len(rows): i+=1; continue
 
             row2 = rows[i+1]
@@ -503,7 +517,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V33.0 - Strict 24h)...")
+    log("🏆 Checking for Match Results (V34.0 - Strict 24h)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe = []
@@ -563,7 +577,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v33.0 (Precision Odds Parser) Starting...")
+    log(f"🚀 Neural Scout v34.0 (The Sanitizer) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -590,10 +604,19 @@ async def run_pipeline():
                         
                         if p1_obj and p2_obj:
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
-                            res = supabase.table("market_odds").select("id, actual_winner_name, odds1").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
-                            existing = res.data if res else []
+                            
+                            # --- V34.0 SIMPLIFIED DB CHECK (NO COMPLEX OR) ---
+                            # Check P1 first
+                            existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, player2_name").eq("player1_name", p1_obj['last_name']).order("created_at", desc=True).limit(5).execute()
+                            existing = []
+                            if existing_p1.data:
+                                for rec in existing_p1.data:
+                                    if rec['player2_name'] == p2_obj['last_name']:
+                                        existing.append(rec)
+                                        break # Found exact match
+                            
                             db_match_id = None
-                            if existing and isinstance(existing, list) and len(existing) > 0:
+                            if existing:
                                 rec = existing[0]
                                 if rec.get('actual_winner_name'): continue 
                                 if abs(rec.get('odds1', 0) - m['odds1']) < 0.05 and rec.get('odds1', 0) > 1.1: continue
