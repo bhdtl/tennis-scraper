@@ -11,7 +11,7 @@ import sys
 import random
 import time
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Page
@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V26.0 - Prompt Engineered)...")
+log("🔌 Initialisiere Neural Scout (V32.0 - Deep Debug Logger)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -57,7 +57,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS & FUZZY MATCHING
+# 2. HELPER FUNCTIONS & SAFETY
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -75,6 +75,8 @@ def clean_player_name(raw: str) -> str:
 def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
     clean = re.sub(r'\bS\d+\b', '', raw) 
+    clean = re.sub(r'\b(Challenger|Men|Women|Singles)\b', '', clean, flags=re.IGNORECASE)
+    clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
 def get_last_name(full_name: str) -> str:
@@ -83,7 +85,14 @@ def get_last_name(full_name: str) -> str:
     parts = clean.split()
     return parts[-1].lower() if parts else ""
 
-def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
+def ensure_dict(data: Any) -> Dict:
+    if isinstance(data, dict): return data
+    if isinstance(data, list):
+        if len(data) > 0 and isinstance(data[0], dict): return data[0]
+    return {}
+
+# --- DEBUG-ENHANCED PLAYER FINDER ---
+def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     
@@ -93,31 +102,33 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
         if p.get('last_name', '').lower() in clean_scrape:
             candidates.append(p)
             
-    if not candidates: return None
-    if len(candidates) == 1: return candidates[0]
+    if not candidates:
+        # log(f"   ❓ Player not found in DB: {clean_scrape}") # Optional: Log misses
+        return None
     
+    # Priority 1: Report Exists
     for cand in candidates:
-        first_name = cand.get('first_name', '').lower()
-        if first_name:
-            initial = first_name[0]
-            if f"{initial}." in clean_scrape or f" {initial} " in clean_scrape or clean_scrape.startswith(f"{initial} "):
-                return cand
-            if first_name in clean_scrape: return cand
+        if cand['id'] in report_ids:
+            # log(f"   ✅ Player Match (Report Found): {cand['last_name']} (ID: {cand['id'][:6]}...)")
+            return cand
+            
+    # Priority 2: Fallback
+    # log(f"   ⚠️ Player Match (No Report): {candidates[0]['last_name']} (ID: {candidates[0]['id'][:6]}...)")
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
     
+    if d_norm in s_norm and len(d_norm) > 3: return 100
+    
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
-    
-    stop_words = {'atp', 'wta', 'challenger', 'open', 'tour', '2025', '2026'}
+    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026'}
     s_tokens -= stop_words
     d_tokens -= stop_words
     
     if not s_tokens or not d_tokens: return 0
-    
     common = s_tokens.intersection(d_tokens)
     score = len(common) * 10
     
@@ -128,35 +139,32 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     surfaces = ['clay', 'grass', 'hard', 'indoor']
     s_surf = [x for x in surfaces if x in s_tokens]
     d_surf = [x for x in surfaces if x in d_tokens]
-    
     if s_surf and d_surf:
-        if not set(s_surf).intersection(set(d_surf)):
-            return -100
+        if not set(s_surf).intersection(set(d_surf)): return -100
             
-    if "nottingham" in s_tokens and "nottingham" in d_tokens:
-        score += 30 
-    
     return score
 
 # =================================================================
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(0.8)
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.3}
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.4}
     }
     async with httpx.AsyncClient() as client:
         try:
+            # log(f"   🤖 Sending Prompt to Gemini... (Length: {len(prompt)})")
             response = await client.post(url, headers=headers, json=payload, timeout=60.0)
             if response.status_code != 200:
-                log(f"⚠️ Gemini API Error: {response.status_code}")
+                log(f"   ⚠️ Gemini API Error: {response.status_code}")
                 return None
             return response.json()['candidates'][0]['content']['parts'][0]['text']
         except Exception as e:
+            log(f"   ⚠️ Gemini Exception: {e}")
             return None
 
 # =================================================================
@@ -168,7 +176,6 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
 
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
-    
     page = await browser.new_page()
     try:
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
@@ -203,6 +210,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         
         if total_matches > 0:
             rate = total_wins / total_matches
+            # log(f"   📊 Stats found for {relative_url}: {rate:.2f} on {target_header}")
             SURFACE_STATS_CACHE[cache_key] = rate
             return rate
     except: pass
@@ -282,9 +290,8 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
-    # CRASH FIX: Ensure ai_meta is a Dict
-    if not ai_meta or not isinstance(ai_meta, dict): 
-        ai_meta = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5}
+    # SAFETY: Ensure ai_meta is valid
+    ai_meta = ensure_dict(ai_meta)
     
     n1 = p1_name.lower().split()[-1]; n2 = p2_name.lower().split()[-1]
     tour = "ATP"; bsi_val = to_float(bsi, 6.0)
@@ -363,7 +370,10 @@ async def build_country_city_map(browser: Browser):
         prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
         res = await call_gemini(prompt)
         if res:
-            COUNTRY_TO_CITY_MAP.update(json.loads(res.replace("json", "").replace("```", "").strip()))
+            try:
+                data = json.loads(res.replace("json", "").replace("```", "").strip())
+                COUNTRY_TO_CITY_MAP.update(ensure_dict(data))
+            except: pass
     except: pass
     finally: await page.close()
 
@@ -373,7 +383,11 @@ async def resolve_united_cup_via_country(p1):
     if cache_key in TOURNAMENT_LOC_CACHE: country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
         res = await call_gemini(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
-        country = json.loads(res.replace("json", "").replace("```", "").strip()).get("country", "Unknown") if res else "Unknown"
+        try:
+            data = json.loads(res.replace("json", "").replace("```", "").strip())
+            data = ensure_dict(data)
+            country = data.get("country", "Unknown")
+        except: country = "Unknown"
         TOURNAMENT_LOC_CACHE[cache_key] = country
             
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
@@ -383,7 +397,11 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     res = await call_gemini(f"Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\" }}")
     if res:
-        try: TOURNAMENT_LOC_CACHE[scraped_name] = json.loads(res.replace("json","").replace("```","").strip()); return TOURNAMENT_LOC_CACHE[scraped_name]
+        try: 
+            data = json.loads(res.replace("json", "").replace("```", "").strip())
+            data = ensure_dict(data)
+            TOURNAMENT_LOC_CACHE[scraped_name] = data
+            return data
         except: pass
     return None
 
@@ -410,80 +428,69 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
             best_match = t
             
     if best_match and best_score >= 20:
+        log(f"   🏟️ Tournament Matched: '{s_low}' -> '{best_match['name']}' (Score: {best_score})")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
     # 3. FALLBACK
-    if "clay" in s_low: return "Red Clay", 3.5, "Local"
-    if "hard" in s_low: return "Hard", 6.5, "Local"
-    if "indoor" in s_low: return "Indoor", 8.0, "Local"
-    
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
+    ai_loc = ensure_dict(ai_loc) # KEY CRASH FIX
+    
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
         surf = ai_loc.get('surface_guessed', 'Hard')
         return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
+
+    if "clay" in s_low: return "Red Clay", 3.5, "Local"
+    if "hard" in s_low: return "Hard", 6.5, "Local"
+    if "indoor" in s_low: return "Indoor", 8.0, "Local"
+    
     return 'Hard', 6.5, 'Fallback'
 
-# --- V23.0 SAFE AI DATA WRAPPER ---
+# --- V31.0: NO BULLSHIT AI ANALYZER ---
+async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
+    log(f"   🤖 Asking AI for analysis on: {p1['last_name']} vs {p2['last_name']}")
+    
+    # Check if we have real scouting reports
+    has_reports = r1.get('strengths') and r2.get('strengths')
+    if has_reports:
+        log("      📄 Real Scouting Reports found!")
+    else:
+        log("      ⚠️ Missing Scouting Reports - AI will use stats fallback.")
+
+    prompt = f"""
+    ROLE: Elite Tennis Analyst.
+    TASK: Analyze {p1['last_name']} vs {p2['last_name']} on {surface} (BSI {bsi}).
+    DATA: ELO {elo1} vs {elo2}. FORM {form1['text']} vs {form2['text']}.
+    SCOUTING P1: {r1.get('strengths', 'N/A')}
+    SCOUTING P2: {r2.get('strengths', 'N/A')}
+    COURT: {notes}
+    
+    OUTPUT JSON ONLY.
+    FIELD 'ai_text' MUST BE A DETAILED 3 SENTENCE TACTICAL PREDICTION.
+    DO NOT USE '...'
+    
+    JSON: {{ "p1_tactical_score": [0-10], "p2_tactical_score": [0-10], "p1_form_score": [0-10], "p2_form_score": [0-10], "ai_text": "Analysis string." }}
+    """
+    res = await call_gemini(prompt)
+    data = ensure_dict(safe_get_ai_data(res))
+    
+    # --- FALLBACK INJECTION (NO EMPTY DB ENTRIES) ---
+    text = data.get('ai_text', '')
+    if not text or len(text) < 30 or "..." in text:
+        log("      ⚠️ AI returned weak analysis - Injecting Hard Fallback.")
+        adv = p1['last_name'] if elo1 > elo2 else p2['last_name']
+        data['ai_text'] = f"Based on surface ELO ({elo1} vs {elo2}) and current form, {adv} holds a tactical advantage. The {surface} court conditions (BSI {bsi}) favor their playstyle."
+        
+    return data
+
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
-    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': 'No analysis.'}
+    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': ''}
     if not res_text: return default
     try:
         cleaned = res_text.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
-        # Handle List vs Dict
-        if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], dict): return data[0]
-            else: return default
-        if isinstance(data, dict): return data
-        return default
+        return ensure_dict(data)
     except: return default
-
-async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
-    # --- V26.0 PROMPT FIX: REMOVE "..." AND FORCE TEXT ---
-    prompt = f"""
-    ROLE: Elite Tennis Analyst (Silicon Valley Level).
-    TASK: {p1['last_name']} vs {p2['last_name']}.
-    CTX: {surface} (BSI {bsi}).
-    COURT INTEL: "{notes}"
-    
-    SURFACE ELO ({surface}):
-    - {p1['last_name']}: {elo1}
-    - {p2['last_name']}: {elo2}
-    
-    RECENT FORM (Last 5-10 matches):
-    - {p1['last_name']}: {form1['text']}
-    - {p2['last_name']}: {form2['text']}
-    
-    PLAYER 1: {p1['last_name']}
-    - Style: {p1.get('play_style')}
-    - Strengths: {r1.get('strengths', 'N/A')}
-    - Weaknesses: {r1.get('weaknesses', 'N/A')}
-    
-    PLAYER 2: {p2['last_name']}
-    - Style: {p2.get('play_style')}
-    - Strengths: {r2.get('strengths', 'N/A')}
-    - Weaknesses: {r2.get('weaknesses', 'N/A')}
-    
-    METRICS (0-10): TACTICAL (25%), FORM (10%), UTR (5%).
-    
-    TASK: Write a 3 sentence analysis. Focus on matchup mechanics.
-    
-    JSON ONLY: {{ "p1_tactical_score": 7, "p2_tactical_score": 5, "p1_form_score": 8, "p2_form_score": 4, "p1_utr": 14.2, "p2_utr": 13.8, "ai_text": "This matchup features..." }}
-    """
-    res = await call_gemini(prompt)
-    
-    # --- V26.0 FALLBACK INJECTION ---
-    data = safe_get_ai_data(res)
-    
-    # Check if analysis is just placeholders
-    text = data.get('ai_text', '')
-    if not text or text == "..." or text == "Analysis." or len(text) < 10:
-        # Inject Fallback
-        advantage = p1['last_name'] if elo1 > elo2 else p2['last_name']
-        data['ai_text'] = f"Based on surface ELO and recent form, {advantage} holds a tactical advantage on this {surface} court."
-        
-    return data
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
@@ -535,13 +542,13 @@ def parse_matches_locally_v5(html, p_names):
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # FIX: DOM-AWARE PARSING
+                    # DOM PARSING
                     course_cells = row.find_all('td', class_='course') + row2.find_all('td', class_='course')
                     if course_cells:
                         vals = []
                         for c in course_cells:
                             txt = c.get_text(strip=True)
-                            if not txt or '{' in txt: continue
+                            if not txt or '{' in txt: continue 
                             try:
                                 v = float(txt)
                                 if 1.01 <= v <= 100.0: vals.append(v)
@@ -553,14 +560,14 @@ def parse_matches_locally_v5(html, p_names):
                         cand1 = None; cand2 = None
                         for c in reversed(cells1):
                             t = c.get_text(strip=True)
-                            if ":" in t or t.count(".") > 1: continue
+                            if ":" in t or t.count(".") > 1 or len(t) > 5: continue
                             try:
                                 val = float(t)
                                 if 1.01 <= val <= 100.0: cand1 = val; break
                             except: pass
                         for c in reversed(cells2):
                             t = c.get_text(strip=True)
-                            if ":" in t or t.count(".") > 1: continue
+                            if ":" in t or t.count(".") > 1 or len(t) > 5: continue
                             try:
                                 val = float(t)
                                 if 1.01 <= val <= 100.0: cand2 = val; break
@@ -579,7 +586,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V26.0 - Strict 24h)...")
+    log("🏆 Checking for Match Results (V32.0 - Strict 24h)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
 
@@ -662,7 +669,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v26.0 (Prompt Engineered) Starting...")
+    log(f"🚀 Neural Scout v32.0 (Deep Debug Logger) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -671,29 +678,27 @@ async def run_pipeline():
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: return
-
+            
+            # --- V30.0 SMART REPORT MAP ---
+            report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             player_names = [p['last_name'] for p in players]
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
-
                 matches = parse_matches_locally_v5(html, player_names)
                 log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
                 
                 for m in matches:
                     try:
-                        p1_obj = find_player_safe(m['p1_raw'], players)
-                        p2_obj = find_player_safe(m['p2_raw'], players)
+                        p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
+                        p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         
                         if p1_obj and p2_obj:
-                            # Quality Gate (Allows 1.01)
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
-
                             res = supabase.table("market_odds").select("id, actual_winner_name, odds1").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
                             existing = res.data if res else []
-                            
                             db_match_id = None
                             if existing and isinstance(existing, list) and len(existing) > 0:
                                 rec = existing[0]
@@ -703,9 +708,11 @@ async def run_pipeline():
 
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
-                            
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
+                            
+                            # LOG REPORT STATUS
+                            # log(f"   ℹ️ Reports: P1={bool(r1.get('strengths'))} | P2={bool(r2.get('strengths'))}")
 
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
@@ -724,7 +731,7 @@ async def run_pipeline():
                                 "odds1": m['odds1'], "odds2": m['odds2'],
                                 "ai_fair_odds1": round(1/prob, 2) if prob > 0.01 else 99,
                                 "ai_fair_odds2": round(1/(1-prob), 2) if prob < 0.99 else 99,
-                                "ai_analysis_text": ai.get('ai_text', 'No analysis available.'),
+                                "ai_analysis_text": ai.get('ai_text', 'No detailed analysis available.'),
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
@@ -737,7 +744,6 @@ async def run_pipeline():
                                 log(f"💾 Saved: {data['player1_name']} vs {data['player2_name']}")
                         else:
                              pass
-
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     log("🏁 Cycle Finished.")
