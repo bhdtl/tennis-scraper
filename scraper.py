@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V16.0 - Enterprise Stability)...")
+log("🔌 Initialisiere Neural Scout (V17.0 - DOM-Based Precision)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -87,7 +87,6 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
     if not scraped_name_raw or not db_players: return None
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     
-    # 1. Exact/Partial Match on Last Name
     candidates = []
     for p in db_players:
         if not isinstance(p, dict): continue
@@ -97,21 +96,18 @@ def find_player_safe(scraped_name_raw: str, db_players: List[Dict]) -> Optional[
     if not candidates: return None
     if len(candidates) == 1: return candidates[0]
     
-    # 2. Disambiguation via First Name/Initial
     for cand in candidates:
         first_name = cand.get('first_name', '').lower()
         if first_name:
             initial = first_name[0]
-            # Check for "R. Jodar" or "Rafael Jodar" patterns
             if f"{initial}." in clean_scrape or f" {initial} " in clean_scrape or clean_scrape.startswith(f"{initial} "):
                 return cand
-            if first_name in clean_scrape:
-                return cand
+            if first_name in clean_scrape: return cand
                 
-    return candidates[0] # Fallback to first candidate
+    return candidates[0]
 
 # =================================================================
-# 3. GEMINI ENGINE (ROBUST)
+# 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     await asyncio.sleep(1.0)
@@ -254,7 +250,7 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
-    # CRASH FIX: Ensure ai_meta is a Dict, even if None passed
+    # CRASH FIX: Ensure ai_meta is a Dict
     if not ai_meta or not isinstance(ai_meta, dict): 
         ai_meta = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5}
     
@@ -389,23 +385,21 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     
     if not res: return default
     
-    # --- CRASH FIX: HANDLE LISTS ---
+    # --- CRASH FIX: LIST HANDLING ---
     try: 
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = json.loads(cleaned)
         
-        # Check if it's a list (e.g. [{"score": 5}]) and unwrap it
         if isinstance(data, list):
             if len(data) > 0 and isinstance(data[0], dict):
                 return data[0]
             else:
                 return default
         
-        # Check if it's a dict
-        if isinstance(data, dict):
-            return data
+        if not isinstance(data, dict):
+            return default
             
-        return default
+        return data
     except: return default
 
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
@@ -458,21 +452,27 @@ def parse_matches_locally_v5(html, p_names):
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # FIX: ADAPTIVE REGEX (The "Silicon Valley" Solution)
-                    # 1. Clean the text first (remove dates and times to prevent "11.0" false positives)
-                    raw_text = row.get_text(" ") + " " + row2.get_text(" ")
-                    clean_text = re.sub(r'\d{1,2}:\d{2}', '', raw_text) # Remove 14:00
-                    clean_text = re.sub(r'\d{2}\.\d{2}\.', '', clean_text) # Remove 10.01.
+                    # FIX: DOM-BASED PARSING (No more random regex!)
+                    # 1. Look for 'course' class cells (most reliable)
+                    course_cells = row.find_all('td', class_='course') + row2.find_all('td', class_='course')
                     
-                    # 2. Find numbers. Accept floats (1.85) AND integers (12) for ITF
-                    # The \b boundaries prevent matching parts of words
-                    candidates = [float(x) for x in re.findall(r'\b\d+(?:\.\d+)?\b', clean_text)]
-                    
-                    # 3. Filter for realistic betting odds (1.01 to 100.0)
-                    valid_odds = [x for x in candidates if 1.01 <= x <= 100.0]
-                    
-                    if len(valid_odds) >= 2:
-                        odds = [valid_odds[-2], valid_odds[-1]]
+                    if course_cells:
+                        # Extract from dedicated columns
+                        raw_odds = [float(c.get_text()) for c in course_cells if c.get_text().strip() and 'click' not in c.get_text()]
+                        if len(raw_odds) >= 2: odds = raw_odds[:2]
+                    else:
+                        # Fallback: Look at the LAST columns, but exclude Date/Time patterns
+                        all_cells = row.find_all('td') + row2.find_all('td')
+                        candidates = []
+                        for cell in reversed(all_cells):
+                            txt = cell.get_text(strip=True)
+                            # Hard filter against Date/Time/Score
+                            if ":" in txt or "(" in txt or "-" in txt or ".." in txt or len(txt) > 5: continue
+                            # Match only clean floats (e.g. 1.85, 12.0)
+                            if re.match(r'^\d+\.\d{2}$', txt):
+                                candidates.insert(0, float(txt))
+                        
+                        if len(candidates) >= 2: odds = candidates[-2:] # Last two are closing odds
                 except: pass
                 
                 found.append({
@@ -486,10 +486,10 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 # =================================================================
-# 7. MAIN LOOP & RESULT CHECKER (TIME AWARE + 24H DELAY)
+# 7. MAIN LOOP & RESULT CHECKER
 # =================================================================
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V16.0 - 24h Delay)...")
+    log("🏆 Checking for Match Results (V17.0 - Strict 24h)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
 
@@ -498,7 +498,7 @@ async def update_past_results(browser: Browser):
     for pm in pending:
         if not isinstance(pm, dict): continue
         try:
-            # FIX: Strikter 24h Time Lock (Keine Zukunftsmusik)
+            # FIX: 24h Time Lock
             m_time = pm.get('match_time')
             if m_time:
                 mdt = datetime.fromisoformat(m_time.replace('Z', '+00:00'))
@@ -510,7 +510,7 @@ async def update_past_results(browser: Browser):
         except: continue
 
     if not safe: 
-        log("   💤 Keine Matches älter als 24h zur Prüfung.")
+        log("   💤 Keine Matches älter als 24h.")
         return
 
     log(f"   🔍 Prüfe {len(safe)} Matches...")
@@ -573,7 +573,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v16.0 (Enterprise Stability) Starting...")
+    log(f"🚀 Neural Scout v17.0 (DOM-Based) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -599,7 +599,6 @@ async def run_pipeline():
                         p2_obj = find_player_safe(m['p2_raw'], players)
                         
                         if p1_obj and p2_obj:
-                            # Quality Gate (Allows 1.01 for heavy favorites)
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
 
                             res = supabase.table("market_odds").select("id, actual_winner_name, odds1").or_(f"and(player1_name.eq.{p1_obj['last_name']},player2_name.eq.{p2_obj['last_name']}),and(player1_name.eq.{p2_obj['last_name']},player2_name.eq.{p1_obj['last_name']})").execute()
