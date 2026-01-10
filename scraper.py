@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V35.1 - Real-Time Settlement)...")
+log("🔌 Initialisiere Neural Scout (V35.2 - The Token Saver)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -423,7 +423,6 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V35.1: SOTA PARSER WITH WINNER DETECTION PREPARATION ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -478,7 +477,6 @@ def parse_matches_locally_v5(html, p_names):
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # Strategy: Check Row 1 first (Summary View)
                     course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
                     found_r1_odds = []
                     for cell in course_cells_r1:
@@ -491,7 +489,6 @@ def parse_matches_locally_v5(html, p_names):
                     if len(found_r1_odds) >= 2:
                         odds = found_r1_odds[:2]
                     else:
-                        # Strategy: Split Rows
                         course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
                         found_r2_odds = []
                         for cell in course_cells_r2:
@@ -520,87 +517,53 @@ def parse_matches_locally_v5(html, p_names):
             else: i += 1 
     return found
 
-# --- V35.1: THE AUDITOR (Aggressive Real-Time Check) ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results (Today + Past)...")
-    
-    # Check all pending bets, regardless of age
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    
     if not pending or not isinstance(pending, list): return
-    
-    # Filter: Only check matches that are likely started or finished
     safe_to_check = []
     now = datetime.now(timezone.utc)
     for pm in pending:
         try:
-            # Logic: If match_time was > 2 hours ago, it might be done. 
-            # OR if it was created > 4 hours ago.
-            # We check widely to capture everything.
             safe_to_check.append(pm)
         except: continue
         
     if not safe_to_check: return
 
-    # Check TODAY (0), YESTERDAY (1), and PREV DAY (2)
-    # This enables "Same Day Settlement"
     for day_off in range(0, 3): 
         t_date = datetime.now() - timedelta(days=day_off)
         page = await browser.new_page()
         try:
-            # We look at the RESULTS page which is authoritative for finished games
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
             log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
-            
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
-            
             if not table: continue
-            
             rows = table.find_all('tr')
             for i in range(len(rows)):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row) or i+1 >= len(rows): continue
                 next_row = rows[i+1]
-                
                 rt = row.get_text(separator=" ", strip=True).lower()
                 nrt = next_row.get_text(separator=" ", strip=True).lower()
-                
-                if not any(c.isdigit() for c in rt): continue # No score found
+                if not any(c.isdigit() for c in rt): continue 
                 if "h2h" in rt or "head" in rt: continue
-
                 for pm in safe_to_check:
                     p1 = get_last_name(pm['player1_name'])
                     p2 = get_last_name(pm['player2_name'])
-                    
-                    # Fuzzy match check
                     found_match = (p1 in rt and p2 in nrt) or (p2 in rt and p1 in nrt) or (p1 in rt and p2 in rt)
-                    
                     if found_match:
                         winner = None
                         try:
-                            # 1. Check for Retirement/Walkover
                             if "ret." in rt or "w.o." in rt or "ret." in nrt:
                                 if p1 in rt and "ret." not in rt: winner = pm['player1_name']
                                 elif p2 in nrt and "ret." not in nrt: winner = pm['player2_name']
-                            # 2. Score Counting
                             else:
-                                # Count sets won (6-X or 7-X usually indicates a won set)
-                                s1_sets = rt.count("6-") + rt.count("7-") + rt.count("1-") # 1-0 ret handling sometimes
+                                s1_sets = rt.count("6-") + rt.count("7-") + rt.count("1-") 
                                 s2_sets = nrt.count("6-") + nrt.count("7-") + nrt.count("1-")
-                                
-                                # Precise Logic based on row placement
-                                # In TE results, the winner is NOT always top row.
-                                # But usually, the winner has the bold text or higher score.
-                                # Let's stick to set counting which is robust.
-                                
-                                # Re-read scores more carefully if needed, but set counting is 95% effective
-                                if s1_sets > s2_sets: 
-                                    winner = pm['player1_name'] if p1 in rt else pm['player2_name']
-                                elif s2_sets > s1_sets: 
-                                    winner = pm['player2_name'] if p2 in nrt else pm['player1_name']
-                            
+                                if s1_sets > s2_sets: winner = pm['player1_name'] if p1 in rt else pm['player2_name']
+                                elif s2_sets > s1_sets: winner = pm['player2_name'] if p2 in nrt else pm['player1_name']
                             if winner:
                                 supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", pm['id']).execute()
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
@@ -610,14 +573,11 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v35.1 (The Architect) Starting...")
+    log(f"🚀 Neural Scout v35.2 (The Token Saver) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 1. FIRST: Settle old/today's bets immediately
             await update_past_results(browser)
-            
-            # 2. THEN: Fetch new data for prediction
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -641,7 +601,8 @@ async def run_pipeline():
                         if p1_obj and p2_obj:
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
                             
-                            existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, player2_name").eq("player1_name", p1_obj['last_name']).order("created_at", desc=True).limit(5).execute()
+                            # --- V35.2: FETCH OLD AI DATA FOR CACHING ---
+                            existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", p1_obj['last_name']).order("created_at", desc=True).limit(5).execute()
                             existing = []
                             if existing_p1.data:
                                 for rec in existing_p1.data:
@@ -650,11 +611,19 @@ async def run_pipeline():
                                         break
                             
                             db_match_id = None
+                            cached_ai = {}
                             if existing:
                                 rec = existing[0]
                                 if rec.get('actual_winner_name'): continue 
                                 if abs(rec.get('odds1', 0) - m['odds1']) < 0.05 and rec.get('odds1', 0) > 1.1: continue
                                 db_match_id = rec['id']
+                                # SAVE TOKENS: Cache the old data
+                                if rec.get('ai_analysis_text'):
+                                    cached_ai = {
+                                        'ai_text': rec.get('ai_analysis_text'),
+                                        'ai_fair_odds1': rec.get('ai_fair_odds1'),
+                                        'ai_fair_odds2': rec.get('ai_fair_odds2')
+                                    }
 
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, p1_obj['last_name'], p2_obj['last_name'])
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
@@ -662,36 +631,45 @@ async def run_pipeline():
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
                             
                             if r1: log(f"   ✅ Report found for {p1_obj['last_name']}")
-                            if r2: log(f"   ✅ Report found for {p2_obj['last_name']}")
 
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
-                            f1_d = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
-                            f2_d = await fetch_player_form_hybrid(browser, p2_obj['last_name'])
                             
-                            elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
-                            e1 = ELO_CACHE.get("ATP", {}).get(p1_obj['last_name'].lower(), {}).get(elo_key, 1500)
-                            e2 = ELO_CACHE.get("ATP", {}).get(p2_obj['last_name'].lower(), {}).get(elo_key, 1500)
-
-                            ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
-                            prob = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2)
+                            # --- V35.2 LOGIC SWITCH: OLD OR NEW AI ---
+                            if db_match_id and cached_ai:
+                                log(f"   💰 Token Saver: Reusing existing AI analysis for {p1_obj['last_name']} vs {p2_obj['last_name']}")
+                                ai_text_final = cached_ai['ai_text']
+                                fair1 = cached_ai['ai_fair_odds1']
+                                fair2 = cached_ai['ai_fair_odds2']
+                            else:
+                                f1_d = await fetch_player_form_hybrid(browser, p1_obj['last_name'])
+                                f2_d = await fetch_player_form_hybrid(browser, p2_obj['last_name'])
+                                elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
+                                e1 = ELO_CACHE.get("ATP", {}).get(p1_obj['last_name'].lower(), {}).get(elo_key, 1500)
+                                e2 = ELO_CACHE.get("ATP", {}).get(p2_obj['last_name'].lower(), {}).get(elo_key, 1500)
+                                
+                                ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
+                                prob = calculate_physics_fair_odds(p1_obj['last_name'], p2_obj['last_name'], s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2)
+                                ai_text_final = ai.get('ai_text', 'No detailed analysis available.')
+                                fair1 = round(1/prob, 2) if prob > 0.01 else 99
+                                fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                             
                             data = {
                                 "player1_name": p1_obj['last_name'], "player2_name": p2_obj['last_name'], "tournament": m['tour'],
                                 "odds1": m['odds1'], "odds2": m['odds2'],
-                                "ai_fair_odds1": round(1/prob, 2) if prob > 0.01 else 99,
-                                "ai_fair_odds2": round(1/(1-prob), 2) if prob < 0.99 else 99,
-                                "ai_analysis_text": ai.get('ai_text', 'No detailed analysis available.'),
+                                "ai_fair_odds1": fair1,
+                                "ai_fair_odds2": fair2,
+                                "ai_analysis_text": ai_text_final,
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
                             
                             if db_match_id:
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
-                                log(f"🔄 Updated: {data['player1_name']} vs {data['player2_name']}")
+                                log(f"🔄 Updated (Odds Only): {data['player1_name']} vs {data['player2_name']}")
                             else:
                                 supabase.table("market_odds").insert(data).execute()
-                                log(f"💾 Saved: {data['player1_name']} vs {data['player2_name']}")
+                                log(f"💾 Saved (New): {data['player1_name']} vs {data['player2_name']}")
                         else:
                              pass
                     except Exception as e: log(f"⚠️ Match Error: {e}")
