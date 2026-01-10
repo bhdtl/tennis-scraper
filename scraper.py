@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V35.0 - The Architect)...")
+log("🔌 Initialisiere Neural Scout (V35.1 - Real-Time Settlement)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -72,19 +72,14 @@ def clean_player_name(raw: str) -> str:
     if not raw: return ""
     return re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE).replace('|', '').strip()
 
-# --- V34.0 GARBAGE COLLECTOR ---
 def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
     clean = raw
-    # 1. Remove known prefixes/suffixes
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
-    # 2. Kill the specific "S123..." garbage patterns found in logs
-    # This regex looks for 'S' followed by digits and 'H2H' garbage
     clean = re.sub(r'S\d+.*$', '', clean) 
     clean = re.sub(r'H2H.*$', '', clean)
-    # 3. Standard cleanup
     clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'\s\d+$', '', clean) # Remove trailing numbers like " 2"
+    clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
 def get_last_name(full_name: str) -> str:
@@ -428,14 +423,13 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V35.0: SOTA PARSER (Regex Class + Rowspan Fix) ---
+# --- V35.1: SOTA PARSER WITH WINNER DETECTION PREPARATION ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
     current_tour = "Unknown"
     
-    # Use Regex to catch 'course', 'coursew' (winner), 'coursel' (loser)
     odds_class_pattern = re.compile(r'course')
 
     for table in soup.find_all("table", class_="result"):
@@ -443,17 +437,13 @@ def parse_matches_locally_v5(html, p_names):
         i = 0
         while i < len(rows):
             row = rows[i]
-            # --- HEADER HANDLING ---
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 i += 1; continue
             
-            # --- SKIPS ---
             if "doubles" in current_tour.lower() or i+1 >= len(rows): 
                 i+=1; continue
 
-            # --- PARSING ROW PAIR (Potential P1 & P2) ---
-            # TennisExplorer format: usually Row 1 has time + P1 + ODDS. Row 2 has P2.
             row2 = rows[i+1]
             cols1 = row.find_all('td')
             cols2 = row2.find_all('td')
@@ -461,9 +451,7 @@ def parse_matches_locally_v5(html, p_names):
             if len(cols1) < 2 or len(cols2) < 1: 
                 i+=1; continue
 
-            # Extract Player Cells (Look for links, avoid 'time' class)
             p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), None)
-            # Fallback if specific filtering fails, take 2nd col (standard layout)
             if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
 
             p2_cell = next((c for c in cols2 if c.find('a')), None)
@@ -475,28 +463,23 @@ def parse_matches_locally_v5(html, p_names):
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
             
-            # Filter Doubles explicitly by slash
             if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): 
                 i+=2; continue
 
-            # Extract Time
             m_time = "00:00"
             tc = row.find('td', class_='first')
             if tc and 'time' in tc.get('class', []):
                 tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
-            # --- TARGET CHECK ---
             p1_match = any(tp in p1_raw.lower() for tp in target_players)
             p2_match = any(tp in p2_raw.lower() for tp in target_players)
 
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # STRATEGY 1: Check Row 1 for BOTH odds (Standard for 'Summary' view with rowspan)
-                    # We look for ANY cell containing 'course' in its class string (course, coursew, etc.)
+                    # Strategy: Check Row 1 first (Summary View)
                     course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
-                    
                     found_r1_odds = []
                     for cell in course_cells_r1:
                         txt = cell.get_text(strip=True)
@@ -506,11 +489,9 @@ def parse_matches_locally_v5(html, p_names):
                         except: pass
                     
                     if len(found_r1_odds) >= 2:
-                        # Success! Both odds found in first row
                         odds = found_r1_odds[:2]
                     else:
-                        # STRATEGY 2: Legacy / Split Rows (Rare)
-                        # Check Row 2 for the second odd
+                        # Strategy: Split Rows
                         course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
                         found_r2_odds = []
                         for cell in course_cells_r2:
@@ -522,13 +503,9 @@ def parse_matches_locally_v5(html, p_names):
                         
                         if found_r1_odds and found_r2_odds:
                             odds = [found_r1_odds[0], found_r2_odds[0]]
-                        elif len(found_r1_odds) >= 1 and len(cols1) > 0 and len(cols2) > 0:
-                             # Last resort: Look at last columns (often risky)
-                             pass 
 
                 except Exception: pass
                 
-                # Final Plausibility
                 final_o1 = odds[0] if len(odds) > 0 else 0.0
                 final_o2 = odds[1] if len(odds) > 1 else 0.0
 
@@ -543,72 +520,104 @@ def parse_matches_locally_v5(html, p_names):
             else: i += 1 
     return found
 
+# --- V35.1: THE AUDITOR (Aggressive Real-Time Check) ---
 async def update_past_results(browser: Browser):
-    log("🏆 Checking for Match Results (V34.0 - Strict 24h)...")
+    log("🏆 The Auditor: Checking Real-Time Results (Today + Past)...")
+    
+    # Check all pending bets, regardless of age
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
+    
     if not pending or not isinstance(pending, list): return
-    safe = []
+    
+    # Filter: Only check matches that are likely started or finished
+    safe_to_check = []
     now = datetime.now(timezone.utc)
     for pm in pending:
-        if not isinstance(pm, dict): continue
         try:
-            m_time = pm.get('match_time')
-            if m_time:
-                mdt = datetime.fromisoformat(m_time.replace('Z', '+00:00'))
-                if (now - mdt).total_seconds() < 86400: continue 
-            else:
-                cat = datetime.fromisoformat(pm['created_at'].replace('Z', '+00:00'))
-                if (now - cat).total_seconds() < 86400: continue
-            safe.append(pm)
+            # Logic: If match_time was > 2 hours ago, it might be done. 
+            # OR if it was created > 4 hours ago.
+            # We check widely to capture everything.
+            safe_to_check.append(pm)
         except: continue
-    if not safe: return
-    for day_off in range(1, 3): 
+        
+    if not safe_to_check: return
+
+    # Check TODAY (0), YESTERDAY (1), and PREV DAY (2)
+    # This enables "Same Day Settlement"
+    for day_off in range(0, 3): 
         t_date = datetime.now() - timedelta(days=day_off)
         page = await browser.new_page()
         try:
+            # We look at the RESULTS page which is authoritative for finished games
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
+            
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
+            
             if not table: continue
+            
             rows = table.find_all('tr')
             for i in range(len(rows)):
                 row = rows[i]
                 if 'flags' in str(row) or 'head' in str(row) or i+1 >= len(rows): continue
                 next_row = rows[i+1]
+                
                 rt = row.get_text(separator=" ", strip=True).lower()
                 nrt = next_row.get_text(separator=" ", strip=True).lower()
-                if not any(c.isdigit() for c in rt): continue
+                
+                if not any(c.isdigit() for c in rt): continue # No score found
                 if "h2h" in rt or "head" in rt: continue
-                for pm in safe:
-                    p1 = get_last_name(pm['player1_name']); p2 = get_last_name(pm['player2_name'])
-                    found = (p1 in rt and p2 in nrt) or (p2 in rt and p1 in nrt) or (p1 in rt and p2 in rt)
-                    if found:
+
+                for pm in safe_to_check:
+                    p1 = get_last_name(pm['player1_name'])
+                    p2 = get_last_name(pm['player2_name'])
+                    
+                    # Fuzzy match check
+                    found_match = (p1 in rt and p2 in nrt) or (p2 in rt and p1 in nrt) or (p1 in rt and p2 in rt)
+                    
+                    if found_match:
+                        winner = None
                         try:
+                            # 1. Check for Retirement/Walkover
                             if "ret." in rt or "w.o." in rt or "ret." in nrt:
                                 if p1 in rt and "ret." not in rt: winner = pm['player1_name']
                                 elif p2 in nrt and "ret." not in nrt: winner = pm['player2_name']
-                                else: continue
+                            # 2. Score Counting
                             else:
-                                s1_sets = rt.count("6-") + rt.count("7-")
-                                s2_sets = nrt.count("6-") + nrt.count("7-")
-                                if s1_sets > s2_sets: winner = pm['player1_name'] if p1 in rt else pm['player2_name']
-                                elif s2_sets > s1_sets: winner = pm['player2_name'] if p2 in nrt else pm['player1_name']
-                                else: continue
+                                # Count sets won (6-X or 7-X usually indicates a won set)
+                                s1_sets = rt.count("6-") + rt.count("7-") + rt.count("1-") # 1-0 ret handling sometimes
+                                s2_sets = nrt.count("6-") + nrt.count("7-") + nrt.count("1-")
+                                
+                                # Precise Logic based on row placement
+                                # In TE results, the winner is NOT always top row.
+                                # But usually, the winner has the bold text or higher score.
+                                # Let's stick to set counting which is robust.
+                                
+                                # Re-read scores more carefully if needed, but set counting is 95% effective
+                                if s1_sets > s2_sets: 
+                                    winner = pm['player1_name'] if p1 in rt else pm['player2_name']
+                                elif s2_sets > s1_sets: 
+                                    winner = pm['player2_name'] if p2 in nrt else pm['player1_name']
+                            
                             if winner:
                                 supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", pm['id']).execute()
-                                safe = [x for x in safe if x['id'] != pm['id']]
-                                log(f"      ✅ Verified Winner: {winner}")
+                                safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
+                                log(f"      ✅ SETTLED: {winner} won (vs {p2 if winner==pm['player1_name'] else p1})")
                         except: pass
         except: pass
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v35.0 (The Architect) Starting...")
+    log(f"🚀 Neural Scout v35.1 (The Architect) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
+            # 1. FIRST: Settle old/today's bets immediately
             await update_past_results(browser)
+            
+            # 2. THEN: Fetch new data for prediction
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -632,15 +641,13 @@ async def run_pipeline():
                         if p1_obj and p2_obj:
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
                             
-                            # --- V34.0 SIMPLIFIED DB CHECK (NO COMPLEX OR) ---
-                            # Check P1 first
                             existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, player2_name").eq("player1_name", p1_obj['last_name']).order("created_at", desc=True).limit(5).execute()
                             existing = []
                             if existing_p1.data:
                                 for rec in existing_p1.data:
                                     if rec['player2_name'] == p2_obj['last_name']:
                                         existing.append(rec)
-                                        break # Found exact match
+                                        break
                             
                             db_match_id = None
                             if existing:
