@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V34.0 - The Sanitizer)...")
+log("🔌 Initialisiere Neural Scout (V35.0 - The Architect)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -428,90 +428,117 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V34.0: PRECISION PARSER (DOM-Based + Class Check) ---
+# --- V35.0: SOTA PARSER (Regex Class + Rowspan Fix) ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
     current_tour = "Unknown"
     
+    # Use Regex to catch 'course', 'coursew' (winner), 'coursel' (loser)
+    odds_class_pattern = re.compile(r'course')
+
     for table in soup.find_all("table", class_="result"):
         rows = table.find_all("tr")
         i = 0
         while i < len(rows):
             row = rows[i]
+            # --- HEADER HANDLING ---
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 i += 1; continue
-            if "doubles" in current_tour.lower() or i+1 >= len(rows): i+=1; continue
-
-            row2 = rows[i+1]
-            cols1 = row.find_all('td'); cols2 = row2.find_all('td')
-            if len(cols1) < 2 or len(cols2) < 1: i+=1; continue
-
-            p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), cols1[1] if len(cols1)>1 else None)
-            p2_cell = next((c for c in cols2 if c.find('a')), cols2[0] if len(cols2)>0 else None)
             
-            if not p1_cell or not p2_cell: i+=1; continue
+            # --- SKIPS ---
+            if "doubles" in current_tour.lower() or i+1 >= len(rows): 
+                i+=1; continue
+
+            # --- PARSING ROW PAIR (Potential P1 & P2) ---
+            # TennisExplorer format: usually Row 1 has time + P1 + ODDS. Row 2 has P2.
+            row2 = rows[i+1]
+            cols1 = row.find_all('td')
+            cols2 = row2.find_all('td')
+            
+            if len(cols1) < 2 or len(cols2) < 1: 
+                i+=1; continue
+
+            # Extract Player Cells (Look for links, avoid 'time' class)
+            p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), None)
+            # Fallback if specific filtering fails, take 2nd col (standard layout)
+            if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
+
+            p2_cell = next((c for c in cols2 if c.find('a')), None)
+            if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
+            
+            if not p1_cell or not p2_cell: 
+                i+=1; continue
 
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
             
-            if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): i+=2; continue
+            # Filter Doubles explicitly by slash
+            if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): 
+                i+=2; continue
 
+            # Extract Time
             m_time = "00:00"
             tc = row.find('td', class_='first')
             if tc and 'time' in tc.get('class', []):
                 tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
+            # --- TARGET CHECK ---
             p1_match = any(tp in p1_raw.lower() for tp in target_players)
             p2_match = any(tp in p2_raw.lower() for tp in target_players)
 
             if p1_match and p2_match:
                 odds = []
                 try:
-                    # FIX: STRICT DOM PARSING (Only look at odds columns)
-                    # TE odds columns often have specific widths or attributes, but 'course' is the best indicator.
-                    # We grab all cells with class 'course'
-                    course_cells1 = row.find_all('td', class_='course')
-                    course_cells2 = row2.find_all('td', class_='course')
+                    # STRATEGY 1: Check Row 1 for BOTH odds (Standard for 'Summary' view with rowspan)
+                    # We look for ANY cell containing 'course' in its class string (course, coursew, etc.)
+                    course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
                     
-                    if course_cells1 and course_cells2:
-                        # Extract from dedicated columns. Usually the first 'course' cell is the odds for that player row.
-                        o1 = float(course_cells1[0].get_text(strip=True))
-                        o2 = float(course_cells2[0].get_text(strip=True))
-                        if 1.01 <= o1 <= 100.0 and 1.01 <= o2 <= 100.0:
-                            odds = [o1, o2]
+                    found_r1_odds = []
+                    for cell in course_cells_r1:
+                        txt = cell.get_text(strip=True)
+                        try:
+                            val = float(txt)
+                            if 1.01 <= val <= 100.0: found_r1_odds.append(val)
+                        except: pass
                     
-                    if not odds:
-                        # Fallback: Look at the very last numeric columns (often bookie odds)
-                        # We iterate backwards and pick the first plausible float
-                        def get_last_num(cells):
-                            for c in reversed(cells):
-                                txt = c.get_text(strip=True)
-                                if not txt or ":" in txt or "(" in txt: continue
-                                try:
-                                    v = float(txt)
-                                    if 1.01 <= v <= 100.0: return v
-                                except: pass
-                            return None
+                    if len(found_r1_odds) >= 2:
+                        # Success! Both odds found in first row
+                        odds = found_r1_odds[:2]
+                    else:
+                        # STRATEGY 2: Legacy / Split Rows (Rare)
+                        # Check Row 2 for the second odd
+                        course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
+                        found_r2_odds = []
+                        for cell in course_cells_r2:
+                            txt = cell.get_text(strip=True)
+                            try:
+                                val = float(txt)
+                                if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            except: pass
                         
-                        o1 = get_last_num(cols1)
-                        o2 = get_last_num(cols2)
-                        if o1 and o2: odds = [o1, o2]
+                        if found_r1_odds and found_r2_odds:
+                            odds = [found_r1_odds[0], found_r2_odds[0]]
+                        elif len(found_r1_odds) >= 1 and len(cols1) > 0 and len(cols2) > 0:
+                             # Last resort: Look at last columns (often risky)
+                             pass 
 
-                except: pass
+                except Exception: pass
                 
-                # Final Plausibility Check
-                if odds and (odds[0] < 1.01 or odds[1] < 1.01): odds = []
+                # Final Plausibility
+                final_o1 = odds[0] if len(odds) > 0 else 0.0
+                final_o2 = odds[1] if len(odds) > 1 else 0.0
 
-                found.append({
-                    "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
-                    "time": m_time, "odds1": odds[0] if odds else 0.0, "odds2": odds[1] if len(odds)>1 else 0.0,
-                    "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
-                    "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None 
-                })
+                if final_o1 > 0 and final_o2 > 0:
+                    found.append({
+                        "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
+                        "time": m_time, "odds1": final_o1, "odds2": final_o2,
+                        "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
+                        "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None 
+                    })
                 i += 2 
             else: i += 1 
     return found
@@ -577,7 +604,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout v34.0 (The Sanitizer) Starting...")
+    log(f"🚀 Neural Scout v35.0 (The Architect) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
