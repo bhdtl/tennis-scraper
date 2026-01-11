@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V36.1 - Sibling Safe Mode)...")
+log("🔌 Initialisiere Neural Scout (V36.1 - Strict Matching & Initial Check)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -73,7 +73,9 @@ def normalize_text(text: str) -> str:
 
 def clean_player_name(raw: str) -> str:
     if not raw: return ""
+    # Standard Garbage Removal
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
+    # Remove Seeds and Country Codes in brackets if any
     clean = re.sub(r'\s*\(\d+\)', '', clean) 
     clean = re.sub(r'\s*\(.*?\)', '', clean) 
     return clean.replace('|', '').strip()
@@ -82,7 +84,7 @@ def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
     clean = raw
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'<.*?>', '', clean)
+    clean = re.sub(r'<.*?>', '', clean) # Remove stray HTML tags
     clean = re.sub(r'S\d+.*$', '', clean) 
     clean = re.sub(r'H2H.*$', '', clean)
     clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
@@ -103,40 +105,38 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
-# --- V36.1 FIX: INITIAL ENFORCER & STRICT MATCHING ---
+# --- V36.1 UPDATE: STRICT MATCHING & INITIAL CHECK ---
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
     
-    # Clean raw string
+    # 1. Clean raw string (e.g. "Cerundolo F." or "Kawa")
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     
-    # Parsing Strategy: "Name I."
+    # 2. Parse: Split into Last Name and Initial
     parts = clean_scrape.split()
     if not parts: return None
     
-    scrape_last_name = parts[0] # Default: First word is last name
+    scrape_last_name = parts[0] # Default: First word is last name (TE format: "Name I.")
     scrape_initial = None
     
-    # Check for Initial (e.g., "Kawa K." or "Cerundolo F.")
+    # Check if a second part exists and looks like an initial (1 char or 1 char + dot)
     if len(parts) > 1:
-        # Check if the second part looks like an initial (1 letter or 1 letter + dot)
-        second_part = parts[1].replace('.', '')
-        if len(second_part) == 1 and second_part.isalpha():
-            scrape_initial = second_part
+        potential_init = parts[1].replace('.', '')
+        if len(potential_init) == 1 and potential_init.isalpha():
+            scrape_initial = potential_init
     
     candidates = []
     for p in db_players:
         if not isinstance(p, dict): continue
         db_last = p.get('last_name', '').lower()
-        db_first = p.get('first_name', '').lower() # Assuming first_name column exists
         
-        # 1. STRICT LAST NAME CHECK
+        # 3. STRICT CHECK: Last Name must match exactly
         if db_last == scrape_last_name:
-            # 2. INITIAL CHECK (If we have one from scrape)
-            if scrape_initial and db_first:
-                # Does DB first name start with the scraped initial?
-                if not db_first.startswith(scrape_initial):
-                    continue # Skip mismatch (e.g. Skip Francisco if Scrape is "J.")
+            # 4. INITIAL CHECK: If scrape has initial, check against First Name
+            if scrape_initial:
+                db_first = p.get('first_name', '').lower()
+                if db_first and not db_first.startswith(scrape_initial):
+                    continue # Wrong sibling or namesake
             
             candidates.append(p)
             
@@ -146,7 +146,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     for cand in candidates:
         if cand['id'] in report_ids: return cand
     
-    # If multiple candidates remain (e.g. same last name, no initial provided), take first.
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -488,9 +487,11 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # V36.1: Robust Parser + Winner Detection
+    # V35.5 (Hybrid Winner Logic)
     soup = BeautifulSoup(html, 'html.parser')
     found = []
+    target_players = set(p.lower() for p in p_names)
+    current_tour = "Unknown"
     
     odds_class_pattern = re.compile(r'course')
 
@@ -533,58 +534,64 @@ def parse_matches_locally_v5(html, p_names):
             if tc and 'time' in tc.get('class', []):
                 tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
-            
-            # Winner Logic
-            winner_found = None
-            p1_res = row.find('td', class_='result')
-            p2_res = row2.find('td', class_='result')
-            if p1_res and p2_res:
-                t1 = p1_res.get_text(strip=True)
-                t2 = p2_res.get_text(strip=True)
-                if t1.isdigit() and t2.isdigit():
-                    s1 = int(t1); s2 = int(t2)
-                    if s1 > s2 and s1 >= 2: winner_found = p1_raw
-                    elif s2 > s1 and s2 >= 2: winner_found = p2_raw
 
-            odds = []
-            try:
-                course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
-                found_r1_odds = []
-                for cell in course_cells_r1:
-                    txt = cell.get_text(strip=True)
-                    try:
-                        val = float(txt)
-                        if 1.01 <= val <= 100.0: found_r1_odds.append(val)
-                    except: pass
-                
-                if len(found_r1_odds) >= 2:
-                    odds = found_r1_odds[:2]
-                else:
-                    course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
-                    found_r2_odds = []
-                    for cell in course_cells_r2:
+            p1_match = any(tp in p1_raw.lower() for tp in target_players)
+            p2_match = any(tp in p2_raw.lower() for tp in target_players)
+
+            if p1_match and p2_match:
+                # --- WINNER DETECTION LOGIC ---
+                winner_found = None
+                p1_res = row.find('td', class_='result')
+                p2_res = row2.find('td', class_='result')
+                if p1_res and p2_res:
+                    t1 = p1_res.get_text(strip=True)
+                    t2 = p2_res.get_text(strip=True)
+                    if t1.isdigit() and t2.isdigit():
+                        s1 = int(t1); s2 = int(t2)
+                        if s1 > s2 and s1 >= 2: winner_found = p1_raw
+                        elif s2 > s1 and s2 >= 2: winner_found = p2_raw
+
+                odds = []
+                try:
+                    course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
+                    found_r1_odds = []
+                    for cell in course_cells_r1:
                         txt = cell.get_text(strip=True)
                         try:
                             val = float(txt)
-                            if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            if 1.01 <= val <= 100.0: found_r1_odds.append(val)
                         except: pass
                     
-                    if found_r1_odds and found_r2_odds:
-                        odds = [found_r1_odds[0], found_r2_odds[0]]
-            except: pass
-            
-            final_o1 = odds[0] if len(odds) > 0 else 0.0
-            final_o2 = odds[1] if len(odds) > 1 else 0.0
+                    if len(found_r1_odds) >= 2:
+                        odds = found_r1_odds[:2]
+                    else:
+                        course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
+                        found_r2_odds = []
+                        for cell in course_cells_r2:
+                            txt = cell.get_text(strip=True)
+                            try:
+                                val = float(txt)
+                                if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            except: pass
+                        
+                        if found_r1_odds and found_r2_odds:
+                            odds = [found_r1_odds[0], found_r2_odds[0]]
 
-            if (final_o1 > 0 and final_o2 > 0) or winner_found:
-                found.append({
-                    "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
-                    "time": m_time, "odds1": final_o1, "odds2": final_o2,
-                    "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
-                    "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
-                    "actual_winner": winner_found
-                })
-            i += 2 
+                except Exception: pass
+                
+                final_o1 = odds[0] if len(odds) > 0 else 0.0
+                final_o2 = odds[1] if len(odds) > 1 else 0.0
+
+                if (final_o1 > 0 and final_o2 > 0) or winner_found:
+                    found.append({
+                        "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
+                        "time": m_time, "odds1": final_o1, "odds2": final_o2,
+                        "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
+                        "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
+                        "actual_winner": winner_found
+                    })
+                i += 2 
+            else: i += 1 
     return found
 
 async def update_past_results(browser: Browser):
@@ -640,7 +647,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V36.1 (Initial Enforcer) Starting...")
+    log(f"🚀 Neural Scout V36.1 (Permutation + Winner Aware + Sticky AI + Strict Names) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -657,12 +664,14 @@ async def run_pipeline():
                 target_date = datetime.now() + timedelta(days=day_offset)
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
+                
+                # IMPORTANT: Use parsed raw names first
                 matches = parse_matches_locally_v5(html, player_names)
                 log(f"🔍 Gefunden: {len(matches)} Matches am {target_date.strftime('%d.%m.')}")
                 
                 for m in matches:
                     try:
-                        # V36.1: Use Initial-Aware Matching
+                        # V36.1: USE STRICT MATCHING + INITIAL CHECK HERE
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         
@@ -670,9 +679,10 @@ async def run_pipeline():
                             n1 = p1_obj['last_name']
                             n2 = p2_obj['last_name']
                             
+                            # Prevent self-matches (safety check)
                             if n1 == n2: continue
 
-                            # Settlement
+                            # Settlement Logic (Permutation Aware)
                             if m.get('actual_winner'):
                                 winner_full = n1 if m['actual_winner'] == m['p1_raw'] else n2
                                 try:
@@ -680,14 +690,16 @@ async def run_pipeline():
                                     if res.data:
                                         for rec in res.data:
                                             supabase.table("market_odds").update({"actual_winner_name": winner_full}).eq("id", rec['id']).execute()
-                                            log(f"      🏆 LIVE SETTLEMENT: {winner_full} won")
+                                            log(f"      🏆 LIVE SETTLEMENT: {winner_full} won match")
                                 except Exception as e: log(f"Settlement Error: {e}")
                                 continue
 
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
                             
+                            # --- V35.3/5: PERMUTATION AWARE LOOKUP ---
                             existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n1).order("created_at", desc=True).limit(5).execute()
                             existing = []
+                            # Try standard direction
                             if existing_p1.data:
                                 for rec in existing_p1.data:
                                     if rec['player2_name'] == n2: existing.append(rec); break
@@ -713,6 +725,8 @@ async def run_pipeline():
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
                             
+                            if r1: log(f"   ✅ Report found for {n1}")
+
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                             
