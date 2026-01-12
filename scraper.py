@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V37.0 - Compound Name Intelligence)...")
+log("🔌 Initialisiere Neural Scout (V38.0 - Kelly Criterion & Dynamic Weights)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -43,6 +43,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# [ARCHITECT NOTE]: Wir nutzen das stabilste Flash-Modell für Speed & Cost
 MODEL_NAME = 'gemini-2.0-flash'
 
 # Global Caches
@@ -314,12 +315,43 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE
+# 5. MATH CORE & KELLY CRITERION (THE VETERAN UPGRADE)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2):
+def calculate_kelly_stake(fair_prob: float, market_odds: float, bankroll_fraction: float = 0.05) -> str:
+    """
+    Calculates the Kelly Criterion for unit sizing.
+    f* = (bp - q) / b
+    where b = market_odds - 1
+          p = fair_prob
+          q = 1 - p
+    """
+    if market_odds <= 1.0: return "0u (Bad Odds)"
+    
+    b = market_odds - 1
+    p = fair_prob
+    q = 1 - p
+    
+    kelly_fraction = (b * p - q) / b
+    
+    # [VETERAN SAFEGUARDS]
+    # We use 'Fractional Kelly' (e.g., 20% of Full Kelly) to reduce variance.
+    safe_kelly = kelly_fraction * 0.20 
+    
+    if safe_kelly <= 0: return "0u"
+    
+    # Normalize to Unit sizes (1 Unit = 2% of Bankroll typically)
+    # If safe_kelly is 0.02 (2%), that's 1 Unit.
+    units = round(safe_kelly / 0.02, 2)
+    
+    if units < 0.25: return "0u (Edge too thin)"
+    if units > 3.0: return "3.0u (MAX BET)" # Cap max risk
+    
+    return f"{units}u"
+
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool):
     ai_meta = ensure_dict(ai_meta)
     n1 = get_last_name(p1_name); n2 = get_last_name(p2_name)
     tour = "ATP"; bsi_val = to_float(bsi, 6.0)
@@ -345,20 +377,35 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    weights = [0.20, 0.20, 0.10, 0.10, 0.10]
+    # [VETERAN DYNAMIC WEIGHTS]
+    # If we have REAL scouting reports, trust AI/Matchup more. 
+    # If we don't, trust ELO/Market more.
+    if has_scouting_reports:
+        # High confidence in AI data
+        weights = [0.25, 0.20, 0.10, 0.10, 0.15] # Matchup is King
+    else:
+        # Low confidence in AI data -> Trust ELO/Form
+        weights = [0.10, 0.15, 0.10, 0.35, 0.10] # ELO is King
+        
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
+    
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     
-    if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.10, 0.94)
-    elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.90, 0.06)
+    # Compression (Conservative Adjustment)
+    if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.94) # Reduced aggression
+    elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.06)
     
+    # Market Consensus (De-Vigged)
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
-        prob_market = inv1 / (inv1 + inv2)
+        margin = inv1 + inv2
+        true_prob1 = inv1 / margin
+        prob_market = true_prob1
     
-    return (prob_alpha * 0.75) + (prob_market * 0.25)
+    # Final Blend: 70% Model / 30% Market (Anchor to reality)
+    return (prob_alpha * 0.70) + (prob_market * 0.30)
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
     try:
@@ -370,15 +417,15 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        alpha_part = old_final_prob - (old_prob_market * 0.25)
-        prob_alpha = alpha_part / 0.75
+        alpha_part = old_final_prob - (old_prob_market * 0.30)
+        prob_alpha = alpha_part / 0.70
         
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
             
-        new_final_prob = (prob_alpha * 0.75) + (new_prob_market * 0.25)
+        new_final_prob = (prob_alpha * 0.70) + (new_prob_market * 0.30)
         return new_final_prob
     except:
         return 0.5
@@ -465,14 +512,14 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     else: log("      ⚠️ Missing Scouting Reports - AI will use stats fallback.")
 
     prompt = f"""
-    ROLE: Elite Tennis Analyst.
+    ROLE: Elite Tennis Analyst (Silicon Valley Style).
     TASK: Analyze {p1['last_name']} vs {p2['last_name']} on {surface} (BSI {bsi}).
     DATA: ELO {elo1} vs {elo2}. FORM {form1['text']} vs {form2['text']}.
     SCOUTING P1: {r1.get('strengths', 'N/A')}
     SCOUTING P2: {r2.get('strengths', 'N/A')}
     COURT: {notes}
-    OUTPUT JSON ONLY. FIELD 'ai_text' MUST BE A DETAILED 3 SENTENCE TACTICAL PREDICTION. DO NOT USE '...'
-    JSON: {{ "p1_tactical_score": [0-10], "p2_tactical_score": [0-10], "p1_form_score": [0-10], "p2_form_score": [0-10], "ai_text": "Analysis string." }}
+    OUTPUT JSON ONLY.
+    JSON: {{ "p1_tactical_score": [0-10], "p2_tactical_score": [0-10], "p1_form_score": [0-10], "p2_form_score": [0-10], "ai_text": "Analysis string (max 2 sentences)." }}
     """
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
@@ -480,7 +527,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     if not text or len(text) < 30 or "..." in text:
         log("      ⚠️ AI returned weak analysis - Injecting Hard Fallback.")
         adv = p1['last_name'] if elo1 > elo2 else p2['last_name']
-        data['ai_text'] = f"Based on surface ELO ({elo1} vs {elo2}) and current form, {adv} holds a tactical advantage. The {surface} court conditions (BSI {bsi}) favor their playstyle."
+        data['ai_text'] = f"Based on ELO ({elo1} vs {elo2}) and form, {adv} holds a slight edge."
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
@@ -663,7 +710,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V37.0 (Compound Names + Permutation + Sticky AI) Starting...")
+    log(f"🚀 Neural Scout V38.0 (Veteran Edition: Kelly + Dynamic Weights) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -736,7 +783,9 @@ async def run_pipeline():
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
                             
-                            if r1: log(f"   ✅ Report found for {n1}")
+                            # CHECK FOR REAL REPORT
+                            has_real_report = bool(r1.get('strengths') and r2.get('strengths'))
+                            if has_real_report: log(f"   🔥 HIGH CONFIDENCE: Real Report found for {n1} vs {n2}")
 
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
@@ -753,6 +802,17 @@ async def run_pipeline():
                                 )
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
+                                
+                                # Recalculate Kelly with new odds
+                                kelly_advice = ""
+                                if m['odds1'] > fair1:
+                                    kelly_advice = f" | 💎 P1 VALUE ({fair1}) -> " + calculate_kelly_stake(1/fair1, m['odds1'])
+                                elif m['odds2'] > fair2:
+                                    kelly_advice = f" | 💎 P2 VALUE ({fair2}) -> " + calculate_kelly_stake(1/fair2, m['odds2'])
+                                
+                                # Append Advice if not already there
+                                if "VALUE" not in ai_text_final:
+                                    ai_text_final += kelly_advice
                             else:
                                 f1_d = await fetch_player_form_hybrid(browser, n1)
                                 f2_d = await fetch_player_form_hybrid(browser, n2)
@@ -761,10 +821,28 @@ async def run_pipeline():
                                 e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                 
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
-                                prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2)
-                                ai_text_final = ai.get('ai_text', 'No detailed analysis available.')
+                                
+                                # Pass has_real_report to math core
+                                prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report)
+                                
+                                ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
                                 fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
+                                
+                                # --- VETERAN: ADD STAKING ADVICE ---
+                                betting_advice = ""
+                                edge_p1 = (1/fair1) - (1/m['odds1']) if m['odds1'] > 0 else 0
+                                edge_p2 = (1/fair2) - (1/m['odds2']) if m['odds2'] > 0 else 0
+                                
+                                # Only show advice if edge > 2%
+                                if m['odds1'] > fair1 and edge_p1 > -0.05: # Slight tolerance
+                                    stake = calculate_kelly_stake(1/fair1, m['odds1'])
+                                    betting_advice = f" [💎 P1 VALUE @ {m['odds1']} (Fair: {fair1}) | Stake: {stake}]"
+                                elif m['odds2'] > fair2 and edge_p2 > -0.05:
+                                    stake = calculate_kelly_stake(1/fair2, m['odds2'])
+                                    betting_advice = f" [💎 P2 VALUE @ {m['odds2']} (Fair: {fair2}) | Stake: {stake}]"
+                                
+                                ai_text_final = ai_text_base + betting_advice
                             
                             data = {
                                 "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
