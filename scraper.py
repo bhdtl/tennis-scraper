@@ -73,7 +73,9 @@ def normalize_text(text: str) -> str:
 
 def clean_player_name(raw: str) -> str:
     if not raw: return ""
+    # Standard Garbage Removal
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
+    # Remove Seeds and Country Codes in brackets if any
     clean = re.sub(r'\s*\(\d+\)', '', clean) 
     clean = re.sub(r'\s*\(.*?\)', '', clean) 
     return clean.replace('|', '').strip()
@@ -82,7 +84,7 @@ def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
     clean = raw
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'<.*?>', '', clean)
+    clean = re.sub(r'<.*?>', '', clean) # Remove stray HTML tags
     clean = re.sub(r'S\d+.*$', '', clean) 
     clean = re.sub(r'H2H.*$', '', clean)
     clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
@@ -122,12 +124,12 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     is_initial = (len(last_token) == 1) or (len(last_token) == 2 and last_token.endswith('.'))
     
     if len(parts) > 1 and is_initial:
-        # Format: "Surname Surname I."
+        # Format: "Surname Surname I." -> Split off the initial at the end
         scrape_initial = last_token.replace('.', '')
         # Combine everything BEFORE the initial as the last name
         scrape_last_name_str = " ".join(parts[:-1]) # "carballes baena"
     else:
-        # Format: "Surname" (No initial found)
+        # Format: "Surname" (No initial found or just one word)
         scrape_last_name_str = " ".join(parts) # "nadal"
         
     # Normalize Scrape Name (remove hyphens for better matching "Pinnington-Jones" vs "Pinnington Jones")
@@ -261,6 +263,7 @@ async def fetch_elo_ratings(browser: Browser):
                     cols = row.find_all('td')
                     if len(cols) > 4:
                         name = normalize_text(cols[0].get_text(strip=True)).lower()
+                        # Strict key generation
                         last_name = name.split()[-1] if " " in name else name
                         ELO_CACHE[tour][last_name] = {
                             'Hard': to_float(cols[3].get_text(strip=True), 1500),
@@ -500,9 +503,11 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # V37.0 (Winner Logic + Standard Parsing)
+    # V35.5 (Hybrid Winner Logic)
     soup = BeautifulSoup(html, 'html.parser')
     found = []
+    target_players = set(p.lower() for p in p_names)
+    current_tour = "Unknown"
     
     odds_class_pattern = re.compile(r'course')
 
@@ -545,58 +550,64 @@ def parse_matches_locally_v5(html, p_names):
             if tc and 'time' in tc.get('class', []):
                 tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
-            
-            # Winner Logic
-            winner_found = None
-            p1_res = row.find('td', class_='result')
-            p2_res = row2.find('td', class_='result')
-            if p1_res and p2_res:
-                t1 = p1_res.get_text(strip=True)
-                t2 = p2_res.get_text(strip=True)
-                if t1.isdigit() and t2.isdigit():
-                    s1 = int(t1); s2 = int(t2)
-                    if s1 > s2 and s1 >= 2: winner_found = p1_raw
-                    elif s2 > s1 and s2 >= 2: winner_found = p2_raw
 
-            odds = []
-            try:
-                course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
-                found_r1_odds = []
-                for cell in course_cells_r1:
-                    txt = cell.get_text(strip=True)
-                    try:
-                        val = float(txt)
-                        if 1.01 <= val <= 100.0: found_r1_odds.append(val)
-                    except: pass
-                
-                if len(found_r1_odds) >= 2:
-                    odds = found_r1_odds[:2]
-                else:
-                    course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
-                    found_r2_odds = []
-                    for cell in course_cells_r2:
+            p1_match = any(tp in p1_raw.lower() for tp in target_players)
+            p2_match = any(tp in p2_raw.lower() for tp in target_players)
+
+            if p1_match and p2_match:
+                # --- WINNER DETECTION LOGIC ---
+                winner_found = None
+                p1_res = row.find('td', class_='result')
+                p2_res = row2.find('td', class_='result')
+                if p1_res and p2_res:
+                    t1 = p1_res.get_text(strip=True)
+                    t2 = p2_res.get_text(strip=True)
+                    if t1.isdigit() and t2.isdigit():
+                        s1 = int(t1); s2 = int(t2)
+                        if s1 > s2 and s1 >= 2: winner_found = p1_raw
+                        elif s2 > s1 and s2 >= 2: winner_found = p2_raw
+
+                odds = []
+                try:
+                    course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
+                    found_r1_odds = []
+                    for cell in course_cells_r1:
                         txt = cell.get_text(strip=True)
                         try:
                             val = float(txt)
-                            if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            if 1.01 <= val <= 100.0: found_r1_odds.append(val)
                         except: pass
                     
-                    if found_r1_odds and found_r2_odds:
-                        odds = [found_r1_odds[0], found_r2_odds[0]]
-            except: pass
-            
-            final_o1 = odds[0] if len(odds) > 0 else 0.0
-            final_o2 = odds[1] if len(odds) > 1 else 0.0
+                    if len(found_r1_odds) >= 2:
+                        odds = found_r1_odds[:2]
+                    else:
+                        course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
+                        found_r2_odds = []
+                        for cell in course_cells_r2:
+                            txt = cell.get_text(strip=True)
+                            try:
+                                val = float(txt)
+                                if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            except: pass
+                        
+                        if found_r1_odds and found_r2_odds:
+                            odds = [found_r1_odds[0], found_r2_odds[0]]
 
-            if (final_o1 > 0 and final_o2 > 0) or winner_found:
-                found.append({
-                    "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
-                    "time": m_time, "odds1": final_o1, "odds2": final_o2,
-                    "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
-                    "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
-                    "actual_winner": winner_found
-                })
-            i += 2 
+                except Exception: pass
+                
+                final_o1 = odds[0] if len(odds) > 0 else 0.0
+                final_o2 = odds[1] if len(odds) > 1 else 0.0
+
+                if (final_o1 > 0 and final_o2 > 0) or winner_found:
+                    found.append({
+                        "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
+                        "time": m_time, "odds1": final_o1, "odds2": final_o2,
+                        "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
+                        "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
+                        "actual_winner": winner_found
+                    })
+                i += 2 
+            else: i += 1 
     return found
 
 async def update_past_results(browser: Browser):
@@ -731,7 +742,7 @@ async def run_pipeline():
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                             
                             if db_match_id and cached_ai:
-                                log(f"   💰 Token Saver: Reusing AI Text")
+                                log(f"   💰 Token Saver: Reusing AI Text, Recalculating Fair Odds")
                                 ai_text_final = cached_ai['ai_text']
                                 new_prob = recalculate_fair_odds_with_new_market(
                                     old_fair_odds1=cached_ai['ai_fair_odds1'],
