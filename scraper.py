@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V39.0 - Style Engine & Granular Units)...")
+log("🔌 Initialisiere Neural Scout (V39.1 - SyncGuard & Style Engine)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -205,7 +205,7 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
             .execute()
         
         matches = res.data
-        if notMatches or len(matches) < 5: return None
+        if not matches or len(matches) < 5: return None
 
         # Extract Opponents
         opponents_map = {} # name -> style
@@ -612,7 +612,8 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # V35.5 (Hybrid Winner Logic)
+    # [ARCHITECT FIX] V39.1: Synchronized Sliding Window
+    # Force consume pairs to avoid phantom matches
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
@@ -648,6 +649,10 @@ def parse_matches_locally_v5(html, p_names):
             if not p1_cell or not p2_cell: 
                 i+=1; continue
 
+            # [ARCHITECT FIX]: We successfully extracted names for two rows.
+            # This is structurally a match pair. We MUST consume both rows (i+=2)
+            # at the end of this block to prevent the sliding window bug.
+            
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
             
@@ -714,8 +719,10 @@ def parse_matches_locally_v5(html, p_names):
                         "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
                         "actual_winner": winner_found
                     })
-                i += 2 
-            else: i += 1 
+            
+            # [ARCHITECT FIX]: Always consume the pair if valid player rows were found
+            i += 2
+            
     return found
 
 async def update_past_results(browser: Browser):
@@ -771,7 +778,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V39.0 (Style Analysis + Granular Units) Starting...")
+    log(f"🚀 Neural Scout V39.1 (Style Analysis + SyncGuard) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
