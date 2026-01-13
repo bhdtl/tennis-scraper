@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V39.1 - SyncGuard & Style Engine)...")
+log("🔌 Initialisiere Neural Scout (V39.3 - Structural DOM Anchor)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -612,8 +612,13 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # [ARCHITECT FIX] V39.1: Synchronized Sliding Window
-    # Force consume pairs to avoid phantom matches
+    # [ARCHITECT VETERAN FIX] V39.3: Structural DOM Anchoring via ROWSPAN
+    # PROBLEM: Previous versions guessed pairs based on names. If a name was missed, the loop 
+    # desynchronized, pairing Row 2 of Match A with Row 1 of Match B (e.g. Minnen vs Wawrinka).
+    # SOLUTION: We now strictly look for the HTML structure that defines a "Match Start".
+    # In TennisExplorer, the first row of a match ALWAYS has a 'rowspan="2"' in the first/time cell.
+    # If a row does NOT have this, it is structurally impossible for it to be Player 1.
+    
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
@@ -626,20 +631,54 @@ def parse_matches_locally_v5(html, p_names):
         i = 0
         while i < len(rows):
             row = rows[i]
+            
+            # 1. Check for Tournament Header
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 i += 1; continue
             
-            if "doubles" in current_tour.lower() or i+1 >= len(rows): 
-                i+=1; continue
+            # 2. Safety Bounds Check
+            if i + 1 >= len(rows):
+                i += 1; continue
 
+            # [STRUCTURAL ANCHOR CHECK]
+            # Does this row have a cell with rowspan="2" or class "first time"?
+            # This is the ONLY reliable way to identify Player 1.
+            first_cell = row.find('td', class_='first')
+            is_match_start = False
+            
+            if first_cell:
+                # Check 1: Explicit rowspan
+                if first_cell.get('rowspan') == '2':
+                    is_match_start = True
+                # Check 2: It contains a time (fallback if rowspan is weirdly formatted)
+                elif 'time' in first_cell.get('class', []) and len(first_cell.get_text(strip=True)) > 2:
+                     # Usually implies start, but rowspan is safer. Let's rely on rowspan or time presence.
+                     # If the NEXT row has NO first cell (because it's spanned), then this IS the start.
+                     row2_first = rows[i+1].find('td', class_='first')
+                     if not row2_first: 
+                         is_match_start = True # Row 2 has no first cell -> Row 1 spans over it.
+
+            if not is_match_start:
+                # This row is NOT a match starter. It's likely a second row (Player 2) of a previous match
+                # that we processed (or skipped), or a specific header/comment.
+                # We skip it to realign the grid.
+                # log(f"DEBUG: Skipping orphan row: {row.get_text()[:30]}...")
+                i += 1
+                continue
+
+            # If we are here, 'row' is GUARANTEED to be Player 1.
+            # 'row2' is GUARANTEED to be Player 2.
             row2 = rows[i+1]
+            
             cols1 = row.find_all('td')
             cols2 = row2.find_all('td')
             
+            # Basic content check
             if len(cols1) < 2 or len(cols2) < 1: 
-                i+=1; continue
+                i += 2; continue # Consume block
 
+            # Extract Names
             p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), None)
             if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
 
@@ -647,26 +686,26 @@ def parse_matches_locally_v5(html, p_names):
             if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
             
             if not p1_cell or not p2_cell: 
-                i+=1; continue
+                i += 2; continue
 
-            # [ARCHITECT FIX]: We successfully extracted names for two rows.
-            # This is structurally a match pair. We MUST consume both rows (i+=2)
-            # at the end of this block to prevent the sliding window bug.
-            
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
             
             if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): 
-                i+=2; continue
+                i += 2; continue
 
+            # Extract Time
             m_time = "00:00"
-            tc = row.find('td', class_='first')
-            if tc and 'time' in tc.get('class', []):
-                tm = re.search(r'(\d{1,2}:\d{2})', tc.get_text(strip=True))
+            if first_cell:
+                tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
             p1_match = any(tp in p1_raw.lower() for tp in target_players)
             p2_match = any(tp in p2_raw.lower() for tp in target_players)
+
+            # Debug Log for Specific Case
+            if "minnen" in p1_raw.lower() or "wawrinka" in p1_raw.lower():
+                log(f"DEBUG TRACE: Found P1: {p1_raw} | P2: {p2_raw} | Tour: {current_tour}")
 
             if p1_match and p2_match:
                 winner_found = None
@@ -720,7 +759,8 @@ def parse_matches_locally_v5(html, p_names):
                         "actual_winner": winner_found
                     })
             
-            # [ARCHITECT FIX]: Always consume the pair if valid player rows were found
+            # IMPORTANT: Since we identified a match start (is_match_start=True),
+            # we ALWAYS consume both rows, whether it was a DB match or not.
             i += 2
             
     return found
@@ -778,7 +818,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V39.1 (Style Analysis + SyncGuard) Starting...")
+    log(f"🚀 Neural Scout V39.3 (Style Analysis + Structural DOM Anchor) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
