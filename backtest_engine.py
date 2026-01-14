@@ -35,6 +35,7 @@ DATA_SOURCES = [
     "http://www.tennis-data.co.uk/2025w/2025.xlsx"     # WTA 2025
 ]
 
+# SOTA: Normalized Speed Map (1-10) based on your PDF
 TOURNAMENT_SPEED_MAP = {
     "Stuttgart": 9.0, "Brussels": 8.5, "Halle": 8.0, "Brisbane": 8.0, 
     "Basel": 7.8, "Queens Club": 7.7, "Mallorca": 7.5, "Chengdu": 7.5,
@@ -44,10 +45,9 @@ TOURNAMENT_SPEED_MAP = {
     "Australian Open": 6.8, "US Open": 6.8, "Miami": 6.8, "Tokyo": 6.8,
     "Montreal": 6.7, "Toronto": 6.7, "Winston-Salem": 6.7, "Doha": 6.7,
     "Indian Wells": 5.2, "Acapulco": 5.5, "Beijing": 5.6, "Delray Beach": 5.8,
-    "Madrid": 5.9,
-    "Roland Garros": 4.5, "Rome": 4.5, "Monte Carlo": 3.5, "Barcelona": 3.2,
-    "Rio de Janeiro": 3.3, "Buenos Aires": 3.0, "Hamburg": 4.0, "Munich": 4.0,
-    "Estoril": 3.5, "Gstaad": 6.0,
+    "Madrid": 5.9, "Roland Garros": 4.5, "Rome": 4.5, "Monte Carlo": 3.5, 
+    "Barcelona": 3.2, "Rio de Janeiro": 3.3, "Buenos Aires": 3.0, 
+    "Hamburg": 4.0, "Munich": 4.0, "Estoril": 3.5, "Gstaad": 6.0,
     "Kitzbuhel": 5.0, "Umag": 3.5, "Bastad": 3.5, "Marrakech": 4.5
 }
 
@@ -79,26 +79,38 @@ class TimeMachineElo:
 elo_engine = TimeMachineElo()
 
 # =================================================================
-# 3. MATH CORE
+# 3. MATH CORE (OPTIMIZED WEIGHTS)
 # =================================================================
 def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
+    # 1. Physics Probability (Elo + Context Mock)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
-    prob_alpha = prob_elo 
-    prob_market = 0.5
     
+    # 2. Market Wisdom (Weighted)
+    prob_market = 0.5
     if m_odds1 > 1 and m_odds2 > 1:
         marg = (1/m_odds1) + (1/m_odds2)
         prob_market = (1/m_odds1) / marg
     
-    final_prob = (prob_alpha * 0.70) + (prob_market * 0.30)
+    # SOTA WEIGHTING: 60% Model (Elo), 40% Market
+    # Slightly more conservative than live to account for missing AI text
+    prob_alpha = prob_elo 
+    final_prob = (prob_alpha * 0.60) + (prob_market * 0.40)
     
+    # Compression (Edge Sharpening)
     if final_prob > 0.60: final_prob = min(final_prob * 1.05, 0.94)
     elif final_prob < 0.40: final_prob = max(final_prob * 0.95, 0.06)
     
     return final_prob
 
+def safe_float(val):
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f): return None
+        return f
+    except: return None
+
 # =================================================================
-# 4. PROCESSING PIPELINE
+# 4. PIPELINE
 # =================================================================
 def clean_name(name):
     if not isinstance(name, str): return "Unknown"
@@ -125,13 +137,6 @@ def get_bsi(tournament_name, surface):
         if k.lower() in str(tournament_name).lower():
             return v
     return SURFACE_DEFAULTS.get(surface, 5.0)
-
-def safe_float(val):
-    try:
-        f = float(val)
-        if math.isnan(f) or math.isinf(f): return None
-        return f
-    except: return None
 
 async def run_backtest():
     logger.info("⏳ Lade Player Database...")
@@ -196,10 +201,10 @@ async def run_backtest():
                     fair_odds_p2 = round(1 / (1 - fair_prob_p1), 2)
                     if math.isinf(fair_odds_p1) or math.isinf(fair_odds_p2): continue
 
-                    ai_text = f"BACKTEST [BSI {bsi}]: "
                     edge_p1 = (1/fair_odds_p1) - (1/w_odds)
                     edge_p2 = (1/fair_odds_p2) - (1/l_odds)
                     
+                    ai_text = f"BACKTEST [BSI {bsi}]: "
                     if w_odds > fair_odds_p1 and edge_p1 > -0.05:
                         ai_text += f"Value on Winner ({p1_obj['last_name']}). Elo {int(elo1_pre)} vs {int(elo2_pre)}."
                     elif l_odds > fair_odds_p2 and edge_p2 > -0.05:
@@ -223,7 +228,7 @@ async def run_backtest():
                     
                     records_to_insert.append(record)
                     
-                    # --- SOTA FIX: ISOLATED BATCH UPLOAD ---
+                    # --- SOTA BATCHING ---
                     if len(records_to_insert) >= 50:
                         try:
                             logger.info(f"💾 Upserting Batch of {len(records_to_insert)}...")
@@ -235,7 +240,6 @@ async def run_backtest():
                         except Exception as e:
                             logger.error(f"⚠️ Batch Upload Failed: {e}")
                         finally:
-                            # CRITICAL: Always clear buffer to prevent Zombie Batch Accumulation
                             records_to_insert = []
                         
                 except Exception as e:
@@ -244,10 +248,9 @@ async def run_backtest():
         except Exception as e:
             logger.error(f"Failed to process {url}: {e}")
 
-    # Final Cleanup
     if records_to_insert:
         try:
-            logger.info(f"💾 Upserting Final Batch of {len(records_to_insert)}...")
+            logger.info(f"💾 Upserting Final Batch...")
             supabase.table("market_odds").upsert(
                 records_to_insert, 
                 on_conflict="player1_name,player2_name,match_time", 
