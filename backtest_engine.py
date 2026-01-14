@@ -8,7 +8,7 @@ import requests
 import math
 import logging
 import zipfile
-import numpy as np # WICHTIG: Für NaN Checks
+import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from supabase import create_client, Client
@@ -28,7 +28,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# UPDATED SOURCES (2025 Links Verified)
 DATA_SOURCES = [
     "http://www.tennis-data.co.uk/2024/2024.xlsx",     # ATP 2024
     "http://www.tennis-data.co.uk/2024w/2024.xlsx",    # WTA 2024
@@ -87,7 +86,6 @@ def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     prob_alpha = prob_elo 
     prob_market = 0.5
     
-    # SAFETY: Check for valid odds before division
     if m_odds1 > 1 and m_odds2 > 1:
         marg = (1/m_odds1) + (1/m_odds2)
         prob_market = (1/m_odds1) / marg
@@ -128,15 +126,12 @@ def get_bsi(tournament_name, surface):
             return v
     return SURFACE_DEFAULTS.get(surface, 5.0)
 
-# HELPER: Safe Float Conversion
 def safe_float(val):
     try:
         f = float(val)
-        if math.isnan(f) or math.isinf(f):
-            return None
+        if math.isnan(f) or math.isinf(f): return None
         return f
-    except:
-        return None
+    except: return None
 
 async def run_backtest():
     logger.info("⏳ Lade Player Database...")
@@ -154,19 +149,14 @@ async def run_backtest():
         logger.info(f"📥 Downloade: {url}")
         try:
             r = requests.get(url, headers=headers)
-            
-            if r.status_code == 404:
-                logger.warning(f"⚠️ Datei nicht gefunden (404): {url} - Skipping.")
-                continue
-            
-            if "html" in r.headers.get("Content-Type", "").lower():
-                logger.warning(f"⚠️ Warnung: Server lieferte HTML statt Excel. Skipping.")
+            if r.status_code == 404 or "html" in r.headers.get("Content-Type", "").lower():
+                logger.warning(f"⚠️ Skip Invalid URL: {url}")
                 continue
 
             try:
                 df = pd.read_excel(io.BytesIO(r.content), engine='openpyxl')
             except Exception as e:
-                logger.error(f"❌ Excel Parsing Error bei {url}: {e}")
+                logger.error(f"❌ Excel Error {url}: {e}")
                 continue
             
             df.columns = [str(c).strip() for c in df.columns]
@@ -174,7 +164,6 @@ async def run_backtest():
             
             for _, row in df.iterrows():
                 try:
-                    # 1. Basic Data Check
                     winner_raw = str(row.get('Winner'))
                     loser_raw = str(row.get('Loser'))
                     if winner_raw == 'nan' or loser_raw == 'nan': continue
@@ -186,40 +175,25 @@ async def run_backtest():
                     
                     if not p1_obj or not p2_obj: continue
                     
-                    # 2. Odds Sanitization (THE FIX)
-                    # We check B365, then PS (Pinnacle), then Avg
                     w_odds = safe_float(row.get('B365W')) or safe_float(row.get('PSW')) or safe_float(row.get('AvgW'))
                     l_odds = safe_float(row.get('B365L')) or safe_float(row.get('PSL')) or safe_float(row.get('AvgL'))
                     
-                    # STRICT FILTER: If we don't have valid numerical odds, skip the match.
-                    if w_odds is None or l_odds is None: 
-                        continue
+                    if w_odds is None or l_odds is None: continue
                     
                     tournament = str(row.get('Tournament', 'Unknown'))
                     surface = str(row.get('Surface', 'Hard'))
                     date_obj = row.get('Date')
                     
-                    # 3. Date Sanitization
                     match_time_str = datetime.now().isoformat()
                     if pd.notna(date_obj):
-                        try:
-                            # Ensure it's a datetime object
-                            if isinstance(date_obj, str):
-                                # Try parsing if it's a string (unlikely with read_excel but possible)
-                                pass 
-                            else:
-                                match_time_str = date_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        try: match_time_str = date_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
                         except: pass
 
                     bsi = get_bsi(tournament, surface)
-                    
                     fair_prob_p1 = calculate_historical_fair_odds(elo1_pre, elo2_pre, surface, bsi, w_odds, l_odds)
                     
-                    # 4. Fair Odds Sanitization
                     fair_odds_p1 = round(1 / fair_prob_p1, 2)
                     fair_odds_p2 = round(1 / (1 - fair_prob_p1), 2)
-                    
-                    # Final check against Infinity
                     if math.isinf(fair_odds_p1) or math.isinf(fair_odds_p2): continue
 
                     ai_text = f"BACKTEST [BSI {bsi}]: "
@@ -249,21 +223,38 @@ async def run_backtest():
                     
                     records_to_insert.append(record)
                     
-                    if len(records_to_insert) >= 50: # Smaller Batch for safety
-                        logger.info(f"💾 Upserting Batch of {len(records_to_insert)}...")
-                        supabase.table("market_odds").upsert(records_to_insert, on_conflict="player1_name,player2_name,match_time", ignore_duplicates=True).execute()
-                        records_to_insert = []
+                    # --- SOTA FIX: ISOLATED BATCH UPLOAD ---
+                    if len(records_to_insert) >= 50:
+                        try:
+                            logger.info(f"💾 Upserting Batch of {len(records_to_insert)}...")
+                            supabase.table("market_odds").upsert(
+                                records_to_insert, 
+                                on_conflict="player1_name,player2_name,match_time", 
+                                ignore_duplicates=True
+                            ).execute()
+                        except Exception as e:
+                            logger.error(f"⚠️ Batch Upload Failed: {e}")
+                        finally:
+                            # CRITICAL: Always clear buffer to prevent Zombie Batch Accumulation
+                            records_to_insert = []
                         
                 except Exception as e:
-                    # logger.warning(f"Skipped row due to logic error: {e}")
                     continue
 
         except Exception as e:
             logger.error(f"Failed to process {url}: {e}")
 
+    # Final Cleanup
     if records_to_insert:
-        logger.info(f"💾 Upserting Final Batch of {len(records_to_insert)}...")
-        supabase.table("market_odds").upsert(records_to_insert, on_conflict="player1_name,player2_name,match_time", ignore_duplicates=True).execute()
+        try:
+            logger.info(f"💾 Upserting Final Batch of {len(records_to_insert)}...")
+            supabase.table("market_odds").upsert(
+                records_to_insert, 
+                on_conflict="player1_name,player2_name,match_time", 
+                ignore_duplicates=True
+            ).execute()
+        except Exception as e:
+            logger.error(f"⚠️ Final Batch Failed: {e}")
 
     logger.info("🏁 Backtest Complete.")
 
