@@ -4,3 +4,6 @@ supabase
 httpx
 numpy
 google-generativeai
+pandas
+openpyxl
+requests
