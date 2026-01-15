@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V44.0 - PURE ALPHA HUNTER)...")
+log("🔌 Initialisiere Neural Scout (V45.0 - HISTORY AWARE HUNTER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -784,7 +784,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V44.0 PURE ALPHA HUNTER Starting...")
+    log(f"🚀 Neural Scout V45.0 PURE ALPHA HUNTER (HISTORY ENABLED) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -867,6 +867,10 @@ async def run_pipeline():
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                             
+                            # NEW: History Variables
+                            is_hunter_pick_active = False
+                            hunter_pick_player = None
+
                             if db_match_id and cached_ai:
                                 log(f"   💰 Token Saver: Reusing AI Text, Recalculating Fair Odds")
                                 ai_text_final = cached_ai['ai_text']
@@ -882,9 +886,17 @@ async def run_pipeline():
                                 
                                 kelly_advice = ""
                                 if m['odds1'] > fair1:
-                                    kelly_advice = f" | 💎 HUNTER P1 ({fair1}) -> " + calculate_kelly_stake(1/fair1, m['odds1'])
+                                    stake = calculate_kelly_stake(1/fair1, m['odds1'])
+                                    kelly_advice = f" | 💎 HUNTER P1 ({fair1}) -> " + stake
+                                    if stake != "0u": 
+                                        is_hunter_pick_active = True
+                                        hunter_pick_player = n1
                                 elif m['odds2'] > fair2:
-                                    kelly_advice = f" | 💎 HUNTER P2 ({fair2}) -> " + calculate_kelly_stake(1/fair2, m['odds2'])
+                                    stake = calculate_kelly_stake(1/fair2, m['odds2'])
+                                    kelly_advice = f" | 💎 HUNTER P2 ({fair2}) -> " + stake
+                                    if stake != "0u": 
+                                        is_hunter_pick_active = True
+                                        hunter_pick_player = n2
                                 
                                 if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final:
                                     ai_text_final += kelly_advice
@@ -905,8 +917,6 @@ async def run_pipeline():
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                                 
                                 betting_advice = ""
-                                edge_p1 = (1/fair1) - (1/m['odds1']) if m['odds1'] > 0 else 0
-                                edge_p2 = (1/fair2) - (1/m['odds2']) if m['odds2'] > 0 else 0
                                 
                                 # V44 SNIPER EXECUTION (LIVE)
                                 stake_p1 = calculate_kelly_stake(1/fair1, m['odds1'])
@@ -915,9 +925,13 @@ async def run_pipeline():
                                 if stake_p1 != "0u":
                                     edge = round(((m['odds1'] * (1/fair1)) - 1) * 100, 1)
                                     betting_advice = f" [💎 HUNTER: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {edge}% | Stake: {stake_p1}]"
+                                    is_hunter_pick_active = True
+                                    hunter_pick_player = n1
                                 elif stake_p2 != "0u":
                                     edge = round(((m['odds2'] * (1/fair2)) - 1) * 100, 1)
                                     betting_advice = f" [💎 HUNTER: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {edge}% | Stake: {stake_p2}]"
+                                    is_hunter_pick_active = True
+                                    hunter_pick_player = n2
                                 
                                 ai_text_final = ai_text_base + betting_advice
                                 
@@ -935,15 +949,42 @@ async def run_pipeline():
                                 "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
                             
+                            # --- CORE UPDATE: DUAL WRITE SYSTEM (V45) ---
+                            final_match_id = None
+                            
                             if db_match_id:
+                                # Update existing
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                final_match_id = db_match_id
                                 log(f"🔄 Updated Odds: {n1} vs {n2}")
                             else:
-                                supabase.table("market_odds").insert(data).execute()
-                                log(f"💾 Saved: {n1} vs {n2}")
+                                # Insert new (and get ID!)
+                                res_insert = supabase.table("market_odds").insert(data).execute()
+                                if res_insert.data and len(res_insert.data) > 0:
+                                    final_match_id = res_insert.data[0]['id']
+                                    log(f"💾 Saved: {n1} vs {n2}")
+
+                            # HISTORY LOGGING (The Graph Feed)
+                            if final_match_id:
+                                history_payload = {
+                                    "match_id": final_match_id,
+                                    "odds1": m['odds1'],
+                                    "odds2": m['odds2'],
+                                    "fair_odds1": fair1,
+                                    "fair_odds2": fair2,
+                                    "is_hunter_pick": is_hunter_pick_active,
+                                    "pick_player_name": hunter_pick_player,
+                                    "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                }
+                                try:
+                                    supabase.table("odds_history").insert(history_payload).execute()
+                                    # log(f"      📈 History Point Logged") # Optional log
+                                except Exception as hist_err:
+                                    log(f"      ⚠️ History Log Error: {hist_err}")
+                                    
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     log("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
-    asyncio.run(run_pipeline())
+    asyncio.run(run_pipeline())run(run_pipeline())
