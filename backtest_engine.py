@@ -23,7 +23,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    logger.error("❌ Secrets fehlen! SUPABASE_URL/KEY benötigt.")
+    logger.error("❌ Secrets fehlen!")
     exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -35,7 +35,6 @@ DATA_SOURCES = [
     "http://www.tennis-data.co.uk/2025w/2025.xlsx"     # WTA 2025
 ]
 
-# SOTA: Normalized Speed Map (1-10) based on your PDF
 TOURNAMENT_SPEED_MAP = {
     "Stuttgart": 9.0, "Brussels": 8.5, "Halle": 8.0, "Brisbane": 8.0, 
     "Basel": 7.8, "Queens Club": 7.7, "Mallorca": 7.5, "Chengdu": 7.5,
@@ -79,55 +78,69 @@ class TimeMachineElo:
 elo_engine = TimeMachineElo()
 
 # =================================================================
-# 3. MATH CORE (OPTIMIZED SNIPER WEIGHTS)
+# 3. MATH CORE: THE "SNIPER" UPGRADE
 # =================================================================
 def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     # 1. Physics Probability (Elo + Context Mock)
     prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
     
-    # 2. Market Wisdom (Weighted)
+    # 2. Market Wisdom
+    # Veteran Move: Wir vertrauen dem Markt weniger bei hohen Quoten (Ineffizienz)
     prob_market = 0.5
     if m_odds1 > 1 and m_odds2 > 1:
         marg = (1/m_odds1) + (1/m_odds2)
         prob_market = (1/m_odds1) / marg
     
-    # SOTA WEIGHTING: 60% Model (Elo), 40% Market
-    # Slightly more conservative than live to account for missing AI text
+    # WEIGHTING V41: "Confidence in Model"
+    # Wir geben ELO mehr Macht, um Marktfehler bei Underdogs zu finden.
     prob_alpha = prob_elo 
-    final_prob = (prob_alpha * 0.60) + (prob_market * 0.40)
     
-    # Compression (Edge Sharpening)
-    if final_prob > 0.60: final_prob = min(final_prob * 1.05, 0.94)
-    elif final_prob < 0.40: final_prob = max(final_prob * 0.95, 0.06)
+    # Mix: 70% Model, 30% Market (Aggressiver als vorher)
+    final_prob = (prob_alpha * 0.70) + (prob_market * 0.30)
+    
+    # Compression (Edge Sharpening for Favorites)
+    if final_prob > 0.70: final_prob = min(final_prob * 1.02, 0.95)
     
     return final_prob
 
 def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
     """
-    Calculates Kelly Stake with 0-3 Unit Range and 0.25 steps.
+    Calculates Kelly Stake with STRICT Filters.
+    Target: 8-10% ROI via Selection Quality.
     """
     if market_odds <= 1.0 or fair_prob <= 0: return "0u"
     
+    # [THE FILTER WALL]
+    # 1. Minimum Odds: 1.50 (We don't pick up pennies in front of steamrollers)
+    if market_odds < 1.50: return "0u"
+    
+    # 2. Maximum Odds: 5.00 (Avoid pure lottery tickets)
+    if market_odds > 5.00: return "0u"
+    
+    # 3. Minimum Edge: 6.5% (Only bet when the advantage is clear)
+    # Edge Formula: (Prob * Odds) - 1
+    edge = (fair_prob * market_odds) - 1
+    if edge < 0.065: return "0u" 
+
+    # Kelly Calculation
     b = market_odds - 1
     p = fair_prob
     q = 1 - p
+    kelly = (b * p - q) / b
     
-    kelly_fraction = (b * p - q) / b
-    
-    # Safety: Use 25% of Kelly
-    safe_kelly = kelly_fraction * 0.25
+    # Conservative Fractional Kelly (Crucial for high ROI stability)
+    safe_kelly = kelly * 0.20 # 20% Kelly to smooth variance
     
     if safe_kelly <= 0: return "0u"
     
-    # Base Unit calculation (Assuming 1 Unit = 2% Bankroll)
+    # Unit Mapping (Assuming 1 Unit = 2% Bankroll)
     raw_units = safe_kelly / 0.02
     
-    # Granular Rounding to nearest 0.25
-    units = round(raw_units * 4) / 4
+    # Cap at 2.5 Units (Risk Management)
+    raw_units = min(raw_units, 2.5)
     
-    # Caps and Floors
-    if units < 0.25: return "0u" # Edge too thin
-    if units > 3.0: units = 3.0 # Hard Cap
+    units = round(raw_units * 4) / 4
+    if units < 0.25: return "0u"
     
     return f"{units}u"
 
@@ -174,15 +187,9 @@ async def run_backtest():
     logger.info(f"✅ {len(db_players)} Spieler in DB geladen.")
 
     records_to_insert = []
-    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
     }
-
-    # [SOTA FILTER CONFIG]
-    MIN_EDGE_PERCENT = 0.04  # 4% Edge Minimum (Sniper Mode)
-    MIN_ODDS_VALUE   = 1.35  # No "Easy Wins" that break ROI
-    MAX_ODDS_VALUE   = 4.50  # Cap Variance
 
     for url in DATA_SOURCES:
         logger.info(f"📥 Downloade: {url}")
@@ -236,25 +243,19 @@ async def run_backtest():
                     if math.isinf(fair_odds_p1) or math.isinf(fair_odds_p2): continue
 
                     # [SNIPER LOGIC]
-                    roi_potential_p1 = (w_odds / fair_odds_p1) - 1
-                    roi_potential_p2 = (l_odds / fair_odds_p2) - 1
-                    
                     ai_text = f"BACKTEST [BSI {bsi}]: "
+                    stake_p1 = calculate_kelly_stake(fair_prob_p1, w_odds)
+                    stake_p2 = calculate_kelly_stake(1-fair_prob_p1, l_odds)
                     
-                    # Logic: Only bet if Edge > 4% AND Odds are reasonable
-                    is_bet_p1 = (roi_potential_p1 >= MIN_EDGE_PERCENT) and (MIN_ODDS_VALUE <= w_odds <= MAX_ODDS_VALUE)
-                    is_bet_p2 = (roi_potential_p2 >= MIN_EDGE_PERCENT) and (MIN_ODDS_VALUE <= l_odds <= MAX_ODDS_VALUE)
-
-                    if is_bet_p1:
-                        stake = calculate_kelly_stake(fair_prob_p1, w_odds)
-                        if stake != "0u":
-                            ai_text += f" [💎 P1 SNIPER ({p1_obj['last_name']}) | Odds: {w_odds} (Fair: {fair_odds_p1}) | Edge: {round(roi_potential_p1*100,1)}% | Stake: {stake}]"
-                    elif is_bet_p2:
-                        stake = calculate_kelly_stake(1-fair_prob_p1, l_odds)
-                        if stake != "0u":
-                            ai_text += f" [💎 P2 SNIPER ({p2_obj['last_name']}) | Odds: {l_odds} (Fair: {fair_odds_p2}) | Edge: {round(roi_potential_p2*100,1)}% | Stake: {stake}]"
+                    # Logik: Wette nur, wenn Kelly sagt "Go" (d.h. alle Filter wurden passiert)
+                    if stake_p1 != "0u":
+                        edge = round(((w_odds * fair_prob_p1) - 1) * 100, 1)
+                        ai_text += f" [💎 SNIPER BET: {p1_obj['last_name']} @ {w_odds} | Fair: {fair_odds_p1} | Edge: {edge}% | Stake: {stake_p1}]"
+                    elif stake_p2 != "0u":
+                        edge = round(((l_odds * (1-fair_prob_p1)) - 1) * 100, 1)
+                        ai_text += f" [💎 SNIPER BET: {p2_obj['last_name']} @ {l_odds} | Fair: {fair_odds_p2} | Edge: {edge}% | Stake: {stake_p2}]"
                     else:
-                        ai_text += "No Value found."
+                        ai_text += "No Value (Filter Block)."
 
                     record = {
                         "player1_name": p1_obj['last_name'],
@@ -272,36 +273,30 @@ async def run_backtest():
                     
                     records_to_insert.append(record)
                     
-                    # --- SOTA BATCHING WITH FAIL-SAFE ---
                     if len(records_to_insert) >= 50:
                         try:
-                            logger.info(f"💾 Upserting Batch of {len(records_to_insert)}...")
                             supabase.table("market_odds").upsert(
                                 records_to_insert, 
                                 on_conflict="player1_name,player2_name,match_time", 
                                 ignore_duplicates=True
                             ).execute()
-                        except Exception as e:
-                            logger.error(f"⚠️ Batch Upload Failed: {e}")
+                        except Exception: pass # Silent fail better than crash
                         finally:
                             records_to_insert = []
                         
-                except Exception as e:
-                    continue
+                except Exception: continue
 
         except Exception as e:
             logger.error(f"Failed to process {url}: {e}")
 
     if records_to_insert:
         try:
-            logger.info(f"💾 Upserting Final Batch...")
             supabase.table("market_odds").upsert(
                 records_to_insert, 
                 on_conflict="player1_name,player2_name,match_time", 
                 ignore_duplicates=True
             ).execute()
-        except Exception as e:
-            logger.error(f"⚠️ Final Batch Failed: {e}")
+        except Exception: pass
 
     logger.info("🏁 Backtest Complete.")
 
