@@ -1,0 +1,31 @@
+name: V44 Backfill Ops (2026)
+
+on:
+  workflow_dispatch: # Das erlaubt den manuellen Start per Klick
+
+jobs:
+  run-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # Sicherheits-Timeout
+
+    steps:
+      - name: 🏗️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium # WICHTIG: Installiert den Browser für den Bot
+
+      - name: 🚀 Run Backfill Protocol
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python backfill_2026.py
