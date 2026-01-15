@@ -79,7 +79,7 @@ class TimeMachineElo:
 elo_engine = TimeMachineElo()
 
 # =================================================================
-# 3. MATH CORE (OPTIMIZED WEIGHTS)
+# 3. MATH CORE (OPTIMIZED SNIPER WEIGHTS)
 # =================================================================
 def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     # 1. Physics Probability (Elo + Context Mock)
@@ -101,6 +101,35 @@ def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     elif final_prob < 0.40: final_prob = max(final_prob * 0.95, 0.06)
     
     return final_prob
+
+def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
+    """
+    Calculates Kelly Stake with 0-3 Unit Range and 0.25 steps.
+    """
+    if market_odds <= 1.0 or fair_prob <= 0: return "0u"
+    
+    b = market_odds - 1
+    p = fair_prob
+    q = 1 - p
+    
+    kelly_fraction = (b * p - q) / b
+    
+    # Safety: Use 25% of Kelly
+    safe_kelly = kelly_fraction * 0.25
+    
+    if safe_kelly <= 0: return "0u"
+    
+    # Base Unit calculation (Assuming 1 Unit = 2% Bankroll)
+    raw_units = safe_kelly / 0.02
+    
+    # Granular Rounding to nearest 0.25
+    units = round(raw_units * 4) / 4
+    
+    # Caps and Floors
+    if units < 0.25: return "0u" # Edge too thin
+    if units > 3.0: units = 3.0 # Hard Cap
+    
+    return f"{units}u"
 
 def safe_float(val):
     try:
@@ -149,6 +178,11 @@ async def run_backtest():
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36'
     }
+
+    # [SOTA FILTER CONFIG]
+    MIN_EDGE_PERCENT = 0.04  # 4% Edge Minimum (Sniper Mode)
+    MIN_ODDS_VALUE   = 1.35  # No "Easy Wins" that break ROI
+    MAX_ODDS_VALUE   = 4.50  # Cap Variance
 
     for url in DATA_SOURCES:
         logger.info(f"📥 Downloade: {url}")
@@ -201,14 +235,24 @@ async def run_backtest():
                     fair_odds_p2 = round(1 / (1 - fair_prob_p1), 2)
                     if math.isinf(fair_odds_p1) or math.isinf(fair_odds_p2): continue
 
-                    edge_p1 = (1/fair_odds_p1) - (1/w_odds)
-                    edge_p2 = (1/fair_odds_p2) - (1/l_odds)
+                    # [SNIPER LOGIC]
+                    roi_potential_p1 = (w_odds / fair_odds_p1) - 1
+                    roi_potential_p2 = (l_odds / fair_odds_p2) - 1
                     
                     ai_text = f"BACKTEST [BSI {bsi}]: "
-                    if w_odds > fair_odds_p1 and edge_p1 > -0.05:
-                        ai_text += f"Value on Winner ({p1_obj['last_name']}). Elo {int(elo1_pre)} vs {int(elo2_pre)}."
-                    elif l_odds > fair_odds_p2 and edge_p2 > -0.05:
-                        ai_text += f"Value on Loser ({p2_obj['last_name']}). Elo {int(elo1_pre)} vs {int(elo2_pre)}."
+                    
+                    # Logic: Only bet if Edge > 4% AND Odds are reasonable
+                    is_bet_p1 = (roi_potential_p1 >= MIN_EDGE_PERCENT) and (MIN_ODDS_VALUE <= w_odds <= MAX_ODDS_VALUE)
+                    is_bet_p2 = (roi_potential_p2 >= MIN_EDGE_PERCENT) and (MIN_ODDS_VALUE <= l_odds <= MAX_ODDS_VALUE)
+
+                    if is_bet_p1:
+                        stake = calculate_kelly_stake(fair_prob_p1, w_odds)
+                        if stake != "0u":
+                            ai_text += f" [💎 P1 SNIPER ({p1_obj['last_name']}) | Odds: {w_odds} (Fair: {fair_odds_p1}) | Edge: {round(roi_potential_p1*100,1)}% | Stake: {stake}]"
+                    elif is_bet_p2:
+                        stake = calculate_kelly_stake(1-fair_prob_p1, l_odds)
+                        if stake != "0u":
+                            ai_text += f" [💎 P2 SNIPER ({p2_obj['last_name']}) | Odds: {l_odds} (Fair: {fair_odds_p2}) | Edge: {round(roi_potential_p2*100,1)}% | Stake: {stake}]"
                     else:
                         ai_text += "No Value found."
 
@@ -228,7 +272,7 @@ async def run_backtest():
                     
                     records_to_insert.append(record)
                     
-                    # --- SOTA BATCHING ---
+                    # --- SOTA BATCHING WITH FAIL-SAFE ---
                     if len(records_to_insert) >= 50:
                         try:
                             logger.info(f"💾 Upserting Batch of {len(records_to_insert)}...")
