@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V45.0 - HISTORY AWARE HUNTER)...")
+log("🔌 Initialisiere Neural Scout (V45.1 - HISTORY AWARE HUNTER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -784,7 +784,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V45.0 PURE ALPHA HUNTER (HISTORY ENABLED) Starting...")
+    log(f"🚀 Neural Scout V45.1 PURE ALPHA HUNTER (HISTORY ENABLED) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -987,4 +987,4 @@ async def run_pipeline():
     log("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
-    asyncio.run(run_pipeline())run(run_pipeline())
+    asyncio.run(run_pipeline())
