@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V40.0 - SOTA Sniper Model)...")
+log("🔌 Initialisiere Neural Scout (V44.0 - PURE ALPHA HUNTER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -376,43 +376,48 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & GRANULAR KELLY (0-3 UNITS)
+# 5. MATH CORE & SOTA V44 HUNTER LOGIC
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_kelly_stake(fair_prob: float, market_odds: float, bankroll_fraction: float = 0.05) -> str:
+def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
     """
-    Calculates Kelly Stake with 0-3 Unit Range and 0.25 steps.
-    SNIPER UPDATE: Only bets if Edge > 4% and Odds between 1.35 and 4.50.
+    Calculates Kelly Stake with V44 DATA-DRIVEN FILTERS (LIVE).
+    Target: ~24% ROI (based on backtest).
+    Rules:
+    1. Odds 2.40 - 5.00
+    2. Edge >= 15%
+    3. Fractional Kelly (1/8)
     """
     if market_odds <= 1.0 or fair_prob <= 0: return "0u"
     
-    # [SNIPER FILTER]
-    roi_potential = (market_odds * fair_prob) - 1
-    if roi_potential < 0.04: return "0u" # Filter noise (edges < 4%)
-    if not (1.35 <= market_odds <= 4.50): return "0u" # Odds constraints
+    # [THE V44 FILTER WALL]
+    # 1. ODDS FLOOR: 2.40 (Safety margin above 2.30)
+    if market_odds < 2.40: return "0u"
     
+    # 2. ODDS CEILING: 5.00
+    if market_odds > 5.00: return "0u"
+    
+    # 3. EDGE THRESHOLD: 15%
+    edge = (fair_prob * market_odds) - 1
+    if edge < 0.15: return "0u" 
+
     b = market_odds - 1
     p = fair_prob
     q = 1 - p
+    kelly = (b * p - q) / b
     
-    kelly_fraction = (b * p - q) / b
-    
-    # Safety: Use 25% of Kelly
-    safe_kelly = kelly_fraction * 0.25
+    # Fractional Kelly (12.5%) for High Odds
+    safe_kelly = kelly * 0.125 
     
     if safe_kelly <= 0: return "0u"
     
-    # Base Unit calculation (Assuming 1 Unit = 2% Bankroll)
     raw_units = safe_kelly / 0.02
-    
-    # Granular Rounding to nearest 0.25
     units = round(raw_units * 4) / 4
     
-    # Caps and Floors
-    if units < 0.25: return "0u" # Edge too thin
-    if units > 3.0: units = 3.0 # Hard Cap
+    if units < 0.25: return "0u"
+    if units > 2.0: units = 2.0 # Cap at 2u
     
     return f"{units}u"
 
@@ -442,7 +447,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    # [STYLE MODIFIER SOTA]
+    # [STYLE MODIFIER V44]
     style_boost = 0
     if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": 
         style_boost += 0.08 if style_stats_p1['matches'] > 10 else 0.05
@@ -451,7 +456,8 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 if style_stats_p2['matches'] > 10 else 0.05
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [SOTA WEIGHTS: BSI & MATCHUP HEAVY]
+    # [SOTA WEIGHTS V44: PURE ALPHA MIX]
+    # We trust our model MORE than the market for high odds plays
     if has_scouting_reports:
         weights = [0.25, 0.25, 0.10, 0.25, 0.15] # Matchup, BSI, Skills, ELO, Form
     else:
@@ -461,21 +467,19 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     weights = [w/total_w for w in weights]
     
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
-    
-    # Apply Style Boost
     prob_alpha += style_boost
     
-    # Compression
+    # Compression (Edge Sharpening)
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.94)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.06)
     
+    # Market Wisdom (V44 Mix: 75% Model / 25% Market)
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
-        margin = inv1 + inv2
-        prob_market = inv1 / margin
+        prob_market = inv1 / (inv1 + inv2)
     
-    return (prob_alpha * 0.70) + (prob_market * 0.30)
+    return (prob_alpha * 0.75) + (prob_market * 0.25)
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
     try:
@@ -487,15 +491,16 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        alpha_part = old_final_prob - (old_prob_market * 0.30)
-        prob_alpha = alpha_part / 0.70
+        # Reverse V44 Ratio (75/25)
+        alpha_part = old_final_prob - (old_prob_market * 0.25)
+        prob_alpha = alpha_part / 0.75
         
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
             
-        new_final_prob = (prob_alpha * 0.70) + (new_prob_market * 0.30)
+        new_final_prob = (prob_alpha * 0.75) + (new_prob_market * 0.25)
         return new_final_prob
     except:
         return 0.5
@@ -620,7 +625,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # V39.3: Structural DOM Anchoring via ROWSPAN (No changes needed, already perfect)
+    # [ARCHITECT VETERAN FIX] V39.3 Logic kept as is
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
@@ -635,12 +640,10 @@ def parse_matches_locally_v5(html, p_names):
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 i += 1; continue
-            
             if i + 1 >= len(rows): i += 1; continue
 
             first_cell = row.find('td', class_='first')
             is_match_start = False
-            
             if first_cell:
                 if first_cell.get('rowspan') == '2': is_match_start = True
                 elif 'time' in first_cell.get('class', []) and len(first_cell.get_text(strip=True)) > 2:
@@ -697,7 +700,9 @@ def parse_matches_locally_v5(html, p_names):
                             val = float(txt)
                             if 1.01 <= val <= 100.0: found_r1_odds.append(val)
                         except: pass
-                    if len(found_r1_odds) >= 2: odds = found_r1_odds[:2]
+                    
+                    if len(found_r1_odds) >= 2:
+                        odds = found_r1_odds[:2]
                     else:
                         course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
                         found_r2_odds = []
@@ -707,7 +712,9 @@ def parse_matches_locally_v5(html, p_names):
                                 val = float(txt)
                                 if 1.01 <= val <= 100.0: found_r2_odds.append(val)
                             except: pass
-                        if found_r1_odds and found_r2_odds: odds = [found_r1_odds[0], found_r2_odds[0]]
+                        
+                        if found_r1_odds and found_r2_odds:
+                            odds = [found_r1_odds[0], found_r2_odds[0]]
                 except Exception: pass
                 
                 final_o1 = odds[0] if len(odds) > 0 else 0.0
@@ -777,7 +784,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V40.0 Starting...")
+    log(f"🚀 Neural Scout V44.0 PURE ALPHA HUNTER Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -849,7 +856,7 @@ async def run_pipeline():
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
                             
-                            # --- V39.0 NEW: STYLE ANALYSIS INJECTION ---
+                            # V39.0 STYLE
                             style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
                             style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
                             
@@ -875,11 +882,11 @@ async def run_pipeline():
                                 
                                 kelly_advice = ""
                                 if m['odds1'] > fair1:
-                                    kelly_advice = f" | 💎 P1 VALUE ({fair1}) -> " + calculate_kelly_stake(1/fair1, m['odds1'])
+                                    kelly_advice = f" | 💎 HUNTER P1 ({fair1}) -> " + calculate_kelly_stake(1/fair1, m['odds1'])
                                 elif m['odds2'] > fair2:
-                                    kelly_advice = f" | 💎 P2 VALUE ({fair2}) -> " + calculate_kelly_stake(1/fair2, m['odds2'])
+                                    kelly_advice = f" | 💎 HUNTER P2 ({fair2}) -> " + calculate_kelly_stake(1/fair2, m['odds2'])
                                 
-                                if "VALUE" not in ai_text_final:
+                                if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final:
                                     ai_text_final += kelly_advice
                             else:
                                 f1_d = await fetch_player_form_hybrid(browser, n1)
@@ -890,7 +897,7 @@ async def run_pipeline():
                                 
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
                                 
-                                # Pass Style Stats to Math Core
+                                # V44 PURE ALPHA PROBABILITY
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report, style_stats_p1, style_stats_p2)
                                 
                                 ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
@@ -901,16 +908,19 @@ async def run_pipeline():
                                 edge_p1 = (1/fair1) - (1/m['odds1']) if m['odds1'] > 0 else 0
                                 edge_p2 = (1/fair2) - (1/m['odds2']) if m['odds2'] > 0 else 0
                                 
-                                if m['odds1'] > fair1 and edge_p1 > -0.05:
-                                    stake = calculate_kelly_stake(1/fair1, m['odds1'])
-                                    betting_advice = f" [💎 P1 VALUE @ {m['odds1']} (Fair: {fair1}) | Stake: {stake}]"
-                                elif m['odds2'] > fair2 and edge_p2 > -0.05:
-                                    stake = calculate_kelly_stake(1/fair2, m['odds2'])
-                                    betting_advice = f" [💎 P2 VALUE @ {m['odds2']} (Fair: {fair2}) | Stake: {stake}]"
+                                # V44 SNIPER EXECUTION (LIVE)
+                                stake_p1 = calculate_kelly_stake(1/fair1, m['odds1'])
+                                stake_p2 = calculate_kelly_stake(1/fair2, m['odds2'])
+                                
+                                if stake_p1 != "0u":
+                                    edge = round(((m['odds1'] * (1/fair1)) - 1) * 100, 1)
+                                    betting_advice = f" [💎 HUNTER: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {edge}% | Stake: {stake_p1}]"
+                                elif stake_p2 != "0u":
+                                    edge = round(((m['odds2'] * (1/fair2)) - 1) * 100, 1)
+                                    betting_advice = f" [💎 HUNTER: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {edge}% | Stake: {stake_p2}]"
                                 
                                 ai_text_final = ai_text_base + betting_advice
                                 
-                                # Append Style Note to AI Text if significant
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral":
                                     ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']} vs {style_stats_p1['style']})"
                                 if style_stats_p2 and style_stats_p2['verdict'] != "Neutral":
@@ -925,13 +935,12 @@ async def run_pipeline():
                                 "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
                             
-                            # SOTA FIX: Robust Upsert for Live Scraper too
-                            try:
-                                supabase.table("market_odds").upsert(data, on_conflict="player1_name,player2_name,match_time").execute()
-                                log(f"💾 Upserted: {n1} vs {n2}")
-                            except Exception as e:
-                                log(f"⚠️ Write Error: {e}")
-
+                            if db_match_id:
+                                supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                log(f"🔄 Updated Odds: {n1} vs {n2}")
+                            else:
+                                supabase.table("market_odds").insert(data).execute()
+                                log(f"💾 Saved: {n1} vs {n2}")
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     log("🏁 Cycle Finished.")
