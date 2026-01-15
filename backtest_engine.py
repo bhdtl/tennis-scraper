@@ -79,7 +79,7 @@ class TimeMachineElo:
 elo_engine = TimeMachineElo()
 
 # =================================================================
-# 3. MATH CORE: "CONTRARIAN HUNTER" LOGIC
+# 3. MATH CORE: "CONTRARIAN HUNTER" LOGIC (V43)
 # =================================================================
 def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     # 1. Physics Probability (Elo + Context)
@@ -112,8 +112,8 @@ def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
     """
     Calculates Kelly Stake with DATA-DRIVEN V43 FILTERS.
     Derived from Backtest Analysis:
-    - Low Odds (<2.50) -> NEGATIVE ROI (-14%) -> BLOCKED
-    - High Odds (>2.50) -> POSITIVE ROI (+24%) -> ALLOWED
+    - Low Odds (<2.30) -> NEGATIVE ROI (-14%) -> BLOCKED
+    - High Odds (>2.30) -> POSITIVE ROI (+24%) -> ALLOWED
     - Low Edge (<15%) -> NEGATIVE ROI -> BLOCKED
     """
     if market_odds <= 1.0 or fair_prob <= 0: return "0u"
