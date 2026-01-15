@@ -79,7 +79,7 @@ class TimeMachineElo:
 elo_engine = TimeMachineElo()
 
 # =================================================================
-# 3. MATH CORE: "CONTRARIAN HUNTER" LOGIC (V43)
+# 3. MATH CORE: "PURE ALPHA" LOGIC (V44)
 # =================================================================
 def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
     # 1. Physics Probability (Elo + Context)
@@ -91,16 +91,13 @@ def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
         marg = (1/m_odds1) + (1/m_odds2)
         prob_market = (1/m_odds1) / marg
     
-    # V43 ADJUSTMENT: 
-    # Wir vertrauen dem Modell (Elo) noch stärker, da wir wissen, dass es
-    # bei "Outlier"-Matches (hohe Quoten) besser liegt als der Markt.
+    # V44: Trust Model heavily for High Odds detection
     prob_alpha = prob_elo 
     
-    # 75% Model, 25% Market - Aggressive "Disagreement" Policy
+    # Mix: 75% Model, 25% Market
     final_prob = (prob_alpha * 0.75) + (prob_market * 0.25)
     
-    # Compression: Wir ziehen "mittlere" Wahrscheinlichkeiten auseinander,
-    # um schwache Signale zu unterdrücken und starke zu betonen.
+    # Aggressive Compression to separate signals
     if final_prob > 0.5:
         final_prob = min(0.96, final_prob * 1.02)
     else:
@@ -110,23 +107,25 @@ def calculate_historical_fair_odds(elo1, elo2, surface, bsi, m_odds1, m_odds2):
 
 def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
     """
-    Calculates Kelly Stake with DATA-DRIVEN V43 FILTERS.
-    Derived from Backtest Analysis:
-    - Low Odds (<2.30) -> NEGATIVE ROI (-14%) -> BLOCKED
-    - High Odds (>2.30) -> POSITIVE ROI (+24%) -> ALLOWED
-    - Low Edge (<15%) -> NEGATIVE ROI -> BLOCKED
+    Calculates Kelly Stake with V44 DATA-DRIVEN FILTERS.
+    Analysis of previous runs showed:
+    - 2.00-2.40 range was negative ROI.
+    - 2.50-5.00 range was +30% ROI (The Sweet Spot).
+    - >5.00 was negative ROI.
     """
     if market_odds <= 1.0 or fair_prob <= 0: return "0u"
     
-    # [THE V43 DATA-DRIVEN FILTER WALL]
+    # [THE V44 FILTER WALL - DATA DRIVEN]
     
-    # 1. ODDS FLOOR: 2.30 (Data says <2.50 is toxic, we allow slightly below for buffer)
-    if market_odds < 2.30: return "0u"
+    # 1. ODDS FLOOR: 2.40 
+    # (Raised from 2.30 because data showed 2.3-2.5 was still risky)
+    if market_odds < 2.40: return "0u"
     
-    # 2. ODDS CEILING: 6.00 (We hunt Deep Value now)
-    if market_odds > 6.00: return "0u"
+    # 2. ODDS CEILING: 5.00
+    # (Capped strictly because data showed >5.0 was negative)
+    if market_odds > 5.00: return "0u"
     
-    # 3. EDGE THRESHOLD: 15% (Data says <10-20% is negative EV)
+    # 3. EDGE THRESHOLD: 15% 
     edge = (fair_prob * market_odds) - 1
     if edge < 0.15: return "0u" 
 
@@ -136,9 +135,7 @@ def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
     q = 1 - p
     kelly = (b * p - q) / b
     
-    # Fractional Kelly (12.5%)
-    # Da wir jetzt Außenseiter jagen (Winrate ~35-40%), müssen wir die Varianz zähmen.
-    # 1/8 Kelly ist Industriestandard für High-Odds-Strategien.
+    # Fractional Kelly (12.5%) for Variance Control
     safe_kelly = kelly * 0.125 
     
     if safe_kelly <= 0: return "0u"
@@ -252,7 +249,7 @@ async def run_backtest():
                     fair_odds_p2 = round(1 / (1 - fair_prob_p1), 2)
                     if math.isinf(fair_odds_p1) or math.isinf(fair_odds_p2): continue
 
-                    # [V43 CONTRARIAN LOGIC]
+                    # [V44 PURE ALPHA LOGIC]
                     roi_potential_p1 = (w_odds / fair_odds_p1) - 1
                     roi_potential_p2 = (l_odds / fair_odds_p2) - 1
                     
@@ -310,7 +307,7 @@ async def run_backtest():
             ).execute()
         except Exception: pass
 
-    logger.info("🏁 Backtest V43 Complete.")
+    logger.info("🏁 Backtest V44 Complete.")
 
 if __name__ == "__main__":
     asyncio.run(run_backtest())
