@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V46.0 - HYBRID PORTFOLIO ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V47.0 - SNIPER PROTOCOL)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -376,16 +376,15 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V46 HYBRID STAKING LOGIC
+# 5. MATH CORE & SOTA V47 SNIPER STAKING LOGIC
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, Any]:
     """
-    SOTA V46 STAKING ENGINE (Hybrid Strategy).
-    Balances High Winrate (UX) with High Value (Math).
-    Replaces the old 'Hunter Only' logic.
+    SOTA V47 SNIPER ENGINE.
+    Drastically reduced frequency. High selectivity.
     """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
@@ -399,34 +398,30 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, A
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # --- TIERED STRATEGY CONFIGURATION ---
+    # --- TIERED STRATEGY CONFIGURATION (V47 Tightened) ---
     
-    # TIER 1: THE BANKER (High Probability, Low Odds)
-    # Goal: Stability & User Retention (Green Ticks)
+    # TIER 1: THE BANKER
     if 1.30 <= market_odds < 1.85:
-        required_edge = 0.03  # Only 3% edge required
-        kelly_fraction = 0.30 # More aggressive sizing due to lower variance
-        max_stake = 3.5       # Higher cap for favorites
+        required_edge = 0.06  # V47: Raised from 3% to 6%
+        kelly_fraction = 0.25 
+        max_stake = 3.0       
         label = "🛡️ BANKER"
     
-    # TIER 2: THE VALUE (Standard Picks)
-    # Goal: Balance
+    # TIER 2: THE VALUE
     elif 1.85 <= market_odds < 2.40:
-        required_edge = 0.08  # 8% edge required
-        kelly_fraction = 0.20 # Standard fraction
-        max_stake = 2.5
+        required_edge = 0.10  # V47: Raised from 8% to 10%
+        kelly_fraction = 0.20 
+        max_stake = 2.0
         label = "⚖️ VALUE"
         
-    # TIER 3: THE HUNTER (High Risk / High Reward)
-    # Goal: Alpha Generation (The original V44 logic)
+    # TIER 3: THE HUNTER
     elif 2.40 <= market_odds <= 5.50:
-        required_edge = 0.12  # 12% edge required
-        kelly_fraction = 0.125 # Conservative due to high variance
-        max_stake = 1.5       # Lower cap to protect against drawdowns
+        required_edge = 0.15  # V47: Back to 15% (Hard Filter)
+        kelly_fraction = 0.125 
+        max_stake = 1.25       
         label = "💎 HUNTER"
         
     else:
-        # Odds too low (<1.30) or too high (>5.50)
         return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
 
     # --- EDGE CHECK ---
@@ -436,12 +431,10 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, A
 
     # --- FINAL STAKE CALCULATION ---
     safe_stake = full_kelly * kelly_fraction
-    
-    # Unit Normalization (1 Unit = 1% Bankroll approx)
-    raw_units = safe_stake * 100 * 0.5 # Scale factor
+    raw_units = safe_stake * 100 * 0.5 
     
     # Rounding & Capping
-    units = round(raw_units * 2) / 2 # Round to nearest 0.5
+    units = round(raw_units * 2) / 2
     
     if units < 0.5: return {"stake_str": "0u", "type": "TOO_SMALL", "is_bet": False}
     if units > max_stake: units = max_stake
@@ -489,12 +482,18 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 if style_stats_p2['matches'] > 10 else 0.05
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [SOTA WEIGHTS V44: PURE ALPHA MIX]
-    # We trust our model MORE than the market for high odds plays
+    # [V47 BLIND SPOT PENALTY]
+    # If we don't have scouting reports, we punish the model weight significantly.
+    # This prevents betting on random matches where we lack data.
     if has_scouting_reports:
+        # High Confidence: Trust Model (75%)
         weights = [0.25, 0.25, 0.10, 0.25, 0.15] # Matchup, BSI, Skills, ELO, Form
+        model_trust_factor = 0.75
     else:
+        # Low Confidence: Trust Market (85%), Model (15%)
+        # This effectively kills "Hunter" bets on unknown players
         weights = [0.15, 0.20, 0.10, 0.35, 0.20]
+        model_trust_factor = 0.15 
         
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
@@ -506,13 +505,15 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.94)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.06)
     
-    # Market Wisdom (V44 Mix: 75% Model / 25% Market)
+    # Market Wisdom
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
     
-    return (prob_alpha * 0.75) + (prob_market * 0.25)
+    # V47 FINAL WEIGHTING
+    final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
+    return final_prob
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
     try:
@@ -524,7 +525,8 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        # Reverse V44 Ratio (75/25)
+        # Reverse V47 Ratio Logic is hard without knowing has_scouting_reports
+        # We assume standard 75/25 for updates to be safe
         alpha_part = old_final_prob - (old_prob_market * 0.25)
         prob_alpha = alpha_part / 0.75
         
@@ -817,7 +819,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V46.0 HYBRID ALPHA HUNTER Starting...")
+    log(f"🚀 Neural Scout V47.0 SNIPER PROTOCOL Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -917,7 +919,7 @@ async def run_pipeline():
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 
-                                # V46 RECALCULATION WITH HYBRID ENGINE
+                                # V47 RECALCULATION WITH SNIPER ENGINE
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
@@ -942,7 +944,7 @@ async def run_pipeline():
                                 
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
                                 
-                                # V44 PURE ALPHA PROBABILITY
+                                # V47 SNIPER PROBABILITY
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report, style_stats_p1, style_stats_p2)
                                 
                                 ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
@@ -951,7 +953,7 @@ async def run_pipeline():
                                 
                                 betting_advice = ""
                                 
-                                # V46 HYBRID EXECUTION (LIVE)
+                                # V47 SNIPER EXECUTION
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
