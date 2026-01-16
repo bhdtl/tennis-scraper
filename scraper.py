@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V45.1 - HISTORY AWARE HUNTER)...")
+log("🔌 Initialisiere Neural Scout (V46.0 - HYBRID PORTFOLIO ENGINE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -376,50 +376,83 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V44 HUNTER LOGIC
+# 5. MATH CORE & SOTA V46 HYBRID STAKING LOGIC
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_kelly_stake(fair_prob: float, market_odds: float) -> str:
+def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, Any]:
     """
-    Calculates Kelly Stake with V44 DATA-DRIVEN FILTERS (LIVE).
-    Target: ~24% ROI (based on backtest).
-    Rules:
-    1. Odds 2.40 - 5.00
-    2. Edge >= 15%
-    3. Fractional Kelly (1/8)
+    SOTA V46 STAKING ENGINE (Hybrid Strategy).
+    Balances High Winrate (UX) with High Value (Math).
+    Replaces the old 'Hunter Only' logic.
     """
-    if market_odds <= 1.0 or fair_prob <= 0: return "0u"
-    
-    # [THE V44 FILTER WALL]
-    # 1. ODDS FLOOR: 2.40 (Safety margin above 2.30)
-    if market_odds < 2.40: return "0u"
-    
-    # 2. ODDS CEILING: 5.00
-    if market_odds > 5.00: return "0u"
-    
-    # 3. EDGE THRESHOLD: 15%
-    edge = (fair_prob * market_odds) - 1
-    if edge < 0.15: return "0u" 
+    if market_odds <= 1.01 or fair_prob <= 0: 
+        return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
+    # Kelly Criterion Basis
     b = market_odds - 1
-    p = fair_prob
-    q = 1 - p
-    kelly = (b * p - q) / b
+    q = 1 - fair_prob
+    if b == 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
+    full_kelly = (b * fair_prob - q) / b
+
+    if full_kelly <= 0: 
+        return {"stake_str": "0u", "type": "NONE", "is_bet": False}
+
+    # --- TIERED STRATEGY CONFIGURATION ---
     
-    # Fractional Kelly (12.5%) for High Odds
-    safe_kelly = kelly * 0.125 
+    # TIER 1: THE BANKER (High Probability, Low Odds)
+    # Goal: Stability & User Retention (Green Ticks)
+    if 1.30 <= market_odds < 1.85:
+        required_edge = 0.03  # Only 3% edge required
+        kelly_fraction = 0.30 # More aggressive sizing due to lower variance
+        max_stake = 3.5       # Higher cap for favorites
+        label = "🛡️ BANKER"
     
-    if safe_kelly <= 0: return "0u"
+    # TIER 2: THE VALUE (Standard Picks)
+    # Goal: Balance
+    elif 1.85 <= market_odds < 2.40:
+        required_edge = 0.08  # 8% edge required
+        kelly_fraction = 0.20 # Standard fraction
+        max_stake = 2.5
+        label = "⚖️ VALUE"
+        
+    # TIER 3: THE HUNTER (High Risk / High Reward)
+    # Goal: Alpha Generation (The original V44 logic)
+    elif 2.40 <= market_odds <= 5.50:
+        required_edge = 0.12  # 12% edge required
+        kelly_fraction = 0.125 # Conservative due to high variance
+        max_stake = 1.5       # Lower cap to protect against drawdowns
+        label = "💎 HUNTER"
+        
+    else:
+        # Odds too low (<1.30) or too high (>5.50)
+        return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
+
+    # --- EDGE CHECK ---
+    edge = (fair_prob * market_odds) - 1
+    if edge < required_edge:
+         return {"stake_str": "0u", "type": "LOW_EDGE", "is_bet": False}
+
+    # --- FINAL STAKE CALCULATION ---
+    safe_stake = full_kelly * kelly_fraction
     
-    raw_units = safe_kelly / 0.02
-    units = round(raw_units * 4) / 4
+    # Unit Normalization (1 Unit = 1% Bankroll approx)
+    raw_units = safe_stake * 100 * 0.5 # Scale factor
     
-    if units < 0.25: return "0u"
-    if units > 2.0: units = 2.0 # Cap at 2u
+    # Rounding & Capping
+    units = round(raw_units * 2) / 2 # Round to nearest 0.5
     
-    return f"{units}u"
+    if units < 0.5: return {"stake_str": "0u", "type": "TOO_SMALL", "is_bet": False}
+    if units > max_stake: units = max_stake
+    
+    return {
+        "stake_str": f"{units}u",
+        "type": label,
+        "is_bet": True,
+        "edge_percent": round(edge * 100, 1),
+        "units": units
+    }
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     ai_meta = ensure_dict(ai_meta)
@@ -784,7 +817,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V45.1 PURE ALPHA HUNTER (HISTORY ENABLED) Starting...")
+    log(f"🚀 Neural Scout V46.0 HYBRID ALPHA HUNTER Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -884,21 +917,21 @@ async def run_pipeline():
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 
-                                kelly_advice = ""
-                                if m['odds1'] > fair1:
-                                    stake = calculate_kelly_stake(1/fair1, m['odds1'])
-                                    kelly_advice = f" | 💎 HUNTER P1 ({fair1}) -> " + stake
-                                    if stake != "0u": 
-                                        is_hunter_pick_active = True
-                                        hunter_pick_player = n1
-                                elif m['odds2'] > fair2:
-                                    stake = calculate_kelly_stake(1/fair2, m['odds2'])
-                                    kelly_advice = f" | 💎 HUNTER P2 ({fair2}) -> " + stake
-                                    if stake != "0u": 
-                                        is_hunter_pick_active = True
-                                        hunter_pick_player = n2
+                                # V46 RECALCULATION WITH HYBRID ENGINE
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
+                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
-                                if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final:
+                                kelly_advice = ""
+                                if bet_p1["is_bet"]:
+                                    kelly_advice = f" | {bet_p1['type']}: {n1} ({fair1}) -> {bet_p1['stake_str']}"
+                                    is_hunter_pick_active = True
+                                    hunter_pick_player = n1
+                                elif bet_p2["is_bet"]:
+                                    kelly_advice = f" | {bet_p2['type']}: {n2} ({fair2}) -> {bet_p2['stake_str']}"
+                                    is_hunter_pick_active = True
+                                    hunter_pick_player = n2
+                                
+                                if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final and "BANKER" not in ai_text_final:
                                     ai_text_final += kelly_advice
                             else:
                                 f1_d = await fetch_player_form_hybrid(browser, n1)
@@ -918,18 +951,16 @@ async def run_pipeline():
                                 
                                 betting_advice = ""
                                 
-                                # V44 SNIPER EXECUTION (LIVE)
-                                stake_p1 = calculate_kelly_stake(1/fair1, m['odds1'])
-                                stake_p2 = calculate_kelly_stake(1/fair2, m['odds2'])
+                                # V46 HYBRID EXECUTION (LIVE)
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
+                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
-                                if stake_p1 != "0u":
-                                    edge = round(((m['odds1'] * (1/fair1)) - 1) * 100, 1)
-                                    betting_advice = f" [💎 HUNTER: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {edge}% | Stake: {stake_p1}]"
+                                if bet_p1["is_bet"]:
+                                    betting_advice = f" [💎 {bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n1
-                                elif stake_p2 != "0u":
-                                    edge = round(((m['odds2'] * (1/fair2)) - 1) * 100, 1)
-                                    betting_advice = f" [💎 HUNTER: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {edge}% | Stake: {stake_p2}]"
+                                elif bet_p2["is_bet"]:
+                                    betting_advice = f" [💎 {bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
                                 
