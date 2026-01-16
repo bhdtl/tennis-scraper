@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V50.1 - FULL VISIBILITY)...")
+log("🔌 Initialisiere Neural Scout (V57.0 - THE QUANT Z-SCORE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -43,7 +43,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# [ARCHITECT NOTE]: Nutzung von Gemini 2.0 Flash für maximale Geschwindigkeit
+# [ARCHITECT NOTE]: SOTA Gemini 2.0 Flash
 MODEL_NAME = 'gemini-2.0-flash'
 
 # Global Caches
@@ -61,7 +61,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS & SAFETY
+# 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -106,15 +106,12 @@ def ensure_dict(data: Any) -> Dict:
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
-    
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     parts = clean_scrape.split()
-    
     if not parts: return None
     
     scrape_last_name_str = ""
     scrape_initial = None
-    
     last_token = parts[-1]
     is_initial = (len(last_token) == 1) or (len(last_token) == 2 and last_token.endswith('.'))
     
@@ -123,7 +120,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         scrape_last_name_str = " ".join(parts[:-1])
     else:
         scrape_last_name_str = " ".join(parts)
-        
     scrape_last_name_clean = scrape_last_name_str.replace('-', ' ')
     
     candidates = []
@@ -131,16 +127,13 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         if not isinstance(p, dict): continue
         db_last_raw = p.get('last_name', '').lower()
         db_last_clean = db_last_raw.replace('-', ' ')
-        
         if db_last_clean == scrape_last_name_clean:
             if scrape_initial:
                 db_first = p.get('first_name', '').lower()
                 if db_first and not db_first.startswith(scrape_initial):
                     continue
             candidates.append(p)
-            
     if not candidates: return None
-    # Report check is loose here as user confirmed 100% coverage
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -162,7 +155,7 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
 # 3. GEMINI ENGINE
 # =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5) # Slight throttle for safety
+    await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -180,48 +173,29 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             return None
 
 # =================================================================
-# 4. DATA FETCHING (INC. NEW STYLE ENGINE)
+# 4. DATA FETCHING
 # =================================================================
-
-# --- NEW: STYLE MATCHUP ENGINE (Python Port) ---
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
-    """
-    Checks historical win rate against a specific opponent style.
-    """
     if not player_name or not opponent_style_raw: return None
-    
-    # Normalize Style string
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
     if not target_style or target_style == 'Unknown': return None
-
     try:
-        # Fetch last 80 matches involved
         res = supabase_client.table('market_odds').select('player1_name, player2_name, actual_winner_name')\
             .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
             .not_.is_("actual_winner_name", "null")\
-            .order('created_at', desc=True)\
-            .limit(80)\
-            .execute()
-        
+            .order('created_at', desc=True).limit(80).execute()
         matches = res.data
         if not matches or len(matches) < 5: return None
-
-        # Extract Opponents
-        opponents_map = {} # name -> style
+        opponents_map = {} 
         opponent_names_to_fetch = []
-        
         for m in matches:
             if player_name.lower() in m['player1_name'].lower():
                 opp = get_last_name(m['player2_name']).lower()
             else:
                 opp = get_last_name(m['player1_name']).lower()
             if opp: opponent_names_to_fetch.append(opp)
-            
         if not opponent_names_to_fetch: return None
-
-        # Batch Fetch Styles from DB
         unique_opps = list(set(opponent_names_to_fetch))
-        # Batching (chunks of 20 to avoid URL length issues if many)
         for i in range(0, len(unique_opps), 20):
             chunk = unique_opps[i:i+20]
             p_res = supabase_client.table('players').select('last_name, play_style').in_('last_name', chunk).execute()
@@ -230,35 +204,25 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
-
-        # Calculate Win Rate vs Target Style
         relevant_matches = 0
         wins = 0
-        
         for m in matches:
             if player_name.lower() in m['player1_name'].lower():
                 opp_name = get_last_name(m['player2_name']).lower()
             else:
                 opp_name = get_last_name(m['player1_name']).lower()
-                
             opp_styles = opponents_map.get(opp_name, [])
-            
             if target_style in opp_styles:
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
-                # Check if player won
                 if player_name.lower() in winner:
                     wins += 1
-        
         if relevant_matches < 3: return None
-        
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
         if win_rate > 65: verdict = "DOMINANT"
         elif win_rate < 40: verdict = "STRUGGLES"
-        
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-
     except Exception as e:
         log(f"Style Analysis Error: {e}")
         return None
@@ -267,10 +231,8 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     if not relative_url: return 0.5
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
-    
     if not relative_url.startswith("/"): relative_url = f"/{relative_url}"
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
-    
     page = await browser.new_page()
     try:
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
@@ -373,15 +335,23 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V50 INTELLIGENCE STAKING
+# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
-def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, Any]:
+def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     """
-    SOTA V50 'INTELLIGENCE FIRST' ENGINE.
-    High selectivity (20% Edge), but balanced risk.
+    SOTA Z-Score Calculation (Normal Distribution).
+    Sharpens odds for heavy favorites/underdogs.
+    Sigma 280 is calibrated for ATP/WTA variance.
+    """
+    z = elo_diff / (sigma * math.sqrt(2))
+    return 0.5 * (1 + math.erf(z))
+
+def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
+    """
+    SOTA V57 STAKING ENGINE.
     """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
@@ -394,25 +364,30 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, A
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # --- TIERED STRATEGY (V50 HIGH FILTERS) ---
+    # --- TIERED STRATEGY (V57 Refined) ---
     
-    # TIER 1: THE BANKER (Low Odds)
-    if 1.30 <= market_odds < 1.85:
-        required_edge = 0.08  # Strict 8% Edge
+    # TIER 1: BANKER (Low Odds)
+    if 1.30 <= market_odds < 1.70:
+        required_edge = 0.06  # 6% Edge
         kelly_fraction = 0.25 
         max_stake = 3.0       
         label = "🛡️ BANKER"
     
-    # TIER 2: THE VALUE (Mid Odds)
-    elif 1.85 <= market_odds < 2.40:
-        required_edge = 0.20  # 20% EDGE HARD REQUIREMENT
+    # TIER 2: VALUE (Dimitrov Zone: 1.70 - 2.40)
+    elif 1.70 <= market_odds < 2.40:
+        required_edge = 0.125  # 12.5% Edge (Corrected)
         kelly_fraction = 0.20 
         max_stake = 2.0
         label = "⚖️ VALUE"
         
-    # TIER 3: THE HUNTER (High Risk)
-    elif 2.40 <= market_odds <= 5.50:
-        required_edge = 0.20  # 20% EDGE HARD REQUIREMENT
+    # TIER 3: HUNTER (Underdogs)
+    elif 2.40 <= market_odds <= 6.00:
+        required_edge = 0.20 
+        
+        # AI SENTIMENT GATE
+        if ai_sentiment_score < 0.45:
+             return {"stake_str": "0u", "type": "AI_BLOCK", "is_bet": False}
+             
         kelly_fraction = 0.125 
         max_stake = 1.0       
         label = "💎 HUNTER"
@@ -451,53 +426,84 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo1 = p1_stats.get(elo_surf, 1500)
     elo2 = p2_stats.get(elo_surf, 1500)
     
+    # 1. MARKET GRAVITY (Quant Fix)
+    # Adjust ELO diff based on market opinion to avoid Swiatek anomalies
+    # If market odds exist, we blend our ELO diff with the market's implied diff.
+    elo_diff_model = elo1 - elo2
+    
+    if market_odds1 > 0 and market_odds2 > 0:
+        # Calculate Implied Prob from Market
+        inv1 = 1/market_odds1; inv2 = 1/market_odds2
+        implied_p1 = inv1 / (inv1 + inv2)
+        
+        # Reverse Engineer ELO Diff from Market (using our Z-score logic inverse)
+        # Approx inverse error function for Z-score estimation
+        # Simply: if P > 0.5, Diff > 0. 
+        # Using simple logistic approx for reverse calc is stable enough for "Gravity"
+        # Diff ~ -400 * log10(1/P - 1)
+        if 0.01 < implied_p1 < 0.99:
+            try:
+                elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
+            except:
+                elo_diff_market = elo_diff_model
+        else:
+            elo_diff_market = elo_diff_model # Too extreme to reverse safely
+            
+        # BLEND: 70% Model, 30% Market Gravity (Keeps us grounded)
+        elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
+    else:
+        elo_diff_final = elo_diff_model
+
+    # --- PROBABILITY CALCULATION (V57) ---
+    
+    # 1. Z-SCORE ELO (The Core)
+    prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
+    
+    # 2. Matchup (AI)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
     
+    # 3. Physics / Stats
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
-    def get_defense(s): return s.get('speed', 50) + s.get('stamina', 50) + s.get('mental', 50)
-    
     c1_score = get_offense(s1); c2_score = get_offense(s2)
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
-    prob_elo = 1 / (1 + 10 ** ((elo2 - elo1) / 400))
+    
+    # 4. Form
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
     style_boost = 0
     if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": 
-        style_boost += 0.08 if style_stats_p1['matches'] > 10 else 0.05
+        style_boost += 0.08 
     if style_stats_p1 and style_stats_p1['verdict'] == "STRUGGLES": style_boost -= 0.06
     if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": 
-        style_boost -= 0.08 if style_stats_p2['matches'] > 10 else 0.05
+        style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V50 INTELLIGENCE FIRST WEIGHTING]
-    # We leverage the fact that 100% of players have reports.
-    # We increase "Matchup" weight (Tactics) and rely less on generic ELO.
-    weights = [0.30, 0.20, 0.05, 0.35, 0.10] # Matchup(30), BSI(20), Skills(5), ELO(35), Form(10)
+    # [V57 WEIGHTING - SURF ELO DOMINANCE]
+    # We trust Surface ELO (Z-Score) the most now.
+    weights = [0.20, 0.15, 0.05, 0.50, 0.10] # Matchup(20), BSI(15), Skills(5), ELO(50), Form(10)
     
-    # Global Trust: 55% Market / 45% Model
-    # We trust our intelligence (reports) more than V49, but still respect the market.
-    model_trust_factor = 0.45 
-        
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
     
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
     
-    if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.94)
-    elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.06)
+    # Final Compression (Sharpening)
+    if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.98)
+    elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.02)
     
+    # Market Mix (Standard 50/50 for final robustness)
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
     
-    # V50 FINAL MIX
-    final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
+    # We trust our Z-Score Model 60%, Market 40% (since we already gravity-blended the ELO)
+    final_prob = (prob_alpha * 0.60) + (prob_market * 0.40)
     return final_prob
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
@@ -510,16 +516,24 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        # Reverse V50 Ratio (55% Market / 45% Model)
-        alpha_part = old_final_prob - (old_prob_market * 0.55)
-        prob_alpha = alpha_part / 0.45
+        # Reverse V57 Ratio (60/40)
+        alpha_part = old_final_prob - (old_prob_market * 0.40)
+        prob_alpha = alpha_part / 0.60
         
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
             
-        new_final_prob = (prob_alpha * 0.45) + (new_prob_market * 0.55)
+        new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
+        
+        # MARKET GRAVITY FOR EXTREME FAVORITES (V56)
+        # Prevents Swiatek-Lys anomalies
+        if new_market_odds1 < 1.10:
+             # Blend 85% towards market if extreme fav
+             mkt_prob1 = 1/new_market_odds1
+             new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
+             
         return new_final_prob
     except:
         return 0.5
@@ -602,30 +616,31 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
     log(f"   🤖 Asking AI for analysis on: {p1['last_name']} vs {p2['last_name']}")
     has_reports = r1.get('strengths') and r2.get('strengths')
-    if has_reports: log("      📄 Real Scouting Reports found!")
-    else: log("      ⚠️ Missing Scouting Reports - AI will use stats fallback.")
-
+    
+    # Prompt updated to ask for sentiment score
     prompt = f"""
-    ROLE: Elite Tennis Analyst (Silicon Valley Style).
+    ROLE: Elite Tennis Analyst.
     TASK: Analyze {p1['last_name']} vs {p2['last_name']} on {surface} (BSI {bsi}).
     DATA: ELO {elo1} vs {elo2}. FORM {form1['text']} vs {form2['text']}.
     SCOUTING P1: {r1.get('strengths', 'N/A')}
     SCOUTING P2: {r2.get('strengths', 'N/A')}
     COURT: {notes}
     OUTPUT JSON ONLY.
-    JSON: {{ "p1_tactical_score": [0-10], "p2_tactical_score": [0-10], "p1_form_score": [0-10], "p2_form_score": [0-10], "ai_text": "Analysis string (max 2 sentences)." }}
+    JSON: {{ 
+        "p1_tactical_score": [0-10], 
+        "p2_tactical_score": [0-10], 
+        "p1_form_score": [0-10], 
+        "p2_form_score": [0-10], 
+        "ai_text": "Analysis string (max 2 sentences).",
+        "p1_win_sentiment": [0.0-1.0] 
+    }}
     """
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
-    text = data.get('ai_text', '')
-    if not text or len(text) < 30 or "..." in text:
-        log("      ⚠️ AI returned weak analysis - Injecting Hard Fallback.")
-        adv = p1['last_name'] if elo1 > elo2 else p2['last_name']
-        data['ai_text'] = f"Based on ELO ({elo1} vs {elo2}) and form, {adv} holds a slight edge."
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
-    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': ''}
+    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': '', 'p1_win_sentiment': 0.5}
     if not res_text: return default
     try:
         cleaned = res_text.replace("json", "").replace("```", "").strip()
@@ -797,7 +812,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V50.1 FULL VISIBILITY Starting...")
+    log(f"🚀 Neural Scout V57.0 SMART SNIPER Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -827,18 +842,13 @@ async def run_pipeline():
                             n2 = p2_obj['last_name']
                             if n1 == n2: continue
 
+                            # V51 SETTLEMENT LOGIC (FIXED: SAVE EVEN IF FINISHED)
+                            actual_winner_val = None
                             if m.get('actual_winner'):
-                                winner_full = n1 if m['actual_winner'] == m['p1_raw'] else n2
-                                try:
-                                    res = supabase.table("market_odds").select("id").or_(f"and(player1_name.eq.{n1},player2_name.eq.{n2}),and(player1_name.eq.{n2},player2_name.eq.{n1})").is_("actual_winner_name", "null").execute()
-                                    if res.data:
-                                        for rec in res.data:
-                                            supabase.table("market_odds").update({"actual_winner_name": winner_full}).eq("id", rec['id']).execute()
-                                            log(f"      🏆 LIVE SETTLEMENT: {winner_full} won")
-                                except Exception as e: log(f"Settlement Error: {e}")
-                                continue
+                                actual_winner_val = n1 if m['actual_winner'] == m['p1_raw'] else n2
 
-                            if m['odds1'] < 1.01 and m['odds2'] < 1.01: continue
+                            if m['odds1'] < 1.01 and m['odds2'] < 1.01 and not actual_winner_val: 
+                                continue
                             
                             existing_p1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n1).order("created_at", desc=True).limit(5).execute()
                             existing = []
@@ -850,9 +860,14 @@ async def run_pipeline():
                             cached_ai = {}
                             if existing:
                                 rec = existing[0]
-                                if rec.get('actual_winner_name'): continue 
-                                if abs(rec.get('odds1', 0) - m['odds1']) < 0.05 and rec.get('odds1', 0) > 1.1: continue
                                 db_match_id = rec['id']
+                                # If already settled, skip unless we need to update something
+                                if rec.get('actual_winner_name'): continue 
+                                
+                                if abs(rec.get('odds1', 0) - m['odds1']) < 0.05 and rec.get('odds1', 0) > 1.1: 
+                                    if actual_winner_val: pass # Need to update winner
+                                    else: continue # Skip if odds same and no winner
+                                
                                 if rec.get('ai_analysis_text'):
                                     cached_ai = {
                                         'ai_text': rec.get('ai_analysis_text'),
@@ -869,7 +884,6 @@ async def run_pipeline():
                             
                             style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
                             style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
-                            if style_stats_p1: log(f"   🥋 Style Check {n1}: {style_stats_p1['verdict']} vs {style_stats_p1['style']}")
                             
                             has_real_report = bool(r1.get('strengths') and r2.get('strengths'))
 
@@ -879,8 +893,8 @@ async def run_pipeline():
                             is_hunter_pick_active = False
                             hunter_pick_player = None
 
-                            if db_match_id and cached_ai:
-                                log(f"   💰 Token Saver: Reusing AI Text, Recalculating Fair Odds")
+                            if db_match_id and cached_ai and not actual_winner_val:
+                                log(f"   💰 Token Saver: Reusing AI Text")
                                 ai_text_final = cached_ai['ai_text']
                                 new_prob = recalculate_fair_odds_with_new_market(
                                     old_fair_odds1=cached_ai['ai_fair_odds1'],
@@ -892,8 +906,9 @@ async def run_pipeline():
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 
-                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
-                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
+                                # Use default sentiment 0.5 for re-calc (can't parse it easily from old text)
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
+                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
                                 
                                 kelly_advice = ""
                                 if bet_p1["is_bet"]:
@@ -904,8 +919,6 @@ async def run_pipeline():
                                     kelly_advice = f" | {bet_p2['type']}: {n2} ({fair2}) -> {bet_p2['stake_str']}"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
-                                else:
-                                    kelly_advice = " [🛑 NO BET: Edge too low]"
                                 
                                 if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final and "BANKER" not in ai_text_final:
                                     ai_text_final += kelly_advice
@@ -924,9 +937,13 @@ async def run_pipeline():
                                 fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                                 
+                                # Extract Sentiment for P1 (from JSON)
+                                p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
+                                p2_sentiment = 1.0 - p1_sentiment
+                                
                                 betting_advice = ""
-                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
-                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
+                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
                                 
                                 if bet_p1["is_bet"]:
                                     betting_advice = f" [💎 {bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
@@ -936,9 +953,6 @@ async def run_pipeline():
                                     betting_advice = f" [💎 {bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
-                                else:
-                                    # V50.1: Explicitly log that no bet was found
-                                    betting_advice = " [🛑 NO BET: Edge too low / Market efficient]"
                                 
                                 ai_text_final = ai_text_base + betting_advice
                                 
@@ -953,7 +967,8 @@ async def run_pipeline():
                                 "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final,
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z",
+                                "actual_winner_name": actual_winner_val
                             }
                             
                             final_match_id = None
@@ -961,14 +976,14 @@ async def run_pipeline():
                             if db_match_id:
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
-                                log(f"🔄 Updated Odds: {n1} vs {n2}")
+                                log(f"🔄 Updated Odds: {n1} vs {n2} (Winner: {actual_winner_val})")
                             else:
                                 res_insert = supabase.table("market_odds").insert(data).execute()
                                 if res_insert.data and len(res_insert.data) > 0:
                                     final_match_id = res_insert.data[0]['id']
-                                    log(f"💾 Saved: {n1} vs {n2}")
+                                    log(f"💾 Saved: {n1} vs {n2} (Winner: {actual_winner_val})")
 
-                            if final_match_id:
+                            if final_match_id and is_hunter_pick_active:
                                 history_payload = {
                                     "match_id": final_match_id,
                                     "odds1": m['odds1'],
@@ -983,6 +998,8 @@ async def run_pipeline():
                                     supabase.table("odds_history").insert(history_payload).execute()
                                 except Exception as hist_err:
                                     log(f"      ⚠️ History Log Error: {hist_err}")
+                        else:
+                            log(f"   ⚠️ Skipping {m['p1_raw']} vs {m['p2_raw']} - Players not found in DB")
                                     
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
