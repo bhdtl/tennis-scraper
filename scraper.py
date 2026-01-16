@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V50.0 - INTELLIGENCE FIRST)...")
+log("🔌 Initialisiere Neural Scout (V50.1 - FULL VISIBILITY)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -488,11 +488,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
     
-    # Compression (Edge Sharpening)
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.94)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.06)
     
-    # Market Wisdom
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
@@ -799,7 +797,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V50.0 INTELLIGENCE FIRST Starting...")
+    log(f"🚀 Neural Scout V50.1 FULL VISIBILITY Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -906,6 +904,8 @@ async def run_pipeline():
                                     kelly_advice = f" | {bet_p2['type']}: {n2} ({fair2}) -> {bet_p2['stake_str']}"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
+                                else:
+                                    kelly_advice = " [🛑 NO BET: Edge too low]"
                                 
                                 if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final and "BANKER" not in ai_text_final:
                                     ai_text_final += kelly_advice
@@ -936,6 +936,9 @@ async def run_pipeline():
                                     betting_advice = f" [💎 {bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
+                                else:
+                                    # V50.1: Explicitly log that no bet was found
+                                    betting_advice = " [🛑 NO BET: Edge too low / Market efficient]"
                                 
                                 ai_text_final = ai_text_base + betting_advice
                                 
