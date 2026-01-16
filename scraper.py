@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V47.0 - SNIPER PROTOCOL)...")
+log("🔌 Initialisiere Neural Scout (V50.0 - INTELLIGENCE FIRST)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -140,8 +140,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
             candidates.append(p)
             
     if not candidates: return None
-    for cand in candidates:
-        if cand['id'] in report_ids: return cand
+    # Report check is loose here as user confirmed 100% coverage
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -221,8 +220,6 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         if not opponent_names_to_fetch: return None
 
         # Batch Fetch Styles from DB
-        # Note: Supabase-py 'in_' filter expects a list
-        # Optimization: Fetch unique names
         unique_opps = list(set(opponent_names_to_fetch))
         # Batching (chunks of 20 to avoid URL length issues if many)
         for i in range(0, len(unique_opps), 20):
@@ -376,20 +373,19 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V47 SNIPER STAKING LOGIC
+# 5. MATH CORE & SOTA V50 INTELLIGENCE STAKING
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, Any]:
     """
-    SOTA V47 SNIPER ENGINE.
-    Drastically reduced frequency. High selectivity.
+    SOTA V50 'INTELLIGENCE FIRST' ENGINE.
+    High selectivity (20% Edge), but balanced risk.
     """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # Kelly Criterion Basis
     b = market_odds - 1
     q = 1 - fair_prob
     if b == 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
@@ -398,44 +394,40 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float) -> Dict[str, A
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # --- TIERED STRATEGY CONFIGURATION (V47 Tightened) ---
+    # --- TIERED STRATEGY (V50 HIGH FILTERS) ---
     
-    # TIER 1: THE BANKER
+    # TIER 1: THE BANKER (Low Odds)
     if 1.30 <= market_odds < 1.85:
-        required_edge = 0.06  # V47: Raised from 3% to 6%
+        required_edge = 0.08  # Strict 8% Edge
         kelly_fraction = 0.25 
         max_stake = 3.0       
         label = "🛡️ BANKER"
     
-    # TIER 2: THE VALUE
+    # TIER 2: THE VALUE (Mid Odds)
     elif 1.85 <= market_odds < 2.40:
-        required_edge = 0.10  # V47: Raised from 8% to 10%
+        required_edge = 0.20  # 20% EDGE HARD REQUIREMENT
         kelly_fraction = 0.20 
         max_stake = 2.0
         label = "⚖️ VALUE"
         
-    # TIER 3: THE HUNTER
+    # TIER 3: THE HUNTER (High Risk)
     elif 2.40 <= market_odds <= 5.50:
-        required_edge = 0.15  # V47: Back to 15% (Hard Filter)
+        required_edge = 0.20  # 20% EDGE HARD REQUIREMENT
         kelly_fraction = 0.125 
-        max_stake = 1.25       
+        max_stake = 1.0       
         label = "💎 HUNTER"
         
     else:
         return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
 
-    # --- EDGE CHECK ---
     edge = (fair_prob * market_odds) - 1
     if edge < required_edge:
          return {"stake_str": "0u", "type": "LOW_EDGE", "is_bet": False}
 
-    # --- FINAL STAKE CALCULATION ---
     safe_stake = full_kelly * kelly_fraction
     raw_units = safe_stake * 100 * 0.5 
     
-    # Rounding & Capping
     units = round(raw_units * 2) / 2
-    
     if units < 0.5: return {"stake_str": "0u", "type": "TOO_SMALL", "is_bet": False}
     if units > max_stake: units = max_stake
     
@@ -473,7 +465,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
-    # [STYLE MODIFIER V44]
     style_boost = 0
     if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": 
         style_boost += 0.08 if style_stats_p1['matches'] > 10 else 0.05
@@ -482,18 +473,14 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 if style_stats_p2['matches'] > 10 else 0.05
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V47 BLIND SPOT PENALTY]
-    # If we don't have scouting reports, we punish the model weight significantly.
-    # This prevents betting on random matches where we lack data.
-    if has_scouting_reports:
-        # High Confidence: Trust Model (75%)
-        weights = [0.25, 0.25, 0.10, 0.25, 0.15] # Matchup, BSI, Skills, ELO, Form
-        model_trust_factor = 0.75
-    else:
-        # Low Confidence: Trust Market (85%), Model (15%)
-        # This effectively kills "Hunter" bets on unknown players
-        weights = [0.15, 0.20, 0.10, 0.35, 0.20]
-        model_trust_factor = 0.15 
+    # [V50 INTELLIGENCE FIRST WEIGHTING]
+    # We leverage the fact that 100% of players have reports.
+    # We increase "Matchup" weight (Tactics) and rely less on generic ELO.
+    weights = [0.30, 0.20, 0.05, 0.35, 0.10] # Matchup(30), BSI(20), Skills(5), ELO(35), Form(10)
+    
+    # Global Trust: 55% Market / 45% Model
+    # We trust our intelligence (reports) more than V49, but still respect the market.
+    model_trust_factor = 0.45 
         
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
@@ -511,7 +498,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
     
-    # V47 FINAL WEIGHTING
+    # V50 FINAL MIX
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
@@ -525,17 +512,16 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        # Reverse V47 Ratio Logic is hard without knowing has_scouting_reports
-        # We assume standard 75/25 for updates to be safe
-        alpha_part = old_final_prob - (old_prob_market * 0.25)
-        prob_alpha = alpha_part / 0.75
+        # Reverse V50 Ratio (55% Market / 45% Model)
+        alpha_part = old_final_prob - (old_prob_market * 0.55)
+        prob_alpha = alpha_part / 0.45
         
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
             
-        new_final_prob = (prob_alpha * 0.75) + (new_prob_market * 0.25)
+        new_final_prob = (prob_alpha * 0.45) + (new_prob_market * 0.55)
         return new_final_prob
     except:
         return 0.5
@@ -660,7 +646,6 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     finally: await page.close()
 
 def parse_matches_locally_v5(html, p_names): 
-    # [ARCHITECT VETERAN FIX] V39.3 Logic kept as is
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     target_players = set(p.lower() for p in p_names)
@@ -684,25 +669,21 @@ def parse_matches_locally_v5(html, p_names):
                 elif 'time' in first_cell.get('class', []) and len(first_cell.get_text(strip=True)) > 2:
                      row2_first = rows[i+1].find('td', class_='first')
                      if not row2_first: is_match_start = True
-
             if not is_match_start: i += 1; continue
 
             row2 = rows[i+1]
             cols1 = row.find_all('td')
             cols2 = row2.find_all('td')
-            
             if len(cols1) < 2 or len(cols2) < 1: i += 2; continue
 
             p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), None)
             if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
             p2_cell = next((c for c in cols2 if c.find('a')), None)
             if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
-            
             if not p1_cell or not p2_cell: i += 2; continue
 
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
-            
             if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): i += 2; continue
 
             m_time = "00:00"
@@ -747,7 +728,6 @@ def parse_matches_locally_v5(html, p_names):
                                 val = float(txt)
                                 if 1.01 <= val <= 100.0: found_r2_odds.append(val)
                             except: pass
-                        
                         if found_r1_odds and found_r2_odds:
                             odds = [found_r1_odds[0], found_r2_odds[0]]
                 except Exception: pass
@@ -819,7 +799,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V47.0 SNIPER PROTOCOL Starting...")
+    log(f"🚀 Neural Scout V50.0 INTELLIGENCE FIRST Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -847,10 +827,8 @@ async def run_pipeline():
                         if p1_obj and p2_obj:
                             n1 = p1_obj['last_name']
                             n2 = p2_obj['last_name']
-                            
                             if n1 == n2: continue
 
-                            # Settlement
                             if m.get('actual_winner'):
                                 winner_full = n1 if m['actual_winner'] == m['p1_raw'] else n2
                                 try:
@@ -891,10 +869,8 @@ async def run_pipeline():
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
                             
-                            # V39.0 STYLE
                             style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
                             style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
-                            
                             if style_stats_p1: log(f"   🥋 Style Check {n1}: {style_stats_p1['verdict']} vs {style_stats_p1['style']}")
                             
                             has_real_report = bool(r1.get('strengths') and r2.get('strengths'))
@@ -902,7 +878,6 @@ async def run_pipeline():
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                             
-                            # NEW: History Variables
                             is_hunter_pick_active = False
                             hunter_pick_player = None
 
@@ -919,7 +894,6 @@ async def run_pipeline():
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 
-                                # V47 RECALCULATION WITH SNIPER ENGINE
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
@@ -944,7 +918,6 @@ async def run_pipeline():
                                 
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
                                 
-                                # V47 SNIPER PROBABILITY
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report, style_stats_p1, style_stats_p2)
                                 
                                 ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
@@ -952,8 +925,6 @@ async def run_pipeline():
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                                 
                                 betting_advice = ""
-                                
-                                # V47 SNIPER EXECUTION
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'])
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'])
                                 
@@ -982,22 +953,18 @@ async def run_pipeline():
                                 "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
                             
-                            # --- CORE UPDATE: DUAL WRITE SYSTEM (V45) ---
                             final_match_id = None
                             
                             if db_match_id:
-                                # Update existing
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
                                 log(f"🔄 Updated Odds: {n1} vs {n2}")
                             else:
-                                # Insert new (and get ID!)
                                 res_insert = supabase.table("market_odds").insert(data).execute()
                                 if res_insert.data and len(res_insert.data) > 0:
                                     final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
 
-                            # HISTORY LOGGING (The Graph Feed)
                             if final_match_id:
                                 history_payload = {
                                     "match_id": final_match_id,
@@ -1011,7 +978,6 @@ async def run_pipeline():
                                 }
                                 try:
                                     supabase.table("odds_history").insert(history_payload).execute()
-                                    # log(f"      📈 History Point Logged") # Optional log
                                 except Exception as hist_err:
                                     log(f"      ⚠️ History Log Error: {hist_err}")
                                     
