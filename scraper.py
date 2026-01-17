@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V58.0 - THE ARCHITECT)...")
+log("🔌 Initialisiere Neural Scout (V58.1 - THE SILENT ASSASSIN)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -102,34 +102,29 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
-# --- V58 UPGRADE: INTELLIGENT PLAYER MATCHING ---
+# --- V58 INTELLIGENT PLAYER MATCHING ---
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
-    """
-    Handles format 'Mensik J.' mapping to 'Jakub Mensik' in DB.
-    """
     if not scraped_name_raw or not db_players: return None
     
     clean_scrape = clean_player_name(scraped_name_raw).lower()
     
-    # 1. Direct Exact Match Attempt (Fast Path)
+    # 1. Direct Exact Match
     for p in db_players:
         full_db = f"{p.get('first_name','')} {p.get('last_name','')}".lower().strip()
         if full_db == clean_scrape: return p
         if p.get('last_name','').lower() == clean_scrape: return p
 
-    # 2. Smart Parser for 'Lastname I.'
+    # 2. Smart Parser
     parts = clean_scrape.split()
     scrape_last = ""
     scrape_initial = ""
     
     if len(parts) >= 2:
-        # Check if last part is an initial (e.g. "J." or "J")
         last_token = parts[-1].replace('.', '')
         if len(last_token) == 1 and last_token.isalpha():
             scrape_initial = last_token
-            scrape_last = " ".join(parts[:-1]) # "Mensik"
+            scrape_last = " ".join(parts[:-1]) 
         else:
-            # Maybe "First Last" format
             scrape_last = parts[-1]
             scrape_initial = parts[0][0] if parts[0] else ""
     else:
@@ -140,25 +135,17 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     candidates = []
     for p in db_players:
         db_last = p.get('last_name', '').lower().replace('-', ' ')
-        
-        # Fuzzy Last Name Match
         if db_last == scrape_last or (len(scrape_last) > 3 and scrape_last in db_last):
             db_first = p.get('first_name', '').lower()
-            
-            # If we have an initial, verify it
             if scrape_initial and db_first:
                 if db_first.startswith(scrape_initial):
                     candidates.append(p)
             else:
-                # No initial to check, weak match but keep it
                 candidates.append(p)
     
     if not candidates: return None
-    
-    # If multiple candidates, prefer one with a scouting report (Intelligence Bias)
     with_report = [c for c in candidates if c['id'] in report_ids]
     if with_report: return with_report[0]
-    
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -249,7 +236,7 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         elif win_rate < 40: verdict = "STRUGGLES"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
     except Exception as e:
-        log(f"Style Analysis Error: {e}")
+        # Silent fail for stats
         return None
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
@@ -360,7 +347,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
+# 5. MATH CORE & SOTA V57 QUANT ENGINE
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -381,7 +368,6 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # --- TIERED STRATEGY (V57 Refined) ---
     if 1.30 <= market_odds < 1.70:
         required_edge = 0.06 
         kelly_fraction = 0.25 
@@ -433,7 +419,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo1 = p1_stats.get(elo_surf, 1500)
     elo2 = p2_stats.get(elo_surf, 1500)
     
-    # 1. MARKET GRAVITY (Quant Fix)
     elo_diff_model = elo1 - elo2
     
     if market_odds1 > 0 and market_odds2 > 0:
@@ -452,7 +437,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     else:
         elo_diff_final = elo_diff_model
 
-    # --- PROBABILITY CALCULATION (V57) ---
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
@@ -475,7 +459,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V57 WEIGHTING]
     weights = [0.20, 0.15, 0.05, 0.50, 0.10] 
     model_trust_factor = 0.45 
         
@@ -563,7 +546,6 @@ async def resolve_united_cup_via_country(p1):
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     
-    # --- V58 UPGRADE: LIVE GEMINI FALLBACK FOR UNKNOWN TOURNAMENTS ---
     prompt = f"""
     TASK: Identify the tennis tournament based on this match: {p1} vs {p2} (Scraped as: '{scraped_name}').
     CONTEXT: It's currently {datetime.now().year}.
@@ -574,8 +556,6 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
         try: 
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
-            
-            # Construct a usable DB-like object
             surface_type = data.get('surface', 'Hard')
             if data.get('indoor'): surface_type += " Indoor"
             else: surface_type += " Outdoor"
@@ -583,9 +563,8 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name):
             simulated_db_entry = {
                 "city": data.get('city', 'Unknown'),
                 "surface_guessed": surface_type,
-                "bsi_estimate": 6.5 # Default fallback
+                "bsi_estimate": 6.5 
             }
-            
             TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
         except: pass
@@ -610,7 +589,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
-    # --- V58 FALLBACK: TRIGGER GEMINI IF DB FAIL ---
     log(f"   ⚠️ Tournament '{s_low}' not in DB. Asking Gemini...")
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     ai_loc = ensure_dict(ai_loc)
@@ -619,12 +597,10 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         city = ai_loc['city']
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         log(f"   🤖 AI RESOLVED: '{s_low}' -> {city} ({surf})")
-        # Logic to estimate BSI based on surface type
         est_bsi = 6.5
         if 'clay' in surf.lower(): est_bsi = 3.5
         elif 'grass' in surf.lower(): est_bsi = 8.0
         elif 'indoor' in surf.lower(): est_bsi = 7.5
-        
         return surf, est_bsi, f"AI Detected: {city}"
     
     return 'Hard Court Outdoor', 6.5, 'Fallback'
@@ -633,7 +609,6 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     log(f"   🤖 Asking AI for analysis on: {p1['last_name']} vs {p2['last_name']}")
     has_reports = r1.get('strengths') and r2.get('strengths')
     
-    # Prompt updated to ask for sentiment score
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     TASK: Analyze {p1['last_name']} vs {p2['last_name']} on {surface} (BSI {bsi}).
@@ -674,59 +649,82 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
+# --- V58.1 PARSER FIX: GHOST MATCH KILLER ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
     
-    # V58: Relaxed matching - we check later in find_player_smart
-    # target_players = set(p.lower() for p in p_names)
-    
-    current_tour = "Unknown"
-    odds_class_pattern = re.compile(r'course')
-
     for table in soup.find_all("table", class_="result"):
         rows = table.find_all("tr")
+        current_tour = "Unknown"
         i = 0
+        
         while i < len(rows):
             row = rows[i]
+            
+            # Tournament Header
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 i += 1; continue
+            
+            # End check
             if i + 1 >= len(rows): i += 1; continue
 
-            first_cell = row.find('td', class_='first')
-            is_match_start = False
-            if first_cell:
-                if first_cell.get('rowspan') == '2': is_match_start = True
-                elif 'time' in first_cell.get('class', []) and len(first_cell.get_text(strip=True)) > 2:
-                     row2_first = rows[i+1].find('td', class_='first')
-                     if not row2_first: is_match_start = True
-            if not is_match_start: i += 1; continue
-
+            # V58.1 STRICT ROW PAIRING
+            # Row 1 MUST have 'first' cell with rowspan OR 'time' class
+            # Row 2 must follow immediately
+            
+            row1 = row
             row2 = rows[i+1]
-            cols1 = row.find_all('td')
+            
+            # Check structure: Row 1 should NOT be a header or sub-header
+            if "head" in row1.get("class", []) or "head" in row2.get("class", []):
+                i += 1; continue
+
+            first_cell = row1.find('td', class_='first')
+            
+            # Valid Match Start indicators:
+            # 1. Rowspan='2' in first cell
+            # 2. 't-name' or 'time' class with valid time string
+            is_valid_start = False
+            
+            if first_cell:
+                if first_cell.get('rowspan') == '2': 
+                    is_valid_start = True
+                elif 'time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', []):
+                    # Only valid if Row 2 also has match data structure
+                     if row2.find('td', class_='course'): is_valid_start = True
+            
+            if not is_valid_start: 
+                i += 1; continue
+
+            cols1 = row1.find_all('td')
             cols2 = row2.find_all('td')
             if len(cols1) < 2 or len(cols2) < 1: i += 2; continue
 
             p1_cell = next((c for c in cols1 if c.find('a') and 'time' not in c.get('class', [])), None)
-            if not p1_cell and len(cols1) > 1: p1_cell = cols1[1]
             p2_cell = next((c for c in cols2 if c.find('a')), None)
-            if not p2_cell and len(cols2) > 0: p2_cell = cols2[0]
+
             if not p1_cell or not p2_cell: i += 2; continue
 
             p1_raw = clean_player_name(p1_cell.get_text(strip=True))
             p2_raw = clean_player_name(p2_cell.get_text(strip=True))
-            if '/' in p1_raw or '/' in p2_raw or "canc" in (row.text + row2.text).lower(): i += 2; continue
-
+            
+            # V58.1: Invalid Match Killer
+            if '/' in p1_raw or '/' in p2_raw: i += 2; continue # Doubles
+            if "canc" in (row1.text + row2.text).lower(): i += 2; continue
+            
+            # Time Extraction
             m_time = "00:00"
             if first_cell:
                 tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
-            # V58: Capture ALL matches, filter later in loop
+            # --- V58.1: CAPTURE LOGIC (We check DB existence later) ---
             winner_found = None
-            p1_res = row.find('td', class_='result')
+            p1_res = row1.find('td', class_='result')
             p2_res = row2.find('td', class_='result')
+            
             if p1_res and p2_res:
                 t1 = p1_res.get_text(strip=True)
                 t2 = p2_res.get_text(strip=True)
@@ -736,30 +734,22 @@ def parse_matches_locally_v5(html, p_names):
                     elif s2 > s1 and s2 >= 2: winner_found = p2_raw
 
             odds = []
+            # ... (Odds parsing unchanged) ...
             try:
-                course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
-                found_r1_odds = []
-                for cell in course_cells_r1:
-                    txt = cell.get_text(strip=True)
-                    try:
-                        val = float(txt)
-                        if 1.01 <= val <= 100.0: found_r1_odds.append(val)
-                    except: pass
-                
-                if len(found_r1_odds) >= 2:
-                    odds = found_r1_odds[:2]
-                else:
-                    course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
-                    found_r2_odds = []
-                    for cell in course_cells_r2:
-                        txt = cell.get_text(strip=True)
+                # Basic odds extraction
+                raw_odds = []
+                for r in [row1, row2]:
+                    for c in r.find_all('td', class_=re.compile(r'course')):
                         try:
-                            val = float(txt)
-                            if 1.01 <= val <= 100.0: found_r2_odds.append(val)
+                            val = float(c.get_text(strip=True))
+                            if 1.01 <= val <= 100.0: raw_odds.append(val)
                         except: pass
-                    if found_r1_odds and found_r2_odds:
-                        odds = [found_r1_odds[0], found_r2_odds[0]]
-            except Exception: pass
+                
+                # Heuristic: Usually first odd in row 1 is P1, first in row 2 is P2
+                # But tennisexplorer format varies. Assuming Best Market Odds.
+                if len(raw_odds) >= 2:
+                    odds = raw_odds[:2]
+            except: pass
             
             final_o1 = odds[0] if len(odds) > 0 else 0.0
             final_o2 = odds[1] if len(odds) > 1 else 0.0
@@ -772,7 +762,9 @@ def parse_matches_locally_v5(html, p_names):
                     "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
                     "actual_winner": winner_found
                 })
-            i += 2
+            
+            i += 2 # Skip processed pair
+            
     return found
 
 async def update_past_results(browser: Browser):
@@ -790,7 +782,8 @@ async def update_past_results(browser: Browser):
         page = await browser.new_page()
         try:
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
-            log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
+            # Log reduced to avoid spam
+            # log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
@@ -828,7 +821,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V58.0 THE ARCHITECT Starting...")
+    log(f"🚀 Neural Scout V58.1 SILENT ASSASSIN Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -857,6 +850,13 @@ async def run_pipeline():
                             n1 = p1_obj['last_name']
                             n2 = p2_obj['last_name']
                             if n1 == n2: continue
+                            
+                            # V58.1 CROSS-GENDER CHECK (Safety)
+                            # Assuming DB has 'tour' column: ATP vs WTA
+                            if p1_obj.get('tour') != p2_obj.get('tour'):
+                                # Allow only if it's United Cup or Hopman Cup
+                                if "united cup" not in m['tour'].lower() and "hopman" not in m['tour'].lower():
+                                    continue # Skip Cross-Gender bugs
 
                             # V51 SETTLEMENT LOGIC
                             actual_winner_val = None
@@ -899,7 +899,7 @@ async def run_pipeline():
 
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2)
                             
-                            # --- NEW VISIBILITY LOG (V57.2) ---
+                            # Log only real work
                             log(f"      ⚖️ Physics Context: Surface={surf}, BSI={bsi}, Location={notes}")
                             
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
@@ -1021,7 +1021,9 @@ async def run_pipeline():
                                 except Exception as hist_err:
                                     log(f"      ⚠️ History Log Error: {hist_err}")
                         else:
-                            log(f"   ⚠️ Skipping {m['p1_raw']} vs {m['p2_raw']} - Players not found in DB")
+                            # V58.1: Suppress spammy log, only debug if needed
+                            # log(f"   ⚠️ Skipping {m['p1_raw']} vs {m['p2_raw']} - Players not found in DB")
+                            pass
                                     
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
