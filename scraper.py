@@ -18,7 +18,9 @@ from playwright.async_api import async_playwright, Browser, Page
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-# ... (Logging & Config unchanged) ...
+# =================================================================
+# 1. CONFIGURATION & LOGGING
+# =================================================================
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s: %(message)s',
@@ -29,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V58.2 - GRAND SLAM PATCH)...")
+log("🔌 Initialisiere Neural Scout (V58.3 - THE GRAND SLAM HUNTER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,7 +44,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'gemini-2.0-flash'
 
-# ... (Global Caches & Helpers unchanged) ...
+# Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -56,6 +58,9 @@ CITY_TO_DB_STRING = {
 }
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
+# =================================================================
+# 2. HELPER FUNCTIONS
+# =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
     try: return float(val)
@@ -97,50 +102,79 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
-# --- INTELLIGENT PLAYER MATCHING (V58) ---
+# --- V58.3 UPGRADE: ELITE NAME MATCHING ---
+def normalize_db_name(name: str) -> str:
+    """Normalizes DB names for robust matching (Mc, De, hyphens)."""
+    if not name: return ""
+    n = name.lower().strip()
+    n = n.replace('-', ' ').replace("'", "")
+    # Remove common prefixes for loose matching if strict fails
+    n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
+    return n
+
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
-    clean_scrape = clean_player_name(scraped_name_raw).lower()
     
-    # Direct Match
-    for p in db_players:
-        full_db = f"{p.get('first_name','')} {p.get('last_name','')}".lower().strip()
-        if full_db == clean_scrape: return p
-        if p.get('last_name','').lower() == clean_scrape: return p
-
-    # Smart Parser
+    # 1. Clean Scraped Name (e.g. "De Minaur A.")
+    clean_scrape = clean_player_name(scraped_name_raw)
+    
+    # Extract Last Name & Initial
     parts = clean_scrape.split()
     scrape_last = ""
     scrape_initial = ""
     
+    # Heuristic for "Lastname I." vs "First Last"
+    # TennisExplorer usually uses "Lastname I."
     if len(parts) >= 2:
         last_token = parts[-1].replace('.', '')
         if len(last_token) == 1 and last_token.isalpha():
-            scrape_initial = last_token
+            # Format: "De Minaur A."
+            scrape_initial = last_token.lower()
             scrape_last = " ".join(parts[:-1]) 
         else:
+            # Format: "Alex De Minaur" (sometimes happens)
             scrape_last = parts[-1]
-            scrape_initial = parts[0][0] if parts[0] else ""
+            scrape_initial = parts[0][0].lower() if parts[0] else ""
     else:
         scrape_last = clean_scrape
 
-    scrape_last = scrape_last.replace('-', ' ').strip()
+    target_last = normalize_db_name(scrape_last)
+    
     candidates = []
     
     for p in db_players:
-        db_last = p.get('last_name', '').lower().replace('-', ' ')
-        if db_last == scrape_last or (len(scrape_last) > 3 and scrape_last in db_last):
+        # DB Name Normalization
+        db_last_raw = p.get('last_name', '')
+        db_last = normalize_db_name(db_last_raw)
+        
+        # 1. Exact/Loose Last Name Match
+        match_score = 0
+        if db_last == target_last: match_score = 100
+        elif target_last in db_last or db_last in target_last: 
+            # Allow substring match only if length is substantial (avoid "Li" matching "Liu")
+            if len(target_last) > 3 and len(db_last) > 3: match_score = 80
+        
+        if match_score > 0:
+            # 2. Check Initial (if available)
             db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
                 if db_first.startswith(scrape_initial):
-                    candidates.append(p)
-            else:
-                candidates.append(p)
+                    match_score += 20 # Boost for initial match
+                else:
+                    match_score -= 50 # Penalize wrong initial
+            
+            if match_score > 50:
+                candidates.append((p, match_score))
+
+    if not candidates: 
+        # Debug Log for missed big players (optional, can be noisy)
+        # if "minaur" in clean_scrape.lower(): log(f"DEBUG: Could not find '{clean_scrape}' (Target: {target_last})")
+        return None
     
-    if not candidates: return None
-    with_report = [c for c in candidates if c['id'] in report_ids]
-    if with_report: return with_report[0]
-    return candidates[0]
+    # Sort by Score (Desc) then by Intelligence (Report exists?)
+    candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
+    
+    return candidates[0][0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
@@ -157,7 +191,9 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
-# ... (Gemini & Fetch Utils unchanged) ...
+# =================================================================
+# 3. GEMINI ENGINE
+# =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
@@ -173,8 +209,12 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
                 log(f"   ⚠️ Gemini API Error: {response.status_code}")
                 return None
             return response.json()['candidates'][0]['content']['parts'][0]['text']
-        except Exception as e: return None
+        except Exception as e:
+            return None
 
+# =================================================================
+# 4. DATA FETCHING
+# =================================================================
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
@@ -204,7 +244,8 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
-        relevant_matches = 0; wins = 0
+        relevant_matches = 0
+        wins = 0
         for m in matches:
             if player_name.lower() in m['player1_name'].lower():
                 opp_name = get_last_name(m['player2_name']).lower()
@@ -214,14 +255,17 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
             if target_style in opp_styles:
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
-                if player_name.lower() in winner: wins += 1
+                if player_name.lower() in winner:
+                    wins += 1
         if relevant_matches < 3: return None
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
         if win_rate > 65: verdict = "DOMINANT"
         elif win_rate < 40: verdict = "STRUGGLES"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-    except Exception as e: return None
+    except Exception as e:
+        # Silent fail for stats
+        return None
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
     if not relative_url: return 0.5
@@ -330,7 +374,9 @@ async def get_db_data():
         log(f"❌ DB Load Error: {e}")
         return [], {}, [], []
 
-# --- MATH CORE V57 (Z-SCORE) ---
+# =================================================================
+# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
+# =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
@@ -341,9 +387,6 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
 def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
-    
-    # Limit extreme odds to avoid calculation errors
-    market_odds = min(market_odds, 50.0)
 
     b = market_odds - 1
     q = 1 - fair_prob
@@ -353,6 +396,7 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
+    # --- TIERED STRATEGY (V57 Refined) ---
     if 1.30 <= market_odds < 1.70:
         required_edge = 0.06 
         kelly_fraction = 0.25 
@@ -404,11 +448,13 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo1 = p1_stats.get(elo_surf, 1500)
     elo2 = p2_stats.get(elo_surf, 1500)
     
+    # 1. MARKET GRAVITY (Quant Fix)
     elo_diff_model = elo1 - elo2
     
     if market_odds1 > 0 and market_odds2 > 0:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         implied_p1 = inv1 / (inv1 + inv2)
+        
         if 0.01 < implied_p1 < 0.99:
             try:
                 elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
@@ -416,10 +462,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
                 elo_diff_market = elo_diff_model
         else:
             elo_diff_market = elo_diff_model 
+            
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
     else:
         elo_diff_final = elo_diff_model
 
+    # --- PROBABILITY CALCULATION (V57) ---
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
@@ -435,13 +483,17 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
     style_boost = 0
-    if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": style_boost += 0.08 
+    if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": 
+        style_boost += 0.08 
     if style_stats_p1 and style_stats_p1['verdict'] == "STRUGGLES": style_boost -= 0.06
-    if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": style_boost -= 0.08 
+    if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": 
+        style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
+    # [V57 WEIGHTING]
     weights = [0.20, 0.15, 0.05, 0.50, 0.10] 
     model_trust_factor = 0.45 
+        
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
     
@@ -468,20 +520,28 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
+        
         alpha_part = old_final_prob - (old_prob_market * 0.40)
         prob_alpha = alpha_part / 0.60
+        
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
+            
         new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
+        
         if new_market_odds1 < 1.10:
              mkt_prob1 = 1/new_market_odds1
              new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
+             
         return new_final_prob
-    except: return 0.5
+    except:
+        return 0.5
 
-# ... (Pipeline Utils with V58.2 FIXES) ...
+# =================================================================
+# 6. PIPELINE UTILS
+# =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
     url = "https://www.unitedcup.com/en/scores/group-standings"
@@ -777,6 +837,8 @@ async def update_past_results(browser: Browser):
         page = await browser.new_page()
         try:
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            # Log reduced to avoid spam
+            # log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
@@ -814,7 +876,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V58.2 GRAND SLAM PATCH Starting...")
+    log(f"🚀 Neural Scout V58.3 GRAND SLAM HUNTER Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
