@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V58.3 - THE GRAND SLAM HUNTER)...")
+log("🔌 Initialisiere Neural Scout (V58.4 - THE CONTEXT DETECTIVE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -108,72 +108,54 @@ def normalize_db_name(name: str) -> str:
     if not name: return ""
     n = name.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
-    # Remove common prefixes for loose matching if strict fails
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
     
-    # 1. Clean Scraped Name (e.g. "De Minaur A.")
     clean_scrape = clean_player_name(scraped_name_raw)
-    
-    # Extract Last Name & Initial
     parts = clean_scrape.split()
     scrape_last = ""
     scrape_initial = ""
     
-    # Heuristic for "Lastname I." vs "First Last"
-    # TennisExplorer usually uses "Lastname I."
     if len(parts) >= 2:
         last_token = parts[-1].replace('.', '')
         if len(last_token) == 1 and last_token.isalpha():
-            # Format: "De Minaur A."
             scrape_initial = last_token.lower()
             scrape_last = " ".join(parts[:-1]) 
         else:
-            # Format: "Alex De Minaur" (sometimes happens)
             scrape_last = parts[-1]
             scrape_initial = parts[0][0].lower() if parts[0] else ""
     else:
         scrape_last = clean_scrape
 
     target_last = normalize_db_name(scrape_last)
-    
     candidates = []
     
     for p in db_players:
-        # DB Name Normalization
         db_last_raw = p.get('last_name', '')
         db_last = normalize_db_name(db_last_raw)
         
-        # 1. Exact/Loose Last Name Match
         match_score = 0
         if db_last == target_last: match_score = 100
         elif target_last in db_last or db_last in target_last: 
-            # Allow substring match only if length is substantial (avoid "Li" matching "Liu")
             if len(target_last) > 3 and len(db_last) > 3: match_score = 80
         
         if match_score > 0:
-            # 2. Check Initial (if available)
             db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
                 if db_first.startswith(scrape_initial):
-                    match_score += 20 # Boost for initial match
+                    match_score += 20 
                 else:
-                    match_score -= 50 # Penalize wrong initial
+                    match_score -= 50 
             
             if match_score > 50:
                 candidates.append((p, match_score))
 
-    if not candidates: 
-        # Debug Log for missed big players (optional, can be noisy)
-        # if "minaur" in clean_scrape.lower(): log(f"DEBUG: Could not find '{clean_scrape}' (Target: {target_last})")
-        return None
+    if not candidates: return None
     
-    # Sort by Score (Desc) then by Intelligence (Report exists?)
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
-    
     return candidates[0][0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -264,7 +246,6 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         elif win_rate < 40: verdict = "STRUGGLES"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
     except Exception as e:
-        # Silent fail for stats
         return None
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
@@ -575,34 +556,60 @@ async def resolve_united_cup_via_country(p1):
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
     return None
 
-async def resolve_ambiguous_tournament(p1, p2, scraped_name):
+# --- V58.4 UPGRADE: CONTEXT-AWARE COURT RESOLUTION ---
+async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     
     prompt = f"""
-    TASK: Identify the tennis tournament based on this match: {p1} vs {p2} (Scraped as: '{scraped_name}').
-    CONTEXT: It's currently {datetime.now().year}.
-    OUTPUT JSON ONLY: {{ "name": "Official Name", "city": "City", "surface": "Hard/Clay/Grass/Carpet", "indoor": true/false }}
+    TASK: Identify the specific tennis tournament location and surface.
+    MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}).
+    SOURCE NAME: '{scraped_name}' (This is vague, be a detective).
+    DATE: {datetime.now().strftime('%B %Y')}.
+    
+    HINT: If source is just 'Futures' or 'Challenger', use the players' current region or recent tournaments to guess. 
+    Most likely it is an ITF/Challenger event happening THIS WEEK.
+    
+    OUTPUT JSON ONLY: 
+    {{ 
+        "city": "City Name", 
+        "country": "Country",
+        "surface": "Hard/Clay/Grass/Carpet", 
+        "indoor": true/false,
+        "confidence": "High/Medium/Low"
+    }}
     """
     res = await call_gemini(prompt)
     if res:
         try: 
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
+            
             surface_type = data.get('surface', 'Hard')
             if data.get('indoor'): surface_type += " Indoor"
             else: surface_type += " Outdoor"
             
+            est_bsi = 6.5
+            if 'clay' in surface_type.lower(): est_bsi = 3.5
+            elif 'grass' in surface_type.lower(): est_bsi = 8.0
+            elif 'indoor' in surface_type.lower(): est_bsi = 7.5
+            elif 'carpet' in surface_type.lower(): est_bsi = 8.5
+            
+            city = data.get('city', 'Unknown')
+            if city.lower() in ['indian wells', 'miami']: est_bsi -= 1.0 
+            if city.lower() in ['shanghai', 'paris', 'vienna']: est_bsi += 1.0 
+
             simulated_db_entry = {
-                "city": data.get('city', 'Unknown'),
+                "city": city,
                 "surface_guessed": surface_type,
-                "bsi_estimate": 6.5 
+                "bsi_estimate": est_bsi,
+                "note": f"AI Detected: {city}, {data.get('country')} ({data.get('confidence')} Conf.)"
             }
             TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
         except: pass
     return None
 
-async def find_best_court_match_smart(tour, db_tours, p1, p2):
+async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown"):
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
@@ -621,19 +628,16 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
-    log(f"   ⚠️ Tournament '{s_low}' not in DB. Asking Gemini...")
-    ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
+    log(f"   ⚠️ Tournament '{s_low}' vague. Asking Gemini with Player Context ({p1_country} vs {p2_country})...")
+    ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
     ai_loc = ensure_dict(ai_loc)
     
     if ai_loc and ai_loc.get('city'):
-        city = ai_loc['city']
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
-        log(f"   🤖 AI RESOLVED: '{s_low}' -> {city} ({surf})")
-        est_bsi = 6.5
-        if 'clay' in surf.lower(): est_bsi = 3.5
-        elif 'grass' in surf.lower(): est_bsi = 8.0
-        elif 'indoor' in surf.lower(): est_bsi = 7.5
-        return surf, est_bsi, f"AI Detected: {city}"
+        bsi = ai_loc.get('bsi_estimate', 6.5)
+        note = ai_loc.get('note', 'AI Guess')
+        log(f"   🤖 AI RESOLVED: '{s_low}' -> {note} | BSI: {bsi}")
+        return surf, bsi, note
     
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
@@ -749,37 +753,6 @@ def parse_matches_locally_v5(html, p_names):
                     # Doubles detected, discard
                     pending_p1_raw = None
                     i += 1; continue
-                    
-                # Collect odds from P1 row (saved?) -> No, typically odds are spread or in same row
-                # TennisExplorer usually puts odds for both in the first row OR one in each
-                
-                # Let's assume best market odds are available across the two rows
-                # Since we didn't save P1 odds, we rely on the fact that usually P1 row has both or none
-                # But to be robust: we can't easily fetch P1 odds from previous iteration without complex state
-                # SIMPLE FIX: If we are in P2 row, odds might be here
-                
-                final_o1 = 0.0
-                final_o2 = 0.0
-                
-                # If we found odds in this P2 row, usually it's P2 odds? No, TE is tricky.
-                # Standard TE: Row 1 has P1 and Time and Odds. Row 2 has P2.
-                # So if we are here, we probably missed odds in Row 1.
-                
-                # RE-EVALUATION: The standard parser was Row 1 & Row 2.
-                # The issue with De Minaur/McDonald might be they are in a different block style.
-                
-                # Let's revert to a "Block Scanner" approach.
-                # If we found P2, we emit the match.
-                
-                # For odds, we will take what we found in this "block"
-                # Since we don't have P1 odds here, let's assume they were in Row 1 and we missed them?
-                # Actually, let's make it simple: We only emit if we find ODDS.
-                
-                # If we are in "Pending" mode, it means Row 1 was P1.
-                # We need P1 odds.
-                
-                # To fix this properly without refactoring the whole loop into a state machine:
-                # Use a lookback.
                 
                 prev_row = rows[i-1]
                 prev_odds = []
@@ -799,7 +772,7 @@ def parse_matches_locally_v5(html, p_names):
                         "tour": clean_tournament_name(current_tour), 
                         "time": pending_time, "odds1": final_o1, "odds2": final_o2,
                         "p1_href": pending_p1_href, "p2_href": p2_href,
-                        "actual_winner": None # We handle winners via DB update
+                        "actual_winner": None 
                     })
                 
                 # Reset pending
@@ -807,14 +780,10 @@ def parse_matches_locally_v5(html, p_names):
                 
             else:
                 # No pending P1. This row is P1.
-                # Check if it has rowspan=2 (Standard Pair)
                 if first_cell and first_cell.get('rowspan') == '2':
                     pending_p1_raw = p_raw
                     pending_p1_href = p_href
-                    # Time is already set
                 else:
-                    # Might be a single line match? Unlikely for odds.
-                    # Or maybe rowspan missing. Treat as P1 and wait for P2.
                     pending_p1_raw = p_raw
                     pending_p1_href = p_href
             
@@ -837,8 +806,6 @@ async def update_past_results(browser: Browser):
         page = await browser.new_page()
         try:
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
-            # Log reduced to avoid spam
-            # log(f"      Scanning Results for: {t_date.strftime('%Y-%m-%d')}")
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
@@ -876,7 +843,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V58.3 GRAND SLAM HUNTER Starting...")
+    log(f"🚀 Neural Scout V58.4 THE CONTEXT DETECTIVE Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -947,7 +914,10 @@ async def run_pipeline():
                                         'old_odds2': existing_match.get('odds2', 0)
                                     }
 
-                            surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2)
+                            # V58.4: Pass Countries to Smart Court Finder
+                            c1 = p1_obj.get('country', 'Unknown')
+                            c2 = p2_obj.get('country', 'Unknown')
+                            surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
                             
                             log(f"      ⚖️ Physics Context: Surface={surf}, BSI={bsi}, Location={notes}")
                             
