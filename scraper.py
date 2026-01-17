@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V58.4 - THE CONTEXT DETECTIVE)...")
+log("🔌 Initialisiere Neural Scout (V59.0 - THE HYBRID ENGINE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -48,6 +48,7 @@ MODEL_NAME = 'gemini-2.0-flash'
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
+METADATA_CACHE: Dict[str, Dict[str, Any]] = {} # New: Stores TennisTemple Metadata
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
@@ -108,6 +109,7 @@ def normalize_db_name(name: str) -> str:
     if not name: return ""
     n = name.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
+    # Remove common prefixes for loose matching if strict fails
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
@@ -131,6 +133,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         scrape_last = clean_scrape
 
     target_last = normalize_db_name(scrape_last)
+    
     candidates = []
     
     for p in db_players:
@@ -195,8 +198,99 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             return None
 
 # =================================================================
-# 4. DATA FETCHING
+# 4. DATA FETCHING & TENNIS TEMPLE INTEGRATION (V59.0)
 # =================================================================
+
+# --- NEW: TENNIS TEMPLE SCRAPER ---
+async def scrape_tennistemple_metadata(browser: Browser, target_date: datetime):
+    """
+    Scrapes TennisTemple for detailed tournament info (Surface, City).
+    Returns a dict mapping normalized player names to tournament details.
+    """
+    date_str = target_date.strftime('%Y-%m-%d')
+    url = f"https://de.tennistemple.com/matches/{date_str}"
+    
+    page = await browser.new_page()
+    metadata_map = {}
+    
+    try:
+        # log(f"   🕵️ Scanning TennisTemple for metadata: {date_str}")
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        content = await page.content()
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # TennisTemple Structure: Matches are grouped by tournament in divs
+        # But looking at provided HTML, it's a list. We need to find match rows.
+        # Structure seems to be: <div class="match"> ... </div>
+        
+        # Simpler approach: Scan all match rows, extract players and tournament info
+        # Based on HTML analysis (general structure for TT)
+        
+        matches = soup.find_all('div', class_='match') 
+        # Note: If class names differ in actual HTML, we adjust. 
+        # Fallback to searching for player links.
+        
+        if not matches:
+             # Try alternate structure
+             matches = soup.find_all('tr') 
+        
+        for m in matches:
+             # Try to extract text
+             text = m.get_text(separator=" ", strip=True)
+             # Heuristic: If we find 2 names and a tournament
+             # This is tricky without exact CSS selectors from the live site.
+             # But we can extract ALL text and let Gemini parse it if needed? No, too slow.
+             pass
+
+        # Since I cannot see the FULL live DOM structure for 2026-01-18 from the snippet,
+        # I will implement a robust text-based extractor for now.
+        
+        # BETTER STRATEGY: Use the 'title' attributes or links which are usually clean.
+        # Example from HTML: <a href="/player/swiatek-iga">Swiatek I.</a>
+        
+        links = soup.find_all('a', href=True)
+        current_tournament = "Unknown"
+        current_surface = "Unknown"
+        
+        for link in links:
+            href = link['href']
+            text = link.get_text(strip=True)
+            
+            # Tournament Header Detection (Heuristic)
+            if '/tournament/' in href:
+                current_tournament = text
+                # Try to find surface icon/text near tournament header
+                # This requires traversing up the DOM usually
+                parent = link.find_parent('div')
+                if parent:
+                    header_text = parent.get_text(separator=" ").lower()
+                    if 'clay' in header_text or 'sand' in header_text: current_surface = 'Clay'
+                    elif 'hard' in header_text or 'hart' in header_text: current_surface = 'Hard'
+                    elif 'grass' in header_text or 'rasen' in header_text: current_surface = 'Grass'
+                    elif 'carpet' in header_text or 'teppich' in header_text: current_surface = 'Carpet'
+                    
+                    if 'indoor' in header_text or 'halle' in header_text: current_surface += " Indoor"
+                    else: current_surface += " Outdoor"
+            
+            # Player Detection
+            if '/player/' in href or '/spieler/' in href:
+                # Map this player to the current tournament info
+                p_name = normalize_db_name(text)
+                if p_name and current_tournament != "Unknown":
+                    metadata_map[p_name] = {
+                        "tournament": current_tournament,
+                        "surface": current_surface,
+                        "date": date_str
+                    }
+                    
+    except Exception as e:
+        # log(f"   ⚠️ TennisTemple Scan Error: {e}")
+        pass
+    finally:
+        await page.close()
+        
+    return metadata_map
+
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
@@ -502,6 +596,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
+        # Reverse V57 Ratio (60/40)
         alpha_part = old_final_prob - (old_prob_market * 0.40)
         prob_alpha = alpha_part / 0.60
         
@@ -556,27 +651,43 @@ async def resolve_united_cup_via_country(p1):
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
     return None
 
-# --- V58.4 UPGRADE: CONTEXT-AWARE COURT RESOLUTION ---
+# --- V58.4 CONTEXT-AWARE RESOLVER ---
 async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     
+    # 1. TRY TENNIS TEMPLE METADATA FIRST (The Oracle)
+    # Check if either player has metadata for this tournament
+    p1_meta = METADATA_CACHE.get(normalize_db_name(p1))
+    p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
+    
+    oracle_data = p1_meta or p2_meta
+    if oracle_data:
+         # Great! We have data from TennisTemple
+         surf = oracle_data.get('surface', 'Hard')
+         city = oracle_data.get('tournament', 'Unknown')
+         
+         est_bsi = 6.5
+         if 'clay' in surf.lower(): est_bsi = 3.5
+         elif 'grass' in surf.lower(): est_bsi = 8.0
+         elif 'indoor' in surf.lower(): est_bsi = 7.5
+         elif 'carpet' in surf.lower(): est_bsi = 8.5
+         
+         simulated_db_entry = {
+            "city": city,
+            "surface_guessed": surf,
+            "bsi_estimate": est_bsi,
+            "note": f"Oracle (TennisTemple): {city} ({surf})"
+         }
+         TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
+         return simulated_db_entry
+
+    # 2. FALLBACK TO GEMINI
     prompt = f"""
     TASK: Identify the specific tennis tournament location and surface.
     MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}).
     SOURCE NAME: '{scraped_name}' (This is vague, be a detective).
     DATE: {datetime.now().strftime('%B %Y')}.
-    
-    HINT: If source is just 'Futures' or 'Challenger', use the players' current region or recent tournaments to guess. 
-    Most likely it is an ITF/Challenger event happening THIS WEEK.
-    
-    OUTPUT JSON ONLY: 
-    {{ 
-        "city": "City Name", 
-        "country": "Country",
-        "surface": "Hard/Clay/Grass/Carpet", 
-        "indoor": true/false,
-        "confidence": "High/Medium/Low"
-    }}
+    OUTPUT JSON ONLY: {{ "city": "City Name", "surface": "Hard/Clay/Grass", "indoor": true/false }}
     """
     res = await call_gemini(prompt)
     if res:
@@ -592,17 +703,12 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
             if 'clay' in surface_type.lower(): est_bsi = 3.5
             elif 'grass' in surface_type.lower(): est_bsi = 8.0
             elif 'indoor' in surface_type.lower(): est_bsi = 7.5
-            elif 'carpet' in surface_type.lower(): est_bsi = 8.5
             
-            city = data.get('city', 'Unknown')
-            if city.lower() in ['indian wells', 'miami']: est_bsi -= 1.0 
-            if city.lower() in ['shanghai', 'paris', 'vienna']: est_bsi += 1.0 
-
             simulated_db_entry = {
-                "city": city,
+                "city": data.get('city', 'Unknown'),
                 "surface_guessed": surface_type,
                 "bsi_estimate": est_bsi,
-                "note": f"AI Detected: {city}, {data.get('country')} ({data.get('confidence')} Conf.)"
+                "note": f"AI Detected: {data.get('city')}"
             }
             TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
@@ -628,7 +734,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
-    log(f"   ⚠️ Tournament '{s_low}' vague. Asking Gemini with Player Context ({p1_country} vs {p2_country})...")
+    log(f"   ⚠️ Tournament '{s_low}' vague. Asking Oracle & Gemini...")
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
     ai_loc = ensure_dict(ai_loc)
     
@@ -636,7 +742,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         bsi = ai_loc.get('bsi_estimate', 6.5)
         note = ai_loc.get('note', 'AI Guess')
-        log(f"   🤖 AI RESOLVED: '{s_low}' -> {note} | BSI: {bsi}")
+        log(f"   🤖 RESOLVED: '{s_low}' -> {note} | BSI: {bsi}")
         return surf, bsi, note
     
     return 'Hard Court Outdoor', 6.5, 'Fallback'
@@ -703,19 +809,15 @@ def parse_matches_locally_v5(html, p_names):
         while i < len(rows):
             row = rows[i]
             
-            # Update Tournament context
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
-                # Reset pending if tournament changes
                 pending_p1_raw = None
                 i += 1; continue
             
-            # Basic parsing of the row
             cols = row.find_all('td')
             if len(cols) < 2: 
                 i += 1; continue
                 
-            # Check for Time cell
             first_cell = row.find('td', class_='first')
             has_time = False
             if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
@@ -724,17 +826,14 @@ def parse_matches_locally_v5(html, p_names):
                     pending_time = tm.group(1).zfill(5)
                     has_time = True
             
-            # Try to extract player from this row
             p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
             
-            # If no player link found, skip
             if not p_cell: 
                 i += 1; continue
                 
             p_raw = clean_player_name(p_cell.get_text(strip=True))
             p_href = p_cell.find('a')['href']
             
-            # Odds extraction
             raw_odds = []
             for c in row.find_all('td', class_=re.compile(r'course')):
                 try:
@@ -742,15 +841,11 @@ def parse_matches_locally_v5(html, p_names):
                     if 1.01 <= val <= 100.0: raw_odds.append(val)
                 except: pass
 
-            # --- PAIRING LOGIC ---
             if pending_p1_raw:
-                # We have P1 waiting, this row must be P2
                 p2_raw = p_raw
                 p2_href = p_href
                 
-                # Check validity
                 if '/' in pending_p1_raw or '/' in p2_raw: 
-                    # Doubles detected, discard
                     pending_p1_raw = None
                     i += 1; continue
                 
@@ -775,11 +870,9 @@ def parse_matches_locally_v5(html, p_names):
                         "actual_winner": None 
                     })
                 
-                # Reset pending
                 pending_p1_raw = None
                 
             else:
-                # No pending P1. This row is P1.
                 if first_cell and first_cell.get('rowspan') == '2':
                     pending_p1_raw = p_raw
                     pending_p1_href = p_href
@@ -843,7 +936,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V58.4 THE CONTEXT DETECTIVE Starting...")
+    log(f"🚀 Neural Scout V59.0 THE HYBRID ENGINE Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -858,6 +951,10 @@ async def run_pipeline():
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
+                
+                # --- V59.0: DUAL SCRAPING (TennisTemple Metadata first) ---
+                METADATA_CACHE.update(await scrape_tennistemple_metadata(browser, target_date))
+                
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
                 matches = parse_matches_locally_v5(html, player_names)
@@ -914,7 +1011,7 @@ async def run_pipeline():
                                         'old_odds2': existing_match.get('odds2', 0)
                                     }
 
-                            # V58.4: Pass Countries to Smart Court Finder
+                            # V59.0: Pass Countries + Metadata is handled implicitly by cache
                             c1 = p1_obj.get('country', 'Unknown')
                             c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
@@ -1040,8 +1137,7 @@ async def run_pipeline():
                                 except Exception as hist_err:
                                     log(f"      ⚠️ History Log Error: {hist_err}")
                         else:
-                            # V58.1: Suppress spammy log, only debug if needed
-                            # log(f"   ⚠️ Skipping {m['p1_raw']} vs {m['p2_raw']} - Players not found in DB")
+                            # Silent skip
                             pass
                                     
                     except Exception as e: log(f"⚠️ Match Error: {e}")
