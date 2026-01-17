@@ -18,7 +18,9 @@ from playwright.async_api import async_playwright, Browser, Page
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-# ... (Configuration & Logging - unchanged) ...
+# =================================================================
+# 1. CONFIGURATION & LOGGING
+# =================================================================
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s: %(message)s',
@@ -29,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V57.1 - DUPLICATE KILLER)...")
+log("🔌 Initialisiere Neural Scout (V57.2 - THE AUDITOR)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,7 +44,7 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'gemini-2.0-flash'
 
-# ... (Global Caches & Constants - unchanged) ...
+# Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -56,7 +58,9 @@ CITY_TO_DB_STRING = {
 }
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
-# ... (Helper Functions - unchanged) ...
+# =================================================================
+# 2. HELPER FUNCTIONS
+# =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
     try: return float(val)
@@ -145,7 +149,9 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
-# ... (Gemini Engine & Data Fetching - unchanged) ...
+# =================================================================
+# 3. GEMINI ENGINE
+# =================================================================
 async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     await asyncio.sleep(0.5) 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
@@ -164,6 +170,9 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
         except Exception as e:
             return None
 
+# =================================================================
+# 4. DATA FETCHING
+# =================================================================
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
@@ -323,15 +332,25 @@ async def get_db_data():
         log(f"❌ DB Load Error: {e}")
         return [], {}, [], []
 
-# ... (Math Core V57 - unchanged) ...
+# =================================================================
+# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
+# =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
+    """
+    SOTA Z-Score Calculation (Normal Distribution).
+    Sharpens odds for heavy favorites/underdogs.
+    Sigma 280 is calibrated for ATP/WTA variance.
+    """
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
 def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
+    """
+    SOTA V57 STAKING ENGINE.
+    """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
@@ -344,23 +363,33 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
     # --- TIERED STRATEGY (V57 Refined) ---
+    
+    # TIER 1: BANKER (Low Odds)
     if 1.30 <= market_odds < 1.70:
-        required_edge = 0.06 
+        required_edge = 0.06  # 6% Edge
         kelly_fraction = 0.25 
         max_stake = 3.0       
         label = "🛡️ BANKER"
+    
+    # TIER 2: VALUE (Dimitrov Zone: 1.70 - 2.40)
     elif 1.70 <= market_odds < 2.40:
-        required_edge = 0.125
+        required_edge = 0.125  # 12.5% Edge (Corrected)
         kelly_fraction = 0.20 
         max_stake = 2.0
         label = "⚖️ VALUE"
+        
+    # TIER 3: HUNTER (Underdogs)
     elif 2.40 <= market_odds <= 6.00:
         required_edge = 0.20 
+        
+        # AI SENTIMENT GATE
         if ai_sentiment_score < 0.45:
              return {"stake_str": "0u", "type": "AI_BLOCK", "is_bet": False}
+             
         kelly_fraction = 0.125 
         max_stake = 1.0       
         label = "💎 HUNTER"
+        
     else:
         return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
 
@@ -396,36 +425,50 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo2 = p2_stats.get(elo_surf, 1500)
     
     # 1. MARKET GRAVITY (Quant Fix)
+    # Adjust ELO diff based on market opinion to avoid Swiatek anomalies
+    # If market odds exist, we blend our ELO diff with the market's implied diff.
     elo_diff_model = elo1 - elo2
     
     if market_odds1 > 0 and market_odds2 > 0:
+        # Calculate Implied Prob from Market
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         implied_p1 = inv1 / (inv1 + inv2)
         
+        # Reverse Engineer ELO Diff from Market (using our Z-score logic inverse)
+        # Approx inverse error function for Z-score estimation
+        # Simply: if P > 0.5, Diff > 0. 
+        # Using simple logistic approx for reverse calc is stable enough for "Gravity"
+        # Diff ~ -400 * log10(1/P - 1)
         if 0.01 < implied_p1 < 0.99:
             try:
                 elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
             except:
                 elo_diff_market = elo_diff_model
         else:
-            elo_diff_market = elo_diff_model 
+            elo_diff_market = elo_diff_model # Too extreme to reverse safely
             
+        # BLEND: 70% Model, 30% Market Gravity (Keeps us grounded)
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
     else:
         elo_diff_final = elo_diff_model
 
     # --- PROBABILITY CALCULATION (V57) ---
+    
+    # 1. Z-SCORE ELO (The Core)
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
+    # 2. Matchup (AI)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
     
+    # 3. Physics / Stats
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     c1_score = get_offense(s1); c2_score = get_offense(s2)
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
     
+    # 4. Form
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
@@ -437,25 +480,28 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V57 WEIGHTING]
-    weights = [0.20, 0.15, 0.05, 0.50, 0.10] 
-    model_trust_factor = 0.45 
-        
+    # [V57 WEIGHTING - SURF ELO DOMINANCE]
+    # We trust Surface ELO (Z-Score) the most now.
+    weights = [0.20, 0.15, 0.05, 0.50, 0.10] # Matchup(20), BSI(15), Skills(5), ELO(50), Form(10)
+    
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
     
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
     
+    # Final Compression (Sharpening)
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.98)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.02)
     
+    # Market Mix (Standard 50/50 for final robustness)
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
     
-    final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
+    # We trust our Z-Score Model 60%, Market 40% (since we already gravity-blended the ELO)
+    final_prob = (prob_alpha * 0.60) + (prob_market * 0.40)
     return final_prob
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
@@ -468,6 +514,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
+        # Reverse V57 Ratio (60/40)
         alpha_part = old_final_prob - (old_prob_market * 0.40)
         prob_alpha = alpha_part / 0.60
         
@@ -486,7 +533,9 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except:
         return 0.5
 
-# ... (Pipeline Utils - unchanged) ...
+# =================================================================
+# 6. PIPELINE UTILS
+# =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
     url = "https://www.unitedcup.com/en/scores/group-standings"
@@ -547,7 +596,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
     if best_match and best_score >= 20:
-        log(f"   🏟️ Tournament Matched: '{s_low}' -> '{best_match['name']}' (Score: {best_score})")
+        # --- NEW LOG FOR TRANSPARENCY ---
+        log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')}")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
@@ -555,6 +605,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     if ai_loc and ai_loc.get('city'):
         city = ai_loc['city'].lower()
         surf = ai_loc.get('surface_guessed', 'Hard')
+        log(f"   🤖 AI Court Guess: '{s_low}' -> {city} ({surf})")
         return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     
     return 'Hard', 6.5, 'Fallback'
@@ -563,6 +614,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     log(f"   🤖 Asking AI for analysis on: {p1['last_name']} vs {p2['last_name']}")
     has_reports = r1.get('strengths') and r2.get('strengths')
     
+    # Prompt updated to ask for sentiment score
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     TASK: Analyze {p1['last_name']} vs {p2['last_name']} on {surface} (BSI {bsi}).
@@ -757,7 +809,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V57.1 DUPLICATE KILLER Starting...")
+    log(f"🚀 Neural Scout V57.2 THE AUDITOR Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -785,7 +837,6 @@ async def run_pipeline():
                         if p1_obj and p2_obj:
                             n1 = p1_obj['last_name']
                             n2 = p2_obj['last_name']
-                            
                             if n1 == n2: continue
 
                             # V51 SETTLEMENT LOGIC
@@ -797,36 +848,23 @@ async def run_pipeline():
                                 continue
                             
                             # --- V57.1 FIX: BIDIRECTIONAL CHECK ---
-                            # Prüfe A vs B UND B vs A, um Duplikate zu vermeiden
                             existing_match = None
-                            
-                            # Versuch 1: A vs B
                             res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2")\
                                 .eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
                             
-                            if res1.data and len(res1.data) > 0:
-                                existing_match = res1.data[0]
+                            if res1.data and len(res1.data) > 0: existing_match = res1.data[0]
                             else:
-                                # Versuch 2: B vs A (Inverse)
                                 res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2")\
                                     .eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
-                                if res2.data and len(res2.data) > 0:
-                                    existing_match = res2.data[0]
+                                if res2.data and len(res2.data) > 0: existing_match = res2.data[0]
                             
                             db_match_id = None
                             cached_ai = {}
                             
                             if existing_match:
                                 db_match_id = existing_match['id']
-                                # If already settled, skip unless update needed
                                 if existing_match.get('actual_winner_name'): continue 
-                                
-                                # Check logic adapted for potential swapped players
                                 old_o1 = existing_match.get('odds1', 0)
-                                # Wenn Spieler vertauscht waren, müssen wir Odds auch "vertauscht" prüfen?
-                                # Nein, wir updaten eh mit den NEUEN Daten des Scrapers.
-                                # Wichtig ist nur: Ist es das selbe Match? Ja.
-                                
                                 if abs(old_o1 - m['odds1']) < 0.05 and old_o1 > 1.1: 
                                     if actual_winner_val: pass 
                                     else: continue 
@@ -841,6 +879,10 @@ async def run_pipeline():
                                     }
 
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2)
+                            
+                            # --- NEW VISIBILITY LOG (V57.2) ---
+                            log(f"      ⚖️ Physics Context: Surface={surf}, BSI={bsi}, Location={notes}")
+                            
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
