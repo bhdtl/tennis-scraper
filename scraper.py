@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V57.2 - THE AUDITOR)...")
+log("🔌 Initialisiere Neural Scout (V58.0 - THE ARCHITECT)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -102,36 +102,63 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
+# --- V58 UPGRADE: INTELLIGENT PLAYER MATCHING ---
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
+    """
+    Handles format 'Mensik J.' mapping to 'Jakub Mensik' in DB.
+    """
     if not scraped_name_raw or not db_players: return None
+    
     clean_scrape = clean_player_name(scraped_name_raw).lower()
+    
+    # 1. Direct Exact Match Attempt (Fast Path)
+    for p in db_players:
+        full_db = f"{p.get('first_name','')} {p.get('last_name','')}".lower().strip()
+        if full_db == clean_scrape: return p
+        if p.get('last_name','').lower() == clean_scrape: return p
+
+    # 2. Smart Parser for 'Lastname I.'
     parts = clean_scrape.split()
-    if not parts: return None
+    scrape_last = ""
+    scrape_initial = ""
     
-    scrape_last_name_str = ""
-    scrape_initial = None
-    last_token = parts[-1]
-    is_initial = (len(last_token) == 1) or (len(last_token) == 2 and last_token.endswith('.'))
-    
-    if len(parts) > 1 and is_initial:
-        scrape_initial = last_token.replace('.', '')
-        scrape_last_name_str = " ".join(parts[:-1])
+    if len(parts) >= 2:
+        # Check if last part is an initial (e.g. "J." or "J")
+        last_token = parts[-1].replace('.', '')
+        if len(last_token) == 1 and last_token.isalpha():
+            scrape_initial = last_token
+            scrape_last = " ".join(parts[:-1]) # "Mensik"
+        else:
+            # Maybe "First Last" format
+            scrape_last = parts[-1]
+            scrape_initial = parts[0][0] if parts[0] else ""
     else:
-        scrape_last_name_str = " ".join(parts)
-    scrape_last_name_clean = scrape_last_name_str.replace('-', ' ')
-    
+        scrape_last = clean_scrape
+
+    scrape_last = scrape_last.replace('-', ' ').strip()
+
     candidates = []
     for p in db_players:
-        if not isinstance(p, dict): continue
-        db_last_raw = p.get('last_name', '').lower()
-        db_last_clean = db_last_raw.replace('-', ' ')
-        if db_last_clean == scrape_last_name_clean:
-            if scrape_initial:
-                db_first = p.get('first_name', '').lower()
-                if db_first and not db_first.startswith(scrape_initial):
-                    continue
-            candidates.append(p)
+        db_last = p.get('last_name', '').lower().replace('-', ' ')
+        
+        # Fuzzy Last Name Match
+        if db_last == scrape_last or (len(scrape_last) > 3 and scrape_last in db_last):
+            db_first = p.get('first_name', '').lower()
+            
+            # If we have an initial, verify it
+            if scrape_initial and db_first:
+                if db_first.startswith(scrape_initial):
+                    candidates.append(p)
+            else:
+                # No initial to check, weak match but keep it
+                candidates.append(p)
+    
     if not candidates: return None
+    
+    # If multiple candidates, prefer one with a scouting report (Intelligence Bias)
+    with_report = [c for c in candidates if c['id'] in report_ids]
+    if with_report: return with_report[0]
+    
     return candidates[0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -339,18 +366,10 @@ def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
 def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
-    """
-    SOTA Z-Score Calculation (Normal Distribution).
-    Sharpens odds for heavy favorites/underdogs.
-    Sigma 280 is calibrated for ATP/WTA variance.
-    """
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
 def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
-    """
-    SOTA V57 STAKING ENGINE.
-    """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
@@ -363,33 +382,23 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
     # --- TIERED STRATEGY (V57 Refined) ---
-    
-    # TIER 1: BANKER (Low Odds)
     if 1.30 <= market_odds < 1.70:
-        required_edge = 0.06  # 6% Edge
+        required_edge = 0.06 
         kelly_fraction = 0.25 
         max_stake = 3.0       
         label = "🛡️ BANKER"
-    
-    # TIER 2: VALUE (Dimitrov Zone: 1.70 - 2.40)
     elif 1.70 <= market_odds < 2.40:
-        required_edge = 0.125  # 12.5% Edge (Corrected)
+        required_edge = 0.125
         kelly_fraction = 0.20 
         max_stake = 2.0
         label = "⚖️ VALUE"
-        
-    # TIER 3: HUNTER (Underdogs)
     elif 2.40 <= market_odds <= 6.00:
         required_edge = 0.20 
-        
-        # AI SENTIMENT GATE
         if ai_sentiment_score < 0.45:
              return {"stake_str": "0u", "type": "AI_BLOCK", "is_bet": False}
-             
         kelly_fraction = 0.125 
         max_stake = 1.0       
         label = "💎 HUNTER"
-        
     else:
         return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
 
@@ -425,50 +434,36 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     elo2 = p2_stats.get(elo_surf, 1500)
     
     # 1. MARKET GRAVITY (Quant Fix)
-    # Adjust ELO diff based on market opinion to avoid Swiatek anomalies
-    # If market odds exist, we blend our ELO diff with the market's implied diff.
     elo_diff_model = elo1 - elo2
     
     if market_odds1 > 0 and market_odds2 > 0:
-        # Calculate Implied Prob from Market
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         implied_p1 = inv1 / (inv1 + inv2)
         
-        # Reverse Engineer ELO Diff from Market (using our Z-score logic inverse)
-        # Approx inverse error function for Z-score estimation
-        # Simply: if P > 0.5, Diff > 0. 
-        # Using simple logistic approx for reverse calc is stable enough for "Gravity"
-        # Diff ~ -400 * log10(1/P - 1)
         if 0.01 < implied_p1 < 0.99:
             try:
                 elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
             except:
                 elo_diff_market = elo_diff_model
         else:
-            elo_diff_market = elo_diff_model # Too extreme to reverse safely
+            elo_diff_market = elo_diff_model 
             
-        # BLEND: 70% Model, 30% Market Gravity (Keeps us grounded)
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
     else:
         elo_diff_final = elo_diff_model
 
     # --- PROBABILITY CALCULATION (V57) ---
-    
-    # 1. Z-SCORE ELO (The Core)
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
-    # 2. Matchup (AI)
     m1 = to_float(ai_meta.get('p1_tactical_score', 5))
     m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
     
-    # 3. Physics / Stats
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     c1_score = get_offense(s1); c2_score = get_offense(s2)
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
     
-    # 4. Form
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
@@ -480,28 +475,25 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V57 WEIGHTING - SURF ELO DOMINANCE]
-    # We trust Surface ELO (Z-Score) the most now.
-    weights = [0.20, 0.15, 0.05, 0.50, 0.10] # Matchup(20), BSI(15), Skills(5), ELO(50), Form(10)
-    
+    # [V57 WEIGHTING]
+    weights = [0.20, 0.15, 0.05, 0.50, 0.10] 
+    model_trust_factor = 0.45 
+        
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
     
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
     
-    # Final Compression (Sharpening)
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.98)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.02)
     
-    # Market Mix (Standard 50/50 for final robustness)
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
     
-    # We trust our Z-Score Model 60%, Market 40% (since we already gravity-blended the ELO)
-    final_prob = (prob_alpha * 0.60) + (prob_market * 0.40)
+    final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
@@ -514,7 +506,6 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
         
-        # Reverse V57 Ratio (60/40)
         alpha_part = old_final_prob - (old_prob_market * 0.40)
         prob_alpha = alpha_part / 0.60
         
@@ -571,13 +562,32 @@ async def resolve_united_cup_via_country(p1):
 
 async def resolve_ambiguous_tournament(p1, p2, scraped_name):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
-    res = await call_gemini(f"Locate Match {p1} vs {p2} | SOURCE: '{scraped_name}' JSON: {{ \"city\": \"City\", \"surface_guessed\": \"Hard/Clay\" }}")
+    
+    # --- V58 UPGRADE: LIVE GEMINI FALLBACK FOR UNKNOWN TOURNAMENTS ---
+    prompt = f"""
+    TASK: Identify the tennis tournament based on this match: {p1} vs {p2} (Scraped as: '{scraped_name}').
+    CONTEXT: It's currently {datetime.now().year}.
+    OUTPUT JSON ONLY: {{ "name": "Official Name", "city": "City", "surface": "Hard/Clay/Grass/Carpet", "indoor": true/false }}
+    """
+    res = await call_gemini(prompt)
     if res:
         try: 
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
-            TOURNAMENT_LOC_CACHE[scraped_name] = data
-            return data
+            
+            # Construct a usable DB-like object
+            surface_type = data.get('surface', 'Hard')
+            if data.get('indoor'): surface_type += " Indoor"
+            else: surface_type += " Outdoor"
+            
+            simulated_db_entry = {
+                "city": data.get('city', 'Unknown'),
+                "surface_guessed": surface_type,
+                "bsi_estimate": 6.5 # Default fallback
+            }
+            
+            TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
+            return simulated_db_entry
         except: pass
     return None
 
@@ -595,20 +605,29 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2):
     for t in db_tours:
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
+    
     if best_match and best_score >= 20:
-        # --- NEW LOG FOR TRANSPARENCY ---
-        log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')}")
+        log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
+    # --- V58 FALLBACK: TRIGGER GEMINI IF DB FAIL ---
+    log(f"   ⚠️ Tournament '{s_low}' not in DB. Asking Gemini...")
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour)
     ai_loc = ensure_dict(ai_loc)
-    if ai_loc and ai_loc.get('city'):
-        city = ai_loc['city'].lower()
-        surf = ai_loc.get('surface_guessed', 'Hard')
-        log(f"   🤖 AI Court Guess: '{s_low}' -> {city} ({surf})")
-        return surf, (3.5 if 'clay' in surf.lower() else 6.5), f"AI Guess: {city}"
     
-    return 'Hard', 6.5, 'Fallback'
+    if ai_loc and ai_loc.get('city'):
+        city = ai_loc['city']
+        surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
+        log(f"   🤖 AI RESOLVED: '{s_low}' -> {city} ({surf})")
+        # Logic to estimate BSI based on surface type
+        est_bsi = 6.5
+        if 'clay' in surf.lower(): est_bsi = 3.5
+        elif 'grass' in surf.lower(): est_bsi = 8.0
+        elif 'indoor' in surf.lower(): est_bsi = 7.5
+        
+        return surf, est_bsi, f"AI Detected: {city}"
+    
+    return 'Hard Court Outdoor', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2):
     log(f"   🤖 Asking AI for analysis on: {p1['last_name']} vs {p2['last_name']}")
@@ -658,7 +677,10 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
-    target_players = set(p.lower() for p in p_names)
+    
+    # V58: Relaxed matching - we check later in find_player_smart
+    # target_players = set(p.lower() for p in p_names)
+    
     current_tour = "Unknown"
     odds_class_pattern = re.compile(r'course')
 
@@ -701,58 +723,55 @@ def parse_matches_locally_v5(html, p_names):
                 tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
                 if tm: m_time = tm.group(1).zfill(5)
 
-            p1_match = any(tp in p1_raw.lower() for tp in target_players)
-            p2_match = any(tp in p2_raw.lower() for tp in target_players)
+            # V58: Capture ALL matches, filter later in loop
+            winner_found = None
+            p1_res = row.find('td', class_='result')
+            p2_res = row2.find('td', class_='result')
+            if p1_res and p2_res:
+                t1 = p1_res.get_text(strip=True)
+                t2 = p2_res.get_text(strip=True)
+                if t1.isdigit() and t2.isdigit():
+                    s1 = int(t1); s2 = int(t2)
+                    if s1 > s2 and s1 >= 2: winner_found = p1_raw
+                    elif s2 > s1 and s2 >= 2: winner_found = p2_raw
 
-            if p1_match and p2_match:
-                winner_found = None
-                p1_res = row.find('td', class_='result')
-                p2_res = row2.find('td', class_='result')
-                if p1_res and p2_res:
-                    t1 = p1_res.get_text(strip=True)
-                    t2 = p2_res.get_text(strip=True)
-                    if t1.isdigit() and t2.isdigit():
-                        s1 = int(t1); s2 = int(t2)
-                        if s1 > s2 and s1 >= 2: winner_found = p1_raw
-                        elif s2 > s1 and s2 >= 2: winner_found = p2_raw
-
-                odds = []
-                try:
-                    course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
-                    found_r1_odds = []
-                    for cell in course_cells_r1:
+            odds = []
+            try:
+                course_cells_r1 = row.find_all('td', class_=odds_class_pattern)
+                found_r1_odds = []
+                for cell in course_cells_r1:
+                    txt = cell.get_text(strip=True)
+                    try:
+                        val = float(txt)
+                        if 1.01 <= val <= 100.0: found_r1_odds.append(val)
+                    except: pass
+                
+                if len(found_r1_odds) >= 2:
+                    odds = found_r1_odds[:2]
+                else:
+                    course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
+                    found_r2_odds = []
+                    for cell in course_cells_r2:
                         txt = cell.get_text(strip=True)
                         try:
                             val = float(txt)
-                            if 1.01 <= val <= 100.0: found_r1_odds.append(val)
+                            if 1.01 <= val <= 100.0: found_r2_odds.append(val)
                         except: pass
-                    
-                    if len(found_r1_odds) >= 2:
-                        odds = found_r1_odds[:2]
-                    else:
-                        course_cells_r2 = row2.find_all('td', class_=odds_class_pattern)
-                        found_r2_odds = []
-                        for cell in course_cells_r2:
-                            txt = cell.get_text(strip=True)
-                            try:
-                                val = float(txt)
-                                if 1.01 <= val <= 100.0: found_r2_odds.append(val)
-                            except: pass
-                        if found_r1_odds and found_r2_odds:
-                            odds = [found_r1_odds[0], found_r2_odds[0]]
-                except Exception: pass
-                
-                final_o1 = odds[0] if len(odds) > 0 else 0.0
-                final_o2 = odds[1] if len(odds) > 1 else 0.0
+                    if found_r1_odds and found_r2_odds:
+                        odds = [found_r1_odds[0], found_r2_odds[0]]
+            except Exception: pass
+            
+            final_o1 = odds[0] if len(odds) > 0 else 0.0
+            final_o2 = odds[1] if len(odds) > 1 else 0.0
 
-                if (final_o1 > 0 and final_o2 > 0) or winner_found:
-                    found.append({
-                        "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
-                        "time": m_time, "odds1": final_o1, "odds2": final_o2,
-                        "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
-                        "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
-                        "actual_winner": winner_found
-                    })
+            if (final_o1 > 0 and final_o2 > 0) or winner_found:
+                found.append({
+                    "p1_raw": p1_raw, "p2_raw": p2_raw, "tour": clean_tournament_name(current_tour), 
+                    "time": m_time, "odds1": final_o1, "odds2": final_o2,
+                    "p1_href": p1_cell.find('a')['href'] if p1_cell.find('a') else None, 
+                    "p2_href": p2_cell.find('a')['href'] if p2_cell.find('a') else None,
+                    "actual_winner": winner_found
+                })
             i += 2
     return found
 
@@ -809,7 +828,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V57.2 THE AUDITOR Starting...")
+    log(f"🚀 Neural Scout V58.0 THE ARCHITECT Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
