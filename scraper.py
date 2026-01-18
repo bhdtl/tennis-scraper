@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V59.2 - THE ORACLE ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V59.3 - THE ALIGNMENT)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -48,7 +48,6 @@ MODEL_NAME = 'gemini-2.0-flash'
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
-METADATA_CACHE: Dict[str, Any] = {} # ORACLE CACHE
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
@@ -105,6 +104,7 @@ def ensure_dict(data: Any) -> Dict:
 
 # --- V58.3 UPGRADE: ELITE NAME MATCHING ---
 def normalize_db_name(name: str) -> str:
+    """Normalizes DB names for robust matching (Mc, De, hyphens)."""
     if not name: return ""
     n = name.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
@@ -113,6 +113,7 @@ def normalize_db_name(name: str) -> str:
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
+    
     clean_scrape = clean_player_name(scraped_name_raw)
     parts = clean_scrape.split()
     scrape_last = ""
@@ -135,6 +136,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     for p in db_players:
         db_last_raw = p.get('last_name', '')
         db_last = normalize_db_name(db_last_raw)
+        
         match_score = 0
         if db_last == target_last: match_score = 100
         elif target_last in db_last or db_last in target_last: 
@@ -143,8 +145,11 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         if match_score > 0:
             db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial): match_score += 20 
-                else: match_score -= 50 
+                if db_first.startswith(scrape_initial):
+                    match_score += 20 
+                else:
+                    match_score -= 50 
+            
             if match_score > 50:
                 candidates.append((p, match_score))
 
@@ -155,16 +160,26 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
-    if d_norm in s_norm and len(d_norm) > 3: return 100
+    
+    # Direct Hit
+    if s_norm == d_norm: return 100
+    if d_norm in s_norm: return 90
+    
+    # Specific Mapping for "Oeiras"
+    if "oeiras" in s_norm and "oeiras" in d_norm:
+        if "indoor" in d_norm and "indoor" in s_norm: return 100
+        # If scraped is generic "Oeiras" and DB is "Oeiras Indoor" (and it's Jan), assume match
+        if "indoor" in d_norm and datetime.now().month in [1, 2, 3]: return 95
+    
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
-    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger'}
+    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger', 'futures'}
     s_tokens -= stop_words; d_tokens -= stop_words
+    
     if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
     score = len(common) * 10
-    if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
-    if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
+    
     return score
 
 # =================================================================
@@ -189,62 +204,8 @@ async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             return None
 
 # =================================================================
-# 4. DATA FETCHING & ORACLE (TENNISTEMPLE)
+# 4. DATA FETCHING
 # =================================================================
-
-# --- V59.2: THE ORACLE SCRAPER (TennisTemple) ---
-async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
-    """Fetches real tournament names from TennisTemple to fix 'Futures' ambiguity."""
-    date_str = target_date.strftime('%Y-%m-%d')
-    url = f"https://de.tennistemple.com/matches/{date_str}"
-    
-    page = await browser.new_page()
-    metadata = {}
-    
-    try:
-        # log(f"   🔮 Consult Oracle (TennisTemple): {date_str}")
-        await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # TennisTemple Structure: Links to players and tournament context
-        # We assume links contain player names
-        links = soup.find_all('a', href=True)
-        current_tournament = "Unknown"
-        
-        # Simple parser: look for tournament headers and player links below them
-        # Note: This is a heuristic based on typical HTML structure (div > h2 > a)
-        
-        # Better approach for list:
-        # Find all match containers. Usually elements with class 'match' or similar.
-        # Fallback: Scan all text lines.
-        
-        # Let's iterate all elements.
-        for element in soup.find_all(['h2', 'a']):
-            text = element.get_text(strip=True)
-            href = element.get('href', '')
-            
-            # Detect Tournament Header (often contains 'WTA', 'ATP', 'ITF', 'Challenger')
-            if ('/turnier/' in href or '/tournament/' in href):
-                current_tournament = text
-                continue
-                
-            # Detect Player
-            if ('/spieler/' in href or '/player/' in href):
-                # Map Normalized Player Name to Current Tournament
-                norm_name = normalize_db_name(text)
-                if norm_name and current_tournament != "Unknown":
-                    # Store mapping: "p_name" -> "Real Tournament Name"
-                    metadata[norm_name] = current_tournament
-                    
-    except Exception as e:
-        # log(f"   ⚠️ Oracle Glitch: {e}")
-        pass
-    finally:
-        await page.close()
-        
-    return metadata
-
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
@@ -274,7 +235,8 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
-        relevant_matches = 0; wins = 0
+        relevant_matches = 0
+        wins = 0
         for m in matches:
             if player_name.lower() in m['player1_name'].lower():
                 opp_name = get_last_name(m['player2_name']).lower()
@@ -284,14 +246,16 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
             if target_style in opp_styles:
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
-                if player_name.lower() in winner: wins += 1
+                if player_name.lower() in winner:
+                    wins += 1
         if relevant_matches < 3: return None
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
         if win_rate > 65: verdict = "DOMINANT"
         elif win_rate < 40: verdict = "STRUGGLES"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-    except Exception as e: return None
+    except Exception as e:
+        return None
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
     if not relative_url: return 0.5
@@ -401,7 +365,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 5. MATH CORE & SOTA V57 QUANT ENGINE
+# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -586,65 +550,51 @@ async def resolve_united_cup_via_country(p1):
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
     return None
 
-# --- V59.2: CONTEXT-AWARE RESOLVER WITH ORACLE ---
+# --- V59.3: CONTEXT-AWARE RESOLVER WITH DB ALIGNMENT ---
 async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     
-    # 1. ORACLE CHECK (TennisTemple Metadata)
-    # Check if we have specific tournament data for these players
-    p1_meta = METADATA_CACHE.get(normalize_db_name(p1))
-    p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
+    # Explicitly list known ambiguous tournaments from DB to guide Gemini
+    prompt = f"""
+    TASK: Align vague tournament name '{scraped_name}' to specific Database Entry.
+    PLAYERS: {p1} ({p1_country}) vs {p2} ({p2_country}).
+    DATE: Jan 2026.
     
-    oracle_data = p1_meta or p2_meta
+    DB OPTIONS (Select best match):
+    - "Oeiras Indoor" (Portugal, Hard Indoor, BSI 7.6) -> USE THIS FOR "Oeiras" in Jan!
+    - "Winston-Salem MC 2 M25" (USA, Hard Indoor, BSI 8.7) -> USE THIS FOR US Futures/Winston!
+    - "Monastir" (Tunisia, Hard Outdoor)
+    - "Manacor" (Spain, Hard Outdoor)
     
-    if oracle_data:
-         # Found real data!
-         real_name = oracle_data.get('tournament', scraped_name)
-         log(f"   🔮 Oracle Hit: {p1} -> {real_name}")
-         
-         # Now use this REAL name to get details from Gemini
-         prompt = f"""
-         TASK: Details for tennis tournament '{real_name}'.
-         CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}.
-         OUTPUT JSON: {{ "city": "Name", "surface": "Hard/Clay/Grass", "indoor": true/false }}
-         """
-         # Proceed to call Gemini with the BETTER name...
-         scraped_name = real_name # Update name for cache key
-    else:
-         # No Oracle data, use standard fallback prompt
-         prompt = f"""
-         TASK: Identify tournament location.
-         MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}).
-         SOURCE: '{scraped_name}'.
-         OUTPUT JSON: {{ "city": "Name", "surface": "Hard/Clay/Grass", "indoor": true/false }}
-         """
-
+    OUTPUT JSON: {{ "db_name": "Name from List above or 'Unknown'", "surface": "Hard/Clay", "indoor": true/false }}
+    """
     res = await call_gemini(prompt)
     if res:
         try: 
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
             
-            surface_type = data.get('surface', 'Hard')
-            if data.get('indoor'): surface_type += " Indoor"
-            else: surface_type += " Outdoor"
+            db_name = data.get('db_name', 'Unknown')
             
+            # Map DB Name back to BSI
             est_bsi = 6.5
-            if 'clay' in surface_type.lower(): est_bsi = 3.5
-            elif 'grass' in surface_type.lower(): est_bsi = 8.0
-            elif 'indoor' in surface_type.lower(): est_bsi = 7.5
+            surface_type = "Hard Outdoor" # Default
             
-            # Corrections
-            city = data.get('city', 'Unknown')
-            if "plantation" in city.lower() and p1_country == "USA":
-                 city = "Winston-Salem" # Fix hallucination based on user feedback
-                 surface_type = "Hard Indoor"
-            
+            if "oeiras indoor" in db_name.lower():
+                est_bsi = 7.6
+                surface_type = "Hard Indoor"
+            elif "winston" in db_name.lower():
+                est_bsi = 8.7
+                surface_type = "Hard Indoor"
+            elif "clay" in data.get('surface', '').lower():
+                 est_bsi = 3.5
+                 surface_type = "Clay"
+
             simulated_db_entry = {
-                "city": city,
+                "city": db_name,
                 "surface_guessed": surface_type,
                 "bsi_estimate": est_bsi,
-                "note": f"AI/Oracle: {city}"
+                "note": f"DB Aligned: {db_name}"
             }
             TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
@@ -670,7 +620,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
-    log(f"   ⚠️ Tournament '{s_low}' vague. Consulting Oracle & Gemini...")
+    log(f"   ⚠️ Tournament '{s_low}' vague. Aligning with DB...")
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
     ai_loc = ensure_dict(ai_loc)
     
@@ -678,7 +628,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         bsi = ai_loc.get('bsi_estimate', 6.5)
         note = ai_loc.get('note', 'AI Guess')
-        log(f"   🤖 RESOLVED: '{s_low}' -> {note} | BSI: {bsi}")
+        log(f"   🤖 ALIGNED: '{s_low}' -> {note} | BSI: {bsi}")
         return surf, bsi, note
     
     return 'Hard Court Outdoor', 6.5, 'Fallback'
@@ -872,7 +822,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V59.2 THE ORACLE ENGINE Starting...")
+    log(f"🚀 Neural Scout V59.3 THE DATABASE ALIGNMENT Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -887,10 +837,6 @@ async def run_pipeline():
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
-                
-                # --- V59.2: PRE-FETCH ORACLE DATA ---
-                METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
-                
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
                 matches = parse_matches_locally_v5(html, player_names)
@@ -947,6 +893,7 @@ async def run_pipeline():
                                         'old_odds2': existing_match.get('odds2', 0)
                                     }
 
+                            # V59.3: Pass Countries to Smart Court Finder for Truth Table / Oracle
                             c1 = p1_obj.get('country', 'Unknown')
                             c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
@@ -1072,6 +1019,7 @@ async def run_pipeline():
                                 except Exception as hist_err:
                                     log(f"      ⚠️ History Log Error: {hist_err}")
                         else:
+                            # Silent skip
                             pass
                                     
                     except Exception as e: log(f"⚠️ Match Error: {e}")
