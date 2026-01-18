@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V59.9 - HYBRID LEGACY)...")
+log("🔌 Initialisiere Neural Scout (V59.9 - DUAL ENGINE SETTLEMENT)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -814,7 +814,7 @@ def parse_matches_locally_v5(html, p_names):
                         "tour": clean_tournament_name(current_tour), 
                         "time": pending_time, "odds1": final_o1, "odds2": final_o2,
                         "p1_href": pending_p1_href, "p2_href": p2_href,
-                        "actual_winner": None 
+                        "actual_winner": None # We handle winners via DB update
                     })
                 
                 pending_p1_raw = None
@@ -831,7 +831,7 @@ def parse_matches_locally_v5(html, p_names):
 
     return found
 
-# --- V59.9: HYBRID LEGACY SCORE VALIDATOR ---
+# --- V59.9: THE DUAL ENGINE SETTLEMENT ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results (Today + Past)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
@@ -852,60 +852,67 @@ async def update_past_results(browser: Browser):
             table = soup.find('table', class_='result')
             if not table: continue
             rows = table.find_all('tr')
-            for i in range(len(rows)):
-                row = rows[i]
-                if 'flags' in str(row) or 'head' in str(row) or i+1 >= len(rows): continue
-                next_row = rows[i+1]
-                rt = row.get_text(separator=" ", strip=True).lower()
-                nrt = next_row.get_text(separator=" ", strip=True).lower()
-                if not any(c.isdigit() for c in rt): continue 
+            for row in rows:
+                if 'flags' in str(row) or 'head' in str(row): continue
                 
-                for pm in safe_to_check:
-                    p1 = normalize_db_name(pm['player1_name'])
-                    p2 = normalize_db_name(pm['player2_name'])
+                # --- V59.8 SCORE & STRUCTURAL CHECK (The Hybrid) ---
+                row_text = row.get_text(separator=" ", strip=True).lower()
+                row_norm = normalize_text(row_text).lower()
+                
+                name_cell = row.find('td', class_='t-name')
+                
+                for pm in list(safe_to_check):
+                    p1_norm = normalize_db_name(pm['player1_name'])
+                    p2_norm = normalize_db_name(pm['player2_name'])
                     
-                    rt_norm = normalize_text(rt).lower()
-                    nrt_norm = normalize_text(nrt).lower()
-                    
-                    # Fuzzy match names in rows (Legacy style)
-                    found_match = (p1 in rt_norm and p2 in nrt_norm) or (p2 in rt_norm and p1 in nrt_norm) or (p1 in rt_norm and p2 in rt_norm)
-                    
-                    if found_match:
-                        winner = None
+                    if p1_norm in row_norm and p2_norm in row_norm:
                         
-                        # Retirement Check
-                        if "ret." in rt_norm or "w.o." in rt_norm or "ret." in nrt_norm:
-                            # Assume winner is on line without "ret." or whoever is left
-                            if p1 in rt_norm and "ret." not in rt_norm: winner = pm['player1_name']
-                            elif p2 in nrt_norm and "ret." not in nrt_norm: winner = pm['player2_name']
-                        else:
-                            # Score Counting (Dirty but effective)
-                            s1_sets = rt_norm.count("6-") + rt_norm.count("7-") + rt_norm.count("1-") 
-                            s2_sets = nrt_norm.count("6-") + nrt_norm.count("7-") + nrt_norm.count("1-")
+                        # 1. SCORE VALIDATION
+                        score_matches = re.findall(r'(\d+)-(\d+)', row_text)
+                        p1_sets = 0
+                        p2_sets = 0
+                        
+                        for s in score_matches:
+                            try:
+                                sl = int(s[0])
+                                sr = int(s[1])
+                                if sl > sr: p1_sets += 1
+                                elif sr > sl: p2_sets += 1
+                            except: pass
                             
-                            # Correction for 2-0 matches where score is on one line
-                            if s1_sets == 0 and s2_sets == 0:
-                                # Try extracting score from single line
-                                full_text = rt_norm + " " + nrt_norm
-                                p1_wins = full_text.count(f" {p1} ") # Not reliable
-                                # Revert to bold check as fallback
-                                bold_tags = row.find_all('b')
-                                for b in bold_tags:
-                                    if p1 in b.get_text().lower(): winner = pm['player1_name']
-                                    if p2 in b.get_text().lower(): winner = pm['player2_name']
-                            else:
-                                if s1_sets > s2_sets: winner = pm['player1_name'] if p1 in rt_norm else pm['player2_name']
-                                elif s2_sets > s1_sets: winner = pm['player2_name'] if p2 in nrt_norm else pm['player1_name']
+                        is_ret = "ret." in row_text or "w.o." in row_text
                         
-                        if winner:
-                            supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", pm['id']).execute()
-                            safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
-                            log(f"      ✅ SETTLED: {winner} won (vs {pm['player2_name'] if winner==pm['player1_name'] else pm['player1_name']})")
+                        is_gs_men = "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower())
+                        sets_needed = 3 if is_gs_men else 2
+                        
+                        if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
+                            winner = None
+                            
+                            # A) Structural Check (Best)
+                            if name_cell:
+                                links = name_cell.find_all('a', href=True)
+                                if len(links) >= 2:
+                                    w_raw = clean_player_name(links[0].get_text(strip=True))
+                                    w_norm = normalize_db_name(w_raw)
+                                    if p1_norm in w_norm: winner = pm['player1_name']
+                                    elif p2_norm in w_norm: winner = pm['player2_name']
+                            
+                            # B) Score Fallback
+                            if not winner and not is_ret:
+                                if p1_sets > p2_sets: winner = pm['player1_name']
+                                elif p2_sets > p1_sets: winner = pm['player2_name']
+                                
+                            if winner:
+                                supabase.table("market_odds").update({"actual_winner_name": winner}).eq("id", pm['id']).execute()
+                                safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
+                                log(f"      ✅ SETTLED: {winner} won (vs {pm['player2_name'] if winner==pm['player1_name'] else pm['player1_name']})")
+                                break
+
         except: pass
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V59.9 HYBRID LEGACY Starting...")
+    log(f"🚀 Neural Scout V59.9 THE DUAL ENGINE SETTLEMENT Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -920,9 +927,7 @@ async def run_pipeline():
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
-                
                 METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
-                
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
                 matches = parse_matches_locally_v5(html, player_names)
@@ -941,6 +946,27 @@ async def run_pipeline():
                             if p1_obj.get('tour') != p2_obj.get('tour'):
                                 if "united cup" not in m['tour'].lower() and "hopman" not in m['tour'].lower():
                                     continue 
+
+                            # --- V59.9: LIVE SETTLEMENT IN MAIN LOOP ---
+                            if m.get('actual_winner'):
+                                # This handles cases where Odds Page already shows winner (bold)
+                                # Map scraped name to DB name
+                                w_scraped = m['actual_winner']
+                                w_db = n1 if normalize_db_name(n1) in normalize_db_name(w_scraped) else n2
+                                
+                                # Check if match exists and is unsettled
+                                res = supabase.table("market_odds").select("id").eq("player1_name", n1).eq("player2_name", n2).is_("actual_winner_name", "null").execute()
+                                if res.data:
+                                     for rec in res.data:
+                                         supabase.table("market_odds").update({"actual_winner_name": w_db}).eq("id", rec['id']).execute()
+                                         log(f"      🏆 LIVE SETTLEMENT (Odds Page): {w_db} won")
+                                         
+                                # Also check inverse P2 vs P1
+                                res_inv = supabase.table("market_odds").select("id").eq("player1_name", n2).eq("player2_name", n1).is_("actual_winner_name", "null").execute()
+                                if res_inv.data:
+                                     for rec in res_inv.data:
+                                         supabase.table("market_odds").update({"actual_winner_name": w_db}).eq("id", rec['id']).execute()
+                                         log(f"      🏆 LIVE SETTLEMENT (Odds Page): {w_db} won")
 
                             actual_winner_val = None
                             if m.get('actual_winner'):
@@ -978,21 +1004,17 @@ async def run_pipeline():
                             c1 = p1_obj.get('country', 'Unknown')
                             c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
-                            
                             log(f"      ⚖️ Physics Context: Surface={surf}, BSI={bsi}, Location={notes}")
                             
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
-                            
                             style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
                             style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
-                            
                             has_real_report = bool(r1.get('strengths') and r2.get('strengths'))
 
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
-                            
                             is_hunter_pick_active = False
                             hunter_pick_player = None
 
@@ -1008,10 +1030,8 @@ async def run_pipeline():
                                 )
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                                
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
-                                
                                 kelly_advice = ""
                                 if bet_p1["is_bet"]:
                                     kelly_advice = f" | {bet_p1['type']}: {n1} ({fair1}) -> {bet_p1['stake_str']}"
@@ -1021,7 +1041,6 @@ async def run_pipeline():
                                     kelly_advice = f" | {bet_p2['type']}: {n2} ({fair2}) -> {bet_p2['stake_str']}"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
-                                
                                 if "VALUE" not in ai_text_final and "HUNTER" not in ai_text_final and "BANKER" not in ai_text_final:
                                     ai_text_final += kelly_advice
                             else:
@@ -1030,22 +1049,16 @@ async def run_pipeline():
                                 elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                 e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                 e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
-                                
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d)
-                                
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report, style_stats_p1, style_stats_p2)
-                                
                                 ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
                                 fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                                
                                 p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
                                 p2_sentiment = 1.0 - p1_sentiment
-                                
                                 betting_advice = ""
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
-                                
                                 if bet_p1["is_bet"]:
                                     betting_advice = f" [💎 {bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
                                     is_hunter_pick_active = True
@@ -1054,9 +1067,7 @@ async def run_pipeline():
                                     betting_advice = f" [💎 {bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
                                     is_hunter_pick_active = True
                                     hunter_pick_player = n2
-                                
                                 ai_text_final = ai_text_base + betting_advice
-                                
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral":
                                     ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']} vs {style_stats_p1['style']})"
                                 if style_stats_p2 and style_stats_p2['verdict'] != "Neutral":
