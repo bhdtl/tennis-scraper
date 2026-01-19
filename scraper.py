@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V59.9 - THE INTEGRATED WINNER)...")
+log("🔌 Initialisiere Neural Scout (V60.0 - FLB STRATEGY)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -287,8 +287,7 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         if win_rate > 65: verdict = "DOMINANT"
         elif win_rate < 40: verdict = "STRUGGLES"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-    except Exception as e:
-        return None
+    except Exception as e: return None
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
     if not relative_url: return 0.5
@@ -407,10 +406,15 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
+# --- V60.0: FAVORITE-LONGSHOT BIAS & KELLY STAKING ---
 def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
+    # Bereinigung extremer Quoten
+    market_odds = min(market_odds, 50.0)
+
+    # Kelly Criterion Basis
     b = market_odds - 1
     q = 1 - fair_prob
     if b == 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
@@ -419,31 +423,60 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
     if full_kelly <= 0: 
         return {"stake_str": "0u", "type": "NONE", "is_bet": False}
 
-    # --- TIERED STRATEGY (V57 Refined) ---
-    if 1.30 <= market_odds < 1.70:
-        required_edge = 0.06 
+    # --- V60.0: FAVORITE-LONGSHOT BIAS ADJUSTMENT ---
+    # Wir passen die required_edge und den Kelly-Fraction basierend auf der Marktpsychologie an.
+    
+    label = "SKIP"
+    required_edge = 0.0
+    kelly_fraction = 0.0
+    max_stake = 0.0
+    
+    # ZONE 1: HEAVY FAVORITES (High Value Zone gem. FLB Theorie)
+    # Markt unterschätzt diese oft. Wir sind aggressiver.
+    if 1.10 <= market_odds < 1.50:
+        required_edge = 0.03  # Nur 3% Edge nötig!
+        kelly_fraction = 0.30 # Aggressiveres Staking
+        max_stake = 4.0       
+        label = "🛡️ IRON BANKER"
+
+    # ZONE 2: MODERATE FAVORITES (Sweetspot)
+    elif 1.50 <= market_odds < 2.00:
+        required_edge = 0.05
         kelly_fraction = 0.25 
-        max_stake = 3.0       
-        label = "🛡️ BANKER"
-    elif 1.70 <= market_odds < 2.40:
-        required_edge = 0.125
-        kelly_fraction = 0.20 
+        max_stake = 3.0
+        label = "💰 VALUE FAV"
+
+    # ZONE 3: COIN FLIPS (Neutral)
+    elif 2.00 <= market_odds < 3.00:
+        required_edge = 0.08
+        kelly_fraction = 0.20
         max_stake = 2.0
         label = "⚖️ VALUE"
-    elif 2.40 <= market_odds <= 6.00:
-        required_edge = 0.20 
-        if ai_sentiment_score < 0.45:
-             return {"stake_str": "0u", "type": "AI_BLOCK", "is_bet": False}
-        kelly_fraction = 0.125 
+
+    # ZONE 4: LONGSHOTS (Danger Zone gem. FLB Theorie)
+    # Markt überschätzt diese oft. Wir müssen extrem selektiv sein.
+    elif 3.00 <= market_odds <= 8.00:
+        required_edge = 0.15 # Wir brauchen massive 15% Edge um den Bias zu schlagen
+        
+        # AI Sentiment muss zustimmen, sonst kein Bet auf Underdog
+        if ai_sentiment_score < 0.60: 
+             return {"stake_str": "0u", "type": "FLB_FILTER", "is_bet": False}
+             
+        kelly_fraction = 0.10 # Sehr defensives Staking
         max_stake = 1.0       
         label = "💎 HUNTER"
+        
     else:
-        return {"stake_str": "0u", "type": "SKIP", "is_bet": False}
+        # Extreme Longshots (> 8.00) sind fast immer -EV
+        return {"stake_str": "0u", "type": "SKIP_EXTREME", "is_bet": False}
 
+    # Berechne Edge
     edge = (fair_prob * market_odds) - 1
+    
     if edge < required_edge:
          return {"stake_str": "0u", "type": "LOW_EDGE", "is_bet": False}
 
+    # Final Staking Calculation
     safe_stake = full_kelly * kelly_fraction
     raw_units = safe_stake * 100 * 0.5 
     
@@ -477,7 +510,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if market_odds1 > 0 and market_odds2 > 0:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         implied_p1 = inv1 / (inv1 + inv2)
-        
         if 0.01 < implied_p1 < 0.99:
             try:
                 elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
@@ -485,7 +517,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
                 elo_diff_market = elo_diff_model
         else:
             elo_diff_market = elo_diff_model 
-            
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
     else:
         elo_diff_final = elo_diff_model
@@ -506,17 +537,13 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
     style_boost = 0
-    if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": 
-        style_boost += 0.08 
+    if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": style_boost += 0.08 
     if style_stats_p1 and style_stats_p1['verdict'] == "STRUGGLES": style_boost -= 0.06
-    if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": 
-        style_boost -= 0.08 
+    if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     
-    # [V57 WEIGHTING]
     weights = [0.20, 0.15, 0.05, 0.50, 0.10] 
     model_trust_factor = 0.45 
-        
     total_w = sum(weights)
     weights = [w/total_w for w in weights]
     
@@ -543,25 +570,18 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
         
         if old_fair_odds1 <= 1.01: return 0.5
         old_final_prob = 1 / old_fair_odds1
-        
-        # Reverse V57 Ratio (60/40)
         alpha_part = old_final_prob - (old_prob_market * 0.40)
         prob_alpha = alpha_part / 0.60
-        
         new_prob_market = 0.5
         if new_market_odds1 > 1 and new_market_odds2 > 1:
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
-            
         new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
-        
         if new_market_odds1 < 1.10:
              mkt_prob1 = 1/new_market_odds1
              new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
-             
         return new_final_prob
-    except:
-        return 0.5
+    except: return 0.5
 
 # =================================================================
 # 6. PIPELINE UTILS
@@ -599,32 +619,25 @@ async def resolve_united_cup_via_country(p1):
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
     return None
 
-# --- V59.3: CONTEXT-AWARE RESOLVER WITH DB ALIGNMENT ---
 async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
     
     # 1. ORACLE CHECK (TennisTemple Metadata)
-    # Check if we have specific tournament data for these players
     p1_meta = METADATA_CACHE.get(normalize_db_name(p1))
     p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
     
     oracle_data = p1_meta or p2_meta
     
     if oracle_data:
-         # Found real data!
          real_name = oracle_data.get('tournament', scraped_name)
          log(f"   🔮 Oracle Hit: {p1} -> {real_name}")
-         
-         # Now use this REAL name to get details from Gemini
          prompt = f"""
          TASK: Details for tennis tournament '{real_name}'.
          CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}.
          OUTPUT JSON: {{ "city": "Name", "surface": "Hard/Clay/Grass", "indoor": true/false }}
          """
-         # Proceed to call Gemini with the BETTER name...
          scraped_name = real_name # Update name for cache key
     else:
-         # No Oracle data, use standard fallback prompt
          prompt = f"""
          TASK: Identify tournament location.
          MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}).
@@ -650,7 +663,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
             # Corrections
             city = data.get('city', 'Unknown')
             if "plantation" in city.lower() and p1_country == "USA":
-                 city = "Winston-Salem" # Fix hallucination based on user feedback
+                 city = "Winston-Salem" 
                  surface_type = "Hard Indoor"
             
             simulated_db_entry = {
@@ -740,7 +753,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V59.9: INTEGRATED WINNER PARSER (Hybrid Mode) ---
+# --- V59.4: RESULT PARSER FIX ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -748,8 +761,6 @@ def parse_matches_locally_v5(html, p_names):
     for table in soup.find_all("table", class_="result"):
         rows = table.find_all("tr")
         current_tour = "Unknown"
-        
-        # Buffer variables to handle split rows
         pending_p1_raw = None
         pending_p1_href = None
         pending_time = "00:00"
@@ -758,19 +769,14 @@ def parse_matches_locally_v5(html, p_names):
         while i < len(rows):
             row = rows[i]
             
-            # Update Tournament context
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
-                # Reset pending if tournament changes
                 pending_p1_raw = None
                 i += 1; continue
             
-            # Basic parsing of the row
             cols = row.find_all('td')
-            if len(cols) < 2: 
-                i += 1; continue
-                
-            # Check for Time cell
+            if len(cols) < 2: i += 1; continue
+            
             first_cell = row.find('td', class_='first')
             has_time = False
             if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
@@ -779,17 +785,12 @@ def parse_matches_locally_v5(html, p_names):
                     pending_time = tm.group(1).zfill(5)
                     has_time = True
             
-            # Try to extract player from this row
             p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
-            
-            # If no player link found, skip
-            if not p_cell: 
-                i += 1; continue
+            if not p_cell: i += 1; continue
                 
             p_raw = clean_player_name(p_cell.get_text(strip=True))
             p_href = p_cell.find('a')['href']
             
-            # Odds extraction
             raw_odds = []
             for c in row.find_all('td', class_=re.compile(r'course')):
                 try:
@@ -797,15 +798,10 @@ def parse_matches_locally_v5(html, p_names):
                     if 1.01 <= val <= 100.0: raw_odds.append(val)
                 except: pass
 
-            # --- PAIRING LOGIC & INTEGRATED WINNER DETECTION ---
             if pending_p1_raw:
-                # We have P1 waiting, this row must be P2
                 p2_raw = p_raw
                 p2_href = p_href
-                
-                # Check validity
                 if '/' in pending_p1_raw or '/' in p2_raw: 
-                    # Doubles detected, discard
                     pending_p1_raw = None
                     i += 1; continue
                 
@@ -824,8 +820,6 @@ def parse_matches_locally_v5(html, p_names):
                     
                     # --- V59.9 LIVE WINNER CHECK (The Hybrid Trick) ---
                     winner_found = None
-                    
-                    # Check scores in BOTH rows (Standard TE layout: Score is often in Row 1)
                     score_cell_p1 = prev_row.find('td', class_='result')
                     score_cell_p2 = row.find('td', class_='result')
                     
@@ -834,8 +828,6 @@ def parse_matches_locally_v5(html, p_names):
                         t2 = score_cell_p2.get_text(strip=True)
                         if t1.isdigit() and t2.isdigit():
                             s1 = int(t1); s2 = int(t2)
-                            
-                            # Valid Completion Check (2 sets min usually)
                             if s1 >= 2 or s2 >= 2:
                                 if s1 > s2: winner_found = pending_p1_raw
                                 elif s2 > s1: winner_found = p2_raw
@@ -847,24 +839,18 @@ def parse_matches_locally_v5(html, p_names):
                         "p1_href": pending_p1_href, "p2_href": p2_href,
                         "actual_winner": winner_found 
                     })
-                
-                # Reset pending
                 pending_p1_raw = None
-                
             else:
-                # No pending P1. This row is P1.
                 if first_cell and first_cell.get('rowspan') == '2':
                     pending_p1_raw = p_raw
                     pending_p1_href = p_href
                 else:
-                    # Single row match? (Rare in TE odds view)
                     pending_p1_raw = p_raw
                     pending_p1_href = p_href
-            
             i += 1
-
     return found
 
+# --- V59.8: ABSOLUTE SCORE VALIDATOR ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results (Today + Past)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
@@ -896,7 +882,6 @@ async def update_past_results(browser: Browser):
                     p2_norm = normalize_db_name(pm['player2_name'])
                     
                     if p1_norm in row_norm and p2_norm in row_norm:
-                        # 1. SCORE VALIDATION
                         score_matches = re.findall(r'(\d+)-(\d+)', row_text)
                         
                         p1_sets = 0
@@ -912,11 +897,9 @@ async def update_past_results(browser: Browser):
                             
                         is_ret = "ret." in row_text or "w.o." in row_text
                         
-                        # 2. MATCH TYPE DETECTION (Grand Slam Men = Best of 5)
                         is_gs_men = "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower())
                         sets_needed = 3 if is_gs_men else 2
                         
-                        # 3. COMPLETION GATE
                         if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
                             winner = None
                             idx_p1 = row_norm.find(p1_norm)
@@ -939,7 +922,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V59.9 THE INTEGRATED WINNER Starting...")
+    log(f"🚀 Neural Scout V60.0 (Veteran Edition) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -954,9 +937,7 @@ async def run_pipeline():
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
-                
                 METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
-                
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
                 matches = parse_matches_locally_v5(html, player_names)
@@ -976,10 +957,8 @@ async def run_pipeline():
                                 if "united cup" not in m['tour'].lower() and "hopman" not in m['tour'].lower():
                                     continue 
 
-                            # --- V59.9: LIVE SETTLEMENT IF DETECTED ---
-                            actual_winner_val = m.get('actual_winner') # Prefer live detection
+                            actual_winner_val = m.get('actual_winner')
                             if not actual_winner_val and m.get('actual_winner'): 
-                                # Fallback to standard check if live detection missed it but it exists? No, m['actual_winner'] comes from parse_matches
                                 actual_winner_val = n1 if m['actual_winner'] == m['p1_raw'] else n2
 
                             if m['odds1'] < 1.01 and m['odds2'] < 1.01 and not actual_winner_val: 
@@ -1000,11 +979,10 @@ async def run_pipeline():
                             
                             if existing_match:
                                 db_match_id = existing_match['id']
-                                # If we found a winner live, update DB immediately
                                 if actual_winner_val and not existing_match.get('actual_winner_name'):
                                      supabase.table("market_odds").update({"actual_winner_name": actual_winner_val}).eq("id", db_match_id).execute()
                                      log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1})")
-                                     continue # Done, no need to recalc odds for finished match
+                                     continue 
                                      
                                 if existing_match.get('actual_winner_name'): continue 
                                 old_o1 = existing_match.get('odds1', 0)
