@@ -10,6 +10,7 @@ import logging
 import sys
 import random
 import time
+import difflib  # NEU: Für präzisen Namensabgleich (Darwin vs Dali)
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 
@@ -31,7 +32,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V61.0 - THE BRAIN TRANSPLANT)...")
+log("🔌 Initialisiere Neural Scout (V62.0 - PRECISION IDENTITY ENGINE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -73,6 +74,7 @@ def normalize_text(text: str) -> str:
 
 def clean_player_name(raw: str) -> str:
     if not raw: return ""
+    # Entferne Wettanbieter-Spam und TV-Infos
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     clean = re.sub(r'\s*\(\d+\)', '', clean) 
     clean = re.sub(r'\s*\(.*?\)', '', clean) 
@@ -103,7 +105,7 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
-# --- V58.3 UPGRADE: ELITE NAME MATCHING ---
+# --- V62.0 UPGRADE: PRECISE NAME MATCHING (Fixes Darwin/Dali Blanch Issue) ---
 def normalize_db_name(name: str) -> str:
     """Normalizes DB names for robust matching (Mc, De, hyphens)."""
     if not name: return ""
@@ -113,21 +115,33 @@ def normalize_db_name(name: str) -> str:
     return n
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
+    """
+    SOTA Matching Logic V2:
+    Unterscheidet sicher zwischen Spielern mit gleichem Nachnamen und gleicher Initiale
+    (z.B. Darwin Blanch vs Dali Blanch), indem der volle Vorname mittels SequenceMatcher gewichtet wird.
+    """
     if not scraped_name_raw or not db_players: return None
     
     clean_scrape = clean_player_name(scraped_name_raw)
     parts = clean_scrape.split()
+    
+    scrape_first = ""
     scrape_last = ""
     scrape_initial = ""
     
+    # Intelligentes Parsing des Scraped Namens
     if len(parts) >= 2:
         last_token = parts[-1].replace('.', '')
-        if len(last_token) == 1 and last_token.isalpha():
-            scrape_initial = last_token.lower()
-            scrape_last = " ".join(parts[:-1]) 
-        else:
-            scrape_last = parts[-1]
-            scrape_initial = parts[0][0].lower() if parts[0] else ""
+        # Fall: "Nadal R." -> Nachname vorne? Eher selten bei TennisExplorer, aber möglich.
+        # Standard TennisExplorer: "Rafael Nadal" oder "R. Nadal"
+        
+        scrape_last = parts[-1]
+        scrape_first = parts[0]
+        if len(scrape_first) > 0:
+            scrape_initial = scrape_first[0].lower()
+            # Wenn der Vorname nur ein Buchstabe ist (z.B. "D. Blanch"), ist scrape_first "D."
+            if len(scrape_first) <= 2 and scrape_first.endswith('.'):
+                scrape_first = "" # Wir haben keinen vollen Vornamen
     else:
         scrape_last = clean_scrape
 
@@ -139,25 +153,59 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         db_last = normalize_db_name(db_last_raw)
         
         match_score = 0
-        if db_last == target_last: match_score = 100
+        
+        # 1. Nachnamen-Check (Must have)
+        if db_last == target_last: 
+            match_score = 100
         elif target_last in db_last or db_last in target_last: 
+            # Schutz vor kurzen Strings (Li vs Liu)
             if len(target_last) > 3 and len(db_last) > 3: match_score = 80
         
         if match_score > 0:
             db_first = p.get('first_name', '').lower()
-            if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial):
-                    match_score += 20 
-                else:
-                    match_score -= 50 
             
-            if match_score > 50:
+            # 2. Vornamen-Analyse (Der entscheidende Fix)
+            if db_first:
+                # A) Wenn wir einen vollen Vornamen vom Scraper haben ("Darwin")
+                if len(scrape_first) > 1:
+                    # Nutzung von difflib für Ähnlichkeit (Darwin vs Dali = low score)
+                    similarity = difflib.SequenceMatcher(None, scrape_first.lower(), db_first).ratio()
+                    if similarity > 0.8: # Sehr starke Übereinstimmung
+                        match_score += 50
+                    elif similarity > 0.5: # Mäßige Übereinstimmung
+                        match_score += 20
+                    elif db_first.startswith(scrape_first.lower()): # "Dar" starts with "Dar"
+                         match_score += 40
+                    else:
+                        # Harte Bestrafung, wenn voller Vorname nicht passt
+                        # Darwin vs Dali -> similarity ist niedrig -> minus Punkte
+                        match_score -= 50
+                
+                # B) Wenn wir nur Initialen haben ("D.")
+                elif scrape_initial:
+                    if db_first.startswith(scrape_initial):
+                        match_score += 10 # Geringerer Bonus, da unsicher
+                    else:
+                        match_score -= 100 # Falsche Initiale ist ein Ausschlusskriterium
+            
+            if match_score > 60:
                 candidates.append((p, match_score))
 
     if not candidates: return None
     
+    # Sortierung: 1. Score (höchste Prio), 2. Hat Report (Tie-Breaker)
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
-    return candidates[0][0]
+    
+    best_candidate = candidates[0][0]
+    best_score = candidates[0][1]
+    
+    # Logging für Debugging bei knappen Fällen
+    if len(candidates) > 1 and (candidates[0][1] - candidates[1][1] < 20):
+        c1 = candidates[0][0]['last_name'] + " " + candidates[0][0].get('first_name', '')
+        c2 = candidates[1][0]['last_name'] + " " + candidates[1][0].get('first_name', '')
+        # log(f"⚠️ Ambiguous Name: '{scraped_name_raw}' -> Chosen: {c1} (vs {c2}) Score: {best_score}")
+
+    return best_candidate
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
@@ -313,7 +361,6 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
         fatigue_points = 0
         
         last_match = recent_matches[0]
-        # Supabase returns ISO string, convert to timestamp safely
         try:
             lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
         except:
@@ -968,7 +1015,7 @@ async def update_past_results(browser: Browser):
 
 # --- V60.1: THE CLEAN SLATE (Rebuilding AI Text) ---
 async def run_pipeline():
-    log(f"🚀 Neural Scout V61.0 THE BRAIN TRANSPLANT Starting...")
+    log(f"🚀 Neural Scout V62.0 PRECISION IDENTITY ENGINE Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
