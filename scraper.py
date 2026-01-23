@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V70.0 - VERTICAL STITCHER)...")
+log("🔌 Initialisiere Neural Scout (V71.0 - SAFETY NET PATCH)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -724,7 +724,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V70.0: VERTICAL STITCHER PARSER ---
+# --- V71.0: CRASH-PROOF VERTICAL STITCHER PARSER ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -771,12 +771,10 @@ def parse_matches_locally_v5(html, p_names):
                     winner_found = None
                     final_score = ""
                     
-                    # --- V70.0: VERTICAL STITCHER LOGIC ---
+                    # --- V71.0: CRASH-PROOF VERTICAL STITCHER LOGIC ---
                     sets_p1 = prev_row.find_all('td')
                     sets_p2 = row.find_all('td')
                     
-                    # Identifiziere Spaltenstart für Scores (meist nach Name/Odds)
-                    # Wir suchen nach der Spalte, die 'score' im Class hat oder einfach numerisch ist nach dem Namen
                     score_start_idx = -1
                     for idx, c in enumerate(sets_p1):
                         if 'score' in c.get('class', []):
@@ -784,11 +782,10 @@ def parse_matches_locally_v5(html, p_names):
                             break
                     
                     if score_start_idx == -1 and len(sets_p1) > 4: 
-                        # Fallback: Meistens Index 2 oder 3
                         score_start_idx = 2 
 
-                    if score_start_idx != -1 and score_start_idx < len(sets_p1):
-                        # Calculate Sets Won (Spalte S)
+                    if score_start_idx != -1 and score_start_idx < len(sets_p1) and score_start_idx < len(sets_p2):
+                        # Calculate Sets Won (Spalte S) - SAFETY CHECK ADDED
                         try:
                             s1_t = int(sets_p1[score_start_idx].get_text(strip=True))
                             s2_t = int(sets_p2[score_start_idx].get_text(strip=True))
@@ -796,24 +793,22 @@ def parse_matches_locally_v5(html, p_names):
                             elif s2_t > s1_t: winner_found = p2_raw
                         except: pass
 
-                        # Build Score String (Spalten 1, 2, 3...)
+                        # Build Score String
                         score_parts = []
                         for offset in range(1, 6): # Max 5 Sätze
-                            if score_start_idx + offset >= len(sets_p1): break
+                            # SAFETY CHECK V71.0: Ensure index exists in BOTH rows
+                            if score_start_idx + offset >= len(sets_p1) or score_start_idx + offset >= len(sets_p2): 
+                                break
                             
-                            # Clean Sup tags (Tiebreaks entfernen für sauberen Score)
                             t1_node = sets_p1[score_start_idx + offset]
                             t2_node = sets_p2[score_start_idx + offset]
                             
-                            # Remove sups locally for text extraction
-                            [s.extract() for s in t1_node('sup')]
-                            [s.extract() for s in t2_node('sup')]
+                            # Clean Sups safely
+                            t1_text = ''.join([t for t in t1_node.contents if isinstance(t, str)]).strip()
+                            t2_text = ''.join([t for t in t2_node.contents if isinstance(t, str)]).strip()
                             
-                            val1 = t1_node.get_text(strip=True)
-                            val2 = t2_node.get_text(strip=True)
-                            
-                            if val1.isdigit() and val2.isdigit():
-                                score_parts.append(f"{val1}-{val2}")
+                            if t1_text.isdigit() and t2_text.isdigit():
+                                score_parts.append(f"{t1_text}-{t2_text}")
                         
                         if score_parts:
                             final_score = " ".join(score_parts)
@@ -861,7 +856,6 @@ async def update_past_results(browser: Browser):
                     p2_norm = normalize_db_name(pm['player2_name'])
                     if p1_norm in row_norm and p2_norm in row_norm:
                         score_cleaned = ""
-                        # Similar logic to parser but for single-line result rows (different layout on results page)
                         pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
                         all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
                         valid_sets = []
@@ -913,7 +907,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V70.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V71.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
