@@ -10,7 +10,7 @@ import logging
 import sys
 import random
 import time
-import difflib  # NEU: Für präzisen Namensabgleich (Darwin vs Dali)
+import difflib
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 
@@ -32,7 +32,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V64.2 - SCORE HUNTER & VEGAS ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V64.3 - HYBRID STABILITY EDITION)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -43,14 +43,14 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.0-flash'
+MODEL_NAME = 'gemini-2.0-flash' # Upgrade auf Flash 2.0 für Speed
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} # ORACLE CACHE
-FORM_CACHE: Dict[str, Dict[str, Any]] = {} # VEGAS FORM CACHE
+FORM_CACHE: Dict[str, Dict[str, Any]] = {} # NEU: Caching für Vegas Form
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena",
@@ -75,7 +75,6 @@ def normalize_text(text: str) -> str:
 
 def clean_player_name(raw: str) -> str:
     if not raw: return ""
-    # Entferne Wettanbieter-Spam und TV-Infos
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     clean = re.sub(r'\s*\(\d+\)', '', clean) 
     clean = re.sub(r'\s*\(.*?\)', '', clean) 
@@ -106,9 +105,7 @@ def ensure_dict(data: Any) -> Dict:
         return {}
     except: return {}
 
-# --- V62.0 UPGRADE: PRECISE NAME MATCHING ---
 def normalize_db_name(name: str) -> str:
-    """Normalizes DB names for robust matching (Mc, De, hyphens)."""
     if not name: return ""
     n = name.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
@@ -184,167 +181,91 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     return score
 
 # =================================================================
-# 3. VEGAS FORM ENGINE (NEU: DOMINANCE LOGIC)
+# 3. VEGAS FORM ENGINE (NEU: Injected Component)
 # =================================================================
 class VegasFormEngine:
     """
-    V64.0: SOTA Form Engine.
-    Kombiniert 'Market Alpha' (ROI) mit 'Dominance Metrics'.
-    Verhindert, dass Favoriten bei Siegen stagnieren.
+    V64.2 Logic: Market Alpha + Dominance Metrics.
     """
-    
     @staticmethod
     def get_color_for_rating(rating: float) -> str:
-        if rating >= 9.0: return "#3e2b86" # Deep Blue
-        if rating >= 8.0: return "#0078d4" # Blue
-        if rating >= 7.0: return "#16c60c" # Green
-        if rating >= 6.0: return "#f3a033" # Yellow/Orange
-        return "#ea3943" # Red
+        if rating >= 9.0: return "#3e2b86" 
+        if rating >= 8.0: return "#0078d4" 
+        if rating >= 7.0: return "#16c60c" 
+        if rating >= 6.0: return "#f3a033" 
+        return "#ea3943"
 
     @staticmethod
     def analyze_dominance(score_str: str, won: bool) -> float:
-        """
-        Berechnet einen 'Dominance Bonus' basierend auf dem Score.
-        Returns: Float zwischen -0.5 (Desaster) und +0.5 (Totale Dominanz)
-        """
         if not score_str or score_str == "Unknown": return 0.0
-        
-        # Cleanup score string (entferne Spielernamen falls vorhanden)
         score_clean = re.sub(r'[a-zA-Z\.]+', '', score_str).strip()
-        
-        # Regex sucht nach "6-4" Mustern
         sets = re.findall(r'(\d+)-(\d+)', score_clean)
         if not sets: return 0.0
         
-        my_sets = 0
-        opp_sets = 0
-        my_games = 0
-        opp_games = 0
-        tiebreaks_lost = 0
-        
+        my_sets = 0; opp_sets = 0; my_games = 0; opp_games = 0; tiebreaks_lost = 0
         for s in sets:
             try:
-                s1 = int(s[0])
-                s2 = int(s[1])
-                
-                # Wenn won=True, ist s1 meist mein Score. 
-                # TennisExplorer Format ist meist "WinnerScore LoserScore"
-                if won:
-                    my_g = s1; opp_g = s2
-                else:
-                    my_g = s2; opp_g = s1
-                
-                my_games += my_g
-                opp_games += opp_g
-                
+                s1 = int(s[0]); s2 = int(s[1])
+                if won: my_g = s1; opp_g = s2
+                else: my_g = s2; opp_g = s1
+                my_games += my_g; opp_games += opp_g
                 if my_g > opp_g: my_sets += 1
                 elif opp_g > my_g: opp_sets += 1
-                
                 if (my_g == 6 and opp_g == 7) or (my_g == 7 and opp_g == 6):
                     if my_g < opp_g: tiebreaks_lost += 1
             except: pass
             
         dominance_bonus = 0.0
-        
         if won:
-            # 1. Straight Sets Bonus
-            if opp_sets == 0: 
-                dominance_bonus += 0.20
-            # 2. Game Difference Bonus
+            if opp_sets == 0: dominance_bonus += 0.20
             diff = my_games - opp_games
             if diff >= 8: dominance_bonus += 0.15 
             elif diff >= 5: dominance_bonus += 0.08
-            # 3. Tiebreak Malus bei Favoriten
             if my_games <= opp_games: dominance_bonus -= 0.10
-            
-        else: # Lost
-            # 1. Close Loss Bonus
-            if my_sets >= 1: 
-                dominance_bonus += 0.15 
-            # 2. Tiebreak Loss
-            if tiebreaks_lost >= 1:
-                dominance_bonus += 0.10 
-            # 3. Game Difference Protection
-            diff = opp_games - my_games
-            if diff <= 3: dominance_bonus += 0.10 
-            
+        else: 
+            if my_sets >= 1: dominance_bonus += 0.15 
+            if tiebreaks_lost >= 1: dominance_bonus += 0.10
+            if (opp_games - my_games) <= 3: dominance_bonus += 0.10 
         return dominance_bonus
 
     @staticmethod
     async def calculate_vegas_form(player_name: str, limit: int = 10) -> Dict[str, Any]:
         if player_name in FORM_CACHE: return FORM_CACHE[player_name]
-        
         try:
             res = supabase.table('market_odds').select('created_at, score, actual_winner_name, odds1, odds2, player1_name, player2_name')\
                 .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
                 .not_.is_("actual_winner_name", "null")\
                 .order('created_at', desc=True).limit(limit).execute()
-            
             matches = res.data
-            if not matches:
-                return {"rating": 6.0, "color": "#f3a033", "matches": 0}
+            if not matches: return {"rating": 6.0, "color": "#f3a033", "matches": 0}
 
-            total_score = 0.0
-            total_weight = 0.0
-            history_log = []
-
+            total_score = 0.0; total_weight = 0.0; history_log = []
             for idx, m in enumerate(matches):
                 is_p1 = player_name.lower() in m['player1_name'].lower()
                 my_odds = m['odds1'] if is_p1 else m['odds2']
-                
                 if my_odds < 1.01 or my_odds > 50: continue
+                won = player_name.lower() in m.get('actual_winner_name', '').lower()
                 
-                winner = m['actual_winner_name'] or ""
-                won = player_name.lower() in winner.lower()
-                
-                # 1. Base Alpha (Market Performance)
-                implied_prob = 1.0 / my_odds
-                result_val = 1.0 if won else 0.0
-                
-                # 2. Dominance Factor
                 dom_bonus = VegasFormEngine.analyze_dominance(str(m.get('score', '')), won)
-                
                 match_grade = 0.0
-                
                 if won:
-                    base_win_score = 7.5
-                    underdog_bonus = max(0, (my_odds - 1.5) * 1.5) 
-                    dom_score = dom_bonus * 3.0 
-                    match_grade = base_win_score + underdog_bonus + dom_score
-                    match_grade = max(7.0, min(10.0, match_grade)) # Floor/Cap
+                    base_win = 7.5; underdog_bonus = max(0, (my_odds - 1.5) * 1.5)
+                    match_grade = max(7.0, min(10.0, base_win + underdog_bonus + (dom_bonus * 3.0)))
                 else: 
-                    base_loss_score = 4.0
-                    odds_protection = min(2.5, (my_odds - 1.2) * 1.0)
-                    close_bonus = dom_bonus * 4.0 
-                    match_grade = base_loss_score + odds_protection + close_bonus
-                    match_grade = max(1.0, min(6.5, match_grade))
+                    base_loss = 4.0; odds_prot = min(2.5, (my_odds - 1.2) * 1.0)
+                    match_grade = max(1.0, min(6.5, base_loss + odds_prot + (dom_bonus * 4.0)))
 
                 weight = 1.0 + (0.15 * (len(matches) - idx)) 
-                
                 total_score += match_grade * weight
                 total_weight += weight
-                
-                history_log.append({
-                    "vs": m['player2_name'] if is_p1 else m['player1_name'],
-                    "res": "W" if won else "L",
-                    "grade": round(match_grade, 1)
-                })
+                history_log.append({"res": "W" if won else "L"})
 
             if total_weight == 0: return {"rating": 6.0, "color": "#f3a033"}
-            
             final_rating = round(total_score / total_weight, 1)
-            result = {
-                "rating": final_rating,
-                "color": VegasFormEngine.get_color_for_rating(final_rating),
-                "matches_analyzed": len(matches),
-                "history": history_log[:5] 
-            }
-            
+            result = {"rating": final_rating, "color": VegasFormEngine.get_color_for_rating(final_rating)}
             FORM_CACHE[player_name] = result
             return result
-            
-        except Exception as e:
-            return {"rating": 6.0, "color": "#f3a033"}
+        except: return {"rating": 6.0, "color": "#f3a033"}
 
 # =================================================================
 # 4. GEMINI ENGINE
@@ -380,8 +301,7 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
         content = await page.content()
         soup = BeautifulSoup(content, 'html.parser')
         for element in soup.find_all(['h2', 'a']):
-            text = element.get_text(strip=True)
-            href = element.get('href', '')
+            text = element.get_text(strip=True); href = element.get('href', '')
             if ('/turnier/' in href or '/tournament/' in href):
                 current_tournament = text; continue
             if ('/spieler/' in href or '/player/' in href):
@@ -420,7 +340,6 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
-                        
         relevant_matches = 0; wins = 0
         for m in matches:
             if player_name.lower() in m['player1_name'].lower(): opp_name = get_last_name(m['player2_name']).lower()
@@ -430,7 +349,6 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
                 if player_name.lower() in winner: wins += 1
-                    
         if relevant_matches < 3: return None
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
@@ -447,26 +365,21 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
             .order('created_at', desc=True).limit(5).execute()
         recent_matches = res.data
         if not recent_matches: return "Fresh"
-        
         now_ts = datetime.now().timestamp()
         fatigue_points = 0
         last_match = recent_matches[0]
         try: lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
         except: return "Unknown"
         hours_since_last = (now_ts - lm_time) / 3600
-        
         if hours_since_last < 24: fatigue_points += 50
         elif hours_since_last < 48: fatigue_points += 25
-        elif hours_since_last > 500: return "Rusty (Long break)"
-        
         if hours_since_last < 48 and last_match.get('score'):
             score_str = str(last_match['score']).lower()
             if 'ret' in score_str or 'wo' in score_str: fatigue_points *= 0.3
             else:
                 score_matches = re.findall(r'(\d+)-(\d+)', score_str)
                 if score_matches:
-                    sets_count = len(score_matches)
-                    total_games = 0
+                    sets_count = len(score_matches); total_games = 0
                     for s in score_matches:
                         try: total_games += int(s[0]) + int(s[1])
                         except: pass
@@ -474,7 +387,6 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
                     if total_games > 28: fatigue_points += 20
                     if sets_count >= 3: fatigue_points += 15
                     if tiebreaks >= 1: fatigue_points += 10
-        
         matches_last_7_days = 0
         for m in recent_matches:
             try:
@@ -482,7 +394,6 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
                 if (now_ts - mt) < (7 * 24 * 3600): matches_last_7_days += 1
             except: pass
         if matches_last_7_days >= 4: fatigue_points += 25
-        
         if fatigue_points > 70: return "CRITICAL FATIGUE (High risk of fading)"
         if fatigue_points > 40: return "Heavy Legs (Played recently)"
         if fatigue_points > 20: return "In Rhythm"
@@ -551,7 +462,6 @@ async def fetch_elo_ratings(browser: Browser):
                             'Clay': to_float(cols[4].get_text(strip=True), 1500),
                             'Grass': to_float(cols[5].get_text(strip=True), 1500)
                         }
-                log(f"   ✅ {tour} Elo geladen: {len(ELO_CACHE[tour])}")
         except: pass
         finally: await page.close()
 
@@ -595,7 +505,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE
+# 5. MATH CORE & SOTA V57 QUANT ENGINE (Z-SCORE + GRAVITY)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -604,6 +514,7 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
+# --- V60.2: CALCULATE DYNAMIC STAKE (Bug Fix: 0u Returns is_bet=False) ---
 def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
     market_odds = min(market_odds, 50.0)
@@ -629,10 +540,12 @@ def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_s
     if units > max_stake: units = max_stake
     return {"stake_str": f"{units}u", "type": label, "is_bet": True, "edge_percent": round(edge * 100, 1), "units": units}
 
+# --- NEU: V64.3 Calculate Physics mit Vegas Form ---
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict], vegas1: Dict, vegas2: Dict):
     ai_meta = ensure_dict(ai_meta)
     n1 = get_last_name(p1_name); n2 = get_last_name(p2_name)
     tour = "ATP"
+    
     p1_stats = ELO_CACHE.get(tour, {}).get(n1, {})
     p2_stats = ELO_CACHE.get(tour, {}).get(n2, {})
     elo_surf = 'Clay' if 'clay' in surface.lower() else ('Grass' if 'grass' in surface.lower() else 'Hard')
@@ -658,9 +571,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
     
-    # NEU: VEGAS INTEGRATION (V64.2)
+    # VEGAS BOOST
     v1 = vegas1.get('rating', 6.0); v2 = vegas2.get('rating', 6.0)
-    prob_vegas = sigmoid_prob(v1 - v2, sensitivity=0.6) 
+    prob_vegas = sigmoid_prob(v1 - v2, sensitivity=0.6)
     
     style_boost = 0
     if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": style_boost += 0.08 
@@ -707,7 +620,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: return 0.5
 
 # =================================================================
-# 7. PIPELINE UTILS
+# 6. PIPELINE UTILS
 # =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
@@ -744,8 +657,6 @@ async def resolve_united_cup_via_country(p1):
 
 async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
-    
-    # 1. ORACLE CHECK
     p1_meta = METADATA_CACHE.get(normalize_db_name(p1))
     p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
     oracle_data = p1_meta or p2_meta
@@ -777,19 +688,11 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
             if 'clay' in surface_type.lower(): est_bsi = 3.5
             elif 'grass' in surface_type.lower(): est_bsi = 8.0
             elif 'indoor' in surface_type.lower(): est_bsi = 7.5
-            
             city = data.get('city', 'Unknown')
             if "plantation" in city.lower() and p1_country == "USA":
-                 city = "Winston-Salem"
-                 surface_type = "Hard Indoor"
-                 est_bsi = 7.5
+                 city = "Winston-Salem"; surface_type = "Hard Indoor"; est_bsi = 7.5
             
-            simulated_db_entry = {
-                "city": city,
-                "surface_guessed": surface_type,
-                "bsi_estimate": est_bsi,
-                "note": f"AI/Oracle: {city}"
-            }
+            simulated_db_entry = { "city": city, "surface_guessed": surface_type, "bsi_estimate": est_bsi, "note": f"AI/Oracle: {city}" }
             TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
         except: pass
@@ -811,7 +714,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         if score > best_score: best_score = score; best_match = t
     
     if best_match and best_score >= 20:
-        log(f"   🏟️ DB HIT: '{s_low}' -> '{best_match['name']}' | BSI: {best_match['bsi_rating']} | Court: {best_match.get('notes', 'N/A')[:50]}...")
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
 
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
@@ -821,12 +723,11 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         bsi = ai_loc.get('bsi_estimate', 6.5)
         note = ai_loc.get('note', 'AI Guess')
-        log(f"   🤖 RESOLVED: '{s_low}' -> {note} | BSI: {bsi}")
         return surf, bsi, note
     
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
-# --- V64.2: THE BRAIN WITH VEGAS INPUT ---
+# --- NEU: V64.3 AI mit Vegas Args ---
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1, form2, vegas1, vegas2):
     log(f"   🤖 Asking AI (with Vegas Data): {p1['last_name']} vs {p2['last_name']}")
     
@@ -847,20 +748,16 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     - Vegas Form: {vegas1['rating']}/10 ({vegas1['color']})
     - Play Style: {p1.get('play_style', 'Unknown')}
     - Context: {fatigueA}, Style Matchup: {styleA_vs_B['verdict'] if styleA_vs_B else "Neutral"}
-    - Internal Stats: Overall:{s1.get('overall_rating', 50)}, Serve:{s1.get('serve', 50)}
     
     PLAYER B: {p2['last_name']}
     - Vegas Form: {vegas2['rating']}/10 ({vegas2['color']})
     - Play Style: {p2.get('play_style', 'Unknown')}
     - Context: {fatigueB}, Style Matchup: {styleB_vs_A['verdict'] if styleB_vs_A else "Neutral"}
-    - Internal Stats: Overall:{s2.get('overall_rating', 50)}, Serve:{s2.get('serve', 50)}
     
     OUTPUT JSON ONLY:
     {{ 
         "p1_tactical_score": [0-10], 
         "p2_tactical_score": [0-10], 
-        "p1_form_score": [0-10], 
-        "p2_form_score": [0-10], 
         "ai_text": "Brief analysis emphasizing the Vegas Form difference if significant.",
         "p1_win_sentiment": [0.0-1.0] 
     }}
@@ -870,7 +767,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
-    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': '', 'p1_win_sentiment': 0.5}
+    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'ai_text': '', 'p1_win_sentiment': 0.5}
     if not res_text: return default
     try:
         cleaned = res_text.replace("json", "").replace("```", "").strip()
@@ -984,7 +881,7 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V64.2: SCORE HUNTER EDITION - THE AUDITOR FIX ---
+# --- NEU: V64.3 SCORE HUNTER FIX ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor (Score Hunter): Checking Real-Time Results...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
@@ -1005,7 +902,6 @@ async def update_past_results(browser: Browser):
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
                 
-                # SOTA CLEANING
                 row_text = row.get_text(separator=" ", strip=True).lower()
                 row_norm = normalize_text(row_text).lower()
 
@@ -1016,44 +912,36 @@ async def update_past_results(browser: Browser):
                     if p1_norm in row_norm and p2_norm in row_norm:
                         score_matches = re.findall(r'(\d+)-(\d+)', row_text)
                         
-                        p1_sets = 0
-                        p2_sets = 0
-                        
+                        p1_sets = 0; p2_sets = 0
                         for s in score_matches:
                             try:
-                                sl = int(s[0])
-                                sr = int(s[1])
+                                sl = int(s[0]); sr = int(s[1])
                                 if sl > sr: p1_sets += 1
                                 elif sr > sl: p2_sets += 1
                             except: pass
                             
                         is_ret = "ret." in row_text or "w.o." in row_text
-                        
                         is_gs_men = "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower())
                         sets_needed = 3 if is_gs_men else 2
                         
                         if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
                             winner = None
-                            idx_p1 = row_norm.find(p1_norm)
-                            idx_p2 = row_norm.find(p2_norm)
-                            
+                            idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
                             if idx_p1 < idx_p2: winner = pm['player1_name']
                             else: winner = pm['player2_name']
-                            
                             if not is_ret:
                                 if p1_sets > p2_sets: winner = pm['player1_name']
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
-                            # --- SCORE EXTRACTION FIX (REGEX HUNTER) ---
-                            # Wir extrahieren jetzt spezifisch alle Muster wie "6-4", "7-6" etc.
-                            # und joinen sie zu einem String.
+                            # --- SCORE EXTRACTION (REGEX HUNTER) ---
                             clean_score = "Unknown"
+                            # SOTA Regex: Findet Muster wie 6-4, 7-6 etc.
                             score_patterns = re.findall(r'\b(\d{1,2}-\d{1,2})\b', row_text)
                             if score_patterns:
                                 clean_score = " ".join(score_patterns)
                             
                             if winner:
-                                # Wir speichern jetzt auch den SCORE in der DB!
+                                # Update Score UND Winner
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
                                     "score": clean_score
@@ -1062,17 +950,16 @@ async def update_past_results(browser: Browser):
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
                                 log(f"      ✅ SETTLED: {winner} won ({clean_score})")
                                 break
-
         except: pass
         finally: await page.close()
 
-# --- V64.2: THE CLEAN SLATE (Rebuilding AI Text with Vegas) ---
+# --- V64.3: CLEAN SLATE MIT VEGAS INJEKTION ---
 async def run_pipeline():
-    log(f"🚀 Neural Scout V64.2 SCORE HUNTER Starting...")
+    log(f"🚀 Neural Scout V64.3 HYBRID Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await update_past_results(browser)
+            await update_past_results(browser) # Score Hunter läuft zuerst
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -1083,9 +970,7 @@ async def run_pipeline():
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
-                
                 METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
-                
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: continue
                 matches = parse_matches_locally_v5(html, player_names)
@@ -1097,104 +982,71 @@ async def run_pipeline():
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         
                         if p1_obj and p2_obj:
-                            n1 = p1_obj['last_name']
-                            n2 = p2_obj['last_name']
+                            n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                             if n1 == n2: continue
-                            
                             if p1_obj.get('tour') != p2_obj.get('tour'):
-                                if "united cup" not in m['tour'].lower() and "hopman" not in m['tour'].lower():
-                                    continue 
+                                if "united cup" not in m['tour'].lower() and "hopman" not in m['tour'].lower(): continue 
 
                             actual_winner_val = m.get('actual_winner')
                             if not actual_winner_val and m.get('actual_winner'): 
                                 actual_winner_val = n1 if m['actual_winner'] == m['p1_raw'] else n2
-
-                            if m['odds1'] < 1.01 and m['odds2'] < 1.01 and not actual_winner_val: 
-                                continue
+                            if m['odds1'] < 1.01 and m['odds2'] < 1.01 and not actual_winner_val: continue
                             
                             existing_match = None
                             res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2")\
                                 .eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
-                            
                             if res1.data and len(res1.data) > 0: existing_match = res1.data[0]
                             else:
                                 res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2")\
                                     .eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                                 if res2.data and len(res2.data) > 0: existing_match = res2.data[0]
                             
-                            db_match_id = None
-                            cached_ai = {}
-                            
+                            db_match_id = None; cached_ai = {}
                             if existing_match:
                                 db_match_id = existing_match['id']
                                 if actual_winner_val and not existing_match.get('actual_winner_name'):
                                      supabase.table("market_odds").update({"actual_winner_name": actual_winner_val}).eq("id", db_match_id).execute()
-                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1})")
                                      continue 
-                                     
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
-                                    cached_ai = {
-                                        'ai_text': existing_match.get('ai_analysis_text'),
-                                        'ai_fair_odds1': existing_match.get('ai_fair_odds1'),
-                                        'ai_fair_odds2': existing_match.get('ai_fair_odds2'),
-                                        'old_odds1': existing_match.get('odds1', 0),
-                                        'old_odds2': existing_match.get('odds2', 0)
-                                    }
+                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'),
+                                        'ai_fair_odds2': existing_match.get('ai_fair_odds2'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
 
-                            c1 = p1_obj.get('country', 'Unknown')
-                            c2 = p2_obj.get('country', 'Unknown')
+                            c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
-                            
-                            log(f"      ⚖️ Physics Context: Surface={surf}, BSI={bsi}, Location={notes}")
                             
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
-                            
                             style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
                             style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
-                            
                             has_real_report = bool(r1.get('strengths') and r2.get('strengths'))
 
                             surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                             surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                             
-                            # --- CALCULATE VEGAS FORM (NEU) ---
+                            # --- NEU: Vegas Call ---
                             vegas1 = await VegasFormEngine.calculate_vegas_form(n1)
                             vegas2 = await VegasFormEngine.calculate_vegas_form(n2)
                             
-                            is_hunter_pick_active = False
-                            hunter_pick_player = None
+                            is_hunter_pick_active = False; hunter_pick_player = None
 
                             if db_match_id and cached_ai and not actual_winner_val:
                                 log(f"   💰 Token Saver: Reusing AI Text")
                                 ai_text_final = cached_ai['ai_text']
                                 ai_text_final = re.sub(r'\[.*?\]', '', ai_text_final).strip()
-                                
-                                new_prob = recalculate_fair_odds_with_new_market(
-                                    old_fair_odds1=cached_ai['ai_fair_odds1'],
-                                    old_market_odds1=cached_ai['old_odds1'],
-                                    old_market_odds2=cached_ai['old_odds2'],
-                                    new_market_odds1=m['odds1'],
-                                    new_market_odds2=m['odds2']
-                                )
+                                new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                                
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
-                                
                                 kelly_advice = ""
                                 if bet_p1["is_bet"]:
                                     kelly_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                    is_hunter_pick_active = True
-                                    hunter_pick_player = n1
+                                    is_hunter_pick_active = True; hunter_pick_player = n1
                                 elif bet_p2["is_bet"]:
                                     kelly_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                    is_hunter_pick_active = True
-                                    hunter_pick_player = n2
-                                
+                                    is_hunter_pick_active = True; hunter_pick_player = n2
                                 ai_text_final += kelly_advice
                             else:
                                 f1_d = await fetch_player_form_hybrid(browser, n1)
@@ -1203,42 +1055,31 @@ async def run_pipeline():
                                 e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                 e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                 
-                                # --- V64.2: THE BRAIN TRANSPLANT (AI with VEGAS DATA) ---
+                                # NEU: Vegas Args
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_d, f2_d, vegas1, vegas2)
                                 
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, has_real_report, style_stats_p1, style_stats_p2, vegas1, vegas2)
                                 
-                                ai_text_base = ai.get('ai_text', 'No detailed analysis available.')
+                                ai_text_base = ai.get('ai_text', 'No detailed analysis available.').strip()
                                 ai_text_base = re.sub(r'\[.*?\]', '', ai_text_base).strip()
 
                                 fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                 fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                                
                                 p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
                                 p2_sentiment = 1.0 - p1_sentiment
-                                
                                 betting_advice = ""
                                 bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
-                                
                                 if bet_p1["is_bet"]:
                                     betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                    is_hunter_pick_active = True
-                                    hunter_pick_player = n1
+                                    is_hunter_pick_active = True; hunter_pick_player = n1
                                 elif bet_p2["is_bet"]:
                                     betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                    is_hunter_pick_active = True
-                                    hunter_pick_player = n2
-                                
+                                    is_hunter_pick_active = True; hunter_pick_player = n2
                                 ai_text_final = ai_text_base + betting_advice
                                 
-                                # Füge Vegas-Stats zur Analyse hinzu
+                                # NEU: Vegas Text
                                 ai_text_final += f" (Vegas Form: {n1}={vegas1['rating']}, {n2}={vegas2['rating']})"
-                                
-                                if style_stats_p1 and style_stats_p1['verdict'] != "Neutral":
-                                    ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']} vs {style_stats_p1['style']})"
-                                if style_stats_p2 and style_stats_p2['verdict'] != "Neutral":
-                                    ai_text_final += f" (Note: {n2} {style_stats_p2['verdict']} vs {style_stats_p2['style']})"
                             
                             data = {
                                 "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
@@ -1251,7 +1092,6 @@ async def run_pipeline():
                             }
                             
                             final_match_id = None
-                            
                             if db_match_id:
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
@@ -1264,22 +1104,12 @@ async def run_pipeline():
 
                             if final_match_id and is_hunter_pick_active:
                                 history_payload = {
-                                    "match_id": final_match_id,
-                                    "odds1": m['odds1'],
-                                    "odds2": m['odds2'],
-                                    "fair_odds1": fair1,
-                                    "fair_odds2": fair2,
-                                    "is_hunter_pick": is_hunter_pick_active,
-                                    "pick_player_name": hunter_pick_player,
-                                    "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
+                                    "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": is_hunter_pick_active,
+                                    "pick_player_name": hunter_pick_player, "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                 }
-                                try:
-                                    supabase.table("odds_history").insert(history_payload).execute()
-                                except Exception as hist_err:
-                                    log(f"      ⚠️ History Log Error: {hist_err}")
-                        else:
-                            pass
-                                    
+                                try: supabase.table("odds_history").insert(history_payload).execute()
+                                except: pass
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     log("🏁 Cycle Finished.")
