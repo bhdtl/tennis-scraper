@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V62.0 - QUANTUM FORM ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V63.0 - SCORE PARSER FIX)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -181,12 +181,6 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
 class QuantumFormEngine:
     """
     SOTA Rating System based on Performance vs Odds + Score Dominance.
-    Decoded Logic:
-    1. Calculate Implied Probability (1/Odds).
-    2. Assess Outcome (Win/Loss).
-    3. Analyze Dominance (Sets, Games, Tiebreaks).
-    4. Calculate 'Delta': How much did the player outperform expectations?
-    5. Map to 0-10 Color Scale.
     """
     
     @staticmethod
@@ -209,10 +203,8 @@ class QuantumFormEngine:
     def parse_score_details(score_str: str, player_won: bool) -> Dict[str, float]:
         """
         Parses '6-4 6-7(5) 6-1' into granular stats.
-        Returns a 'Dominance Score' (0.0 to 1.0).
         """
         if not score_str or "ret" in score_str.lower() or "wo" in score_str.lower():
-            # Neutral dominance for incomplete matches
             return {"dominance": 0.5, "tiebreaks_won": 0, "tiebreaks_lost": 0, "sets_played": 0}
 
         matches = re.findall(r'(\d+)-(\d+)', score_str)
@@ -226,20 +218,9 @@ class QuantumFormEngine:
         tiebreaks_won = 0
         tiebreaks_lost = 0
 
-        # Heuristic to detect who is P1 in the score string
-        # Usually score is written from winner's perspective, but sometimes not.
-        # We assume standard formatting: "Winner Loser" means score is "6-4 6-2".
-        # If player_won=True, we take the left side as their games.
-        
         for s in matches:
             l = int(s[0])
             r = int(s[1])
-            
-            # Determine which side is 'our' player. 
-            # If player_won is True, we assume the sets where left > right correspond to a win, 
-            # or if the final tally supports it.
-            # Simplified: Assuming Score string is always "Winner's Score".
-            
             p_games = l if player_won else r
             o_games = r if player_won else l
             
@@ -255,15 +236,11 @@ class QuantumFormEngine:
         total_games = games_won + games_lost
         if total_games == 0: return {"dominance": 0.5}
 
-        # Dominance Formula: % Games Won + Bonus for Straight Sets
         game_ratio = games_won / total_games
         dominance = game_ratio
         
-        # Bonus for straight sets win
         if player_won and sets_lost == 0: dominance += 0.1
-        # Penalty for being dragged deep if winning
         if player_won and sets_lost > 0: dominance -= 0.05
-        # Bonus for fighting hard if losing
         if not player_won and sets_won > 0: dominance += 0.1
         
         return {
@@ -277,50 +254,33 @@ class QuantumFormEngine:
         The Core Algo: Calculates the Rating Delta for a single match.
         """
         if odds <= 1.0: odds = 1.01
-        implied_prob = 1 / odds
         
         details = QuantumFormEngine.parse_score_details(score_str, won)
         dominance = details.get("dominance", 0.5)
         
-        # Base Performance Score (0 to 10 scale context)
-        # We want a delta to add to the base rating of 6.5
-        
         delta = 0.0
         
         if won:
-            # SCENARIO: WIN
             if odds < 1.20: 
-                # Expected Win. Small gain unless dominant.
                 delta = 0.1 + (dominance * 0.2) 
             elif 1.20 <= odds <= 2.00:
-                # Solid Win.
                 delta = 0.3 + (dominance * 0.3)
             elif 2.00 < odds <= 3.00:
-                # Good Upset.
                 delta = 0.8 + (dominance * 0.4)
             elif odds > 3.00:
-                # HUGE Upset (The Moutet Scenario).
-                # Example: Odds 21.0 -> Implied 4%. Win is huge.
-                log_boost = math.log(odds, 2) # log2(21) approx 4.3
+                log_boost = math.log(odds, 2) 
                 delta = 1.0 + (log_boost * 0.3)
         else:
-            # SCENARIO: LOSS
             if odds < 1.20:
-                # CATASTROPHIC LOSS (The Alcaraz Scenario).
-                # Implied > 83%. Loss is bad.
-                delta = -1.5 - (1.0 - dominance) # Penalty higher if crushed
+                delta = -1.5 - (1.0 - dominance)
             elif 1.20 <= odds <= 2.00:
-                # Disappointing Loss.
                 delta = -0.6 - (0.5 - dominance)
             elif 2.00 < odds <= 3.00:
-                # Expected Loss.
-                # If dominance is high (close match), penalty is tiny or 0.
-                if dominance > 0.45: delta = +0.1 # "Moral Victory"
+                if dominance > 0.45: delta = +0.1 
                 else: delta = -0.2
             elif odds > 3.00:
-                # Longshot Loss. No one expected a win.
-                if dominance > 0.4: delta = +0.2 # Fought well
-                else: delta = 0.0 # Neutral
+                if dominance > 0.4: delta = +0.2
+                else: delta = 0.0
 
         return delta
 
@@ -333,44 +293,33 @@ class QuantumFormEngine:
         current_rating = 6.5
         history_log = []
         
-        # Sort matches by date ascending (oldest first) to apply momentum
         sorted_matches = sorted(matches, key=lambda x: x.get('created_at', ''))
-        
-        # Weighting: Recent matches matter more
-        # Weights for last 5: [0.6, 0.8, 1.0, 1.2, 1.4]
         
         for i, m in enumerate(sorted_matches):
             is_p1 = player_name.lower() in m['player1_name'].lower()
             odds = m['odds1'] if is_p1 else m['odds2']
-            
-            # Identify winner properly
             winner_name = m.get('actual_winner_name', '')
             won = False
             if winner_name:
                 won = player_name.lower() in winner_name.lower()
             
             score_str = m.get('score', '')
-            
             match_delta = cls.calculate_match_performance(odds, won, score_str)
             
-            # Momentum Weight
-            weight = 0.5 + (i * 0.2) # Increases for recent matches
-            
+            weight = 0.5 + (i * 0.2)
             weighted_delta = match_delta * weight
             current_rating += weighted_delta
             
             history_log.append(f"{'✅' if won else '❌'} (Odds: {odds}, Delta: {match_delta:+.2f})")
 
-        # Clamp Rating 0-10
         final_rating = max(0.0, min(10.0, current_rating))
-        
         visuals = cls.get_rating_visuals(final_rating)
         
         return {
             "score": round(final_rating, 2),
             "color_data": visuals,
             "text": f"{visuals['desc']} ({visuals['color']})",
-            "history_summary": " | ".join(history_log[-3:]) # Last 3 matches
+            "history_summary": " | ".join(history_log[-3:]) 
         }
 
 # =================================================================
@@ -422,13 +371,8 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     finally: await page.close()
     return metadata
 
-# --- V62.0: INTEGRATING QUANTUM FORM ENGINE ---
 async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> Dict[str, Any]:
-    """
-    Fetches DB history and calculates the 'Vegas-Beater' Score.
-    """
     try:
-        # Fetch last 8 matches to get a good sample of 5 valid ones
         res = supabase.table("market_odds")\
             .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
@@ -440,15 +384,13 @@ async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> 
         matches = res.data
         if not matches: return {"text": "No Data", "score": 6.5}
         
-        # Calculate Logic
-        form_data = QuantumFormEngine.calculate_player_form(matches[:5], player_last_name) # Analyze last 5
+        form_data = QuantumFormEngine.calculate_player_form(matches[:5], player_last_name) 
         return form_data
         
     except Exception as e:
         log(f"   ⚠️ Form Calc Error {player_last_name}: {e}")
         return {"text": "Calc Error", "score": 6.5}
 
-# --- V61.0: STYLE MATCHUP ANALYZER ---
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
@@ -654,7 +596,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE & SOTA QUANT ENGINE
+# 6. MATH CORE
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -736,7 +678,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
     
-    # Use the QUANTUM Scores if available, otherwise fallback
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     
@@ -903,7 +844,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
-    # Pass the advanced Quantum Form data into the prompt
     f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
     
@@ -945,7 +885,6 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
     
-    # Force override form scores with our calculated ones
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
     
@@ -1032,7 +971,6 @@ def parse_matches_locally_v5(html, p_names):
                     final_o2 = all_odds[1]
                     
                     winner_found = None
-                    # Detailed Score Parsing to assist scraper
                     score_cell_p1 = prev_row.find('td', class_='result')
                     score_cell_p2 = row.find('td', class_='result')
                     
@@ -1065,6 +1003,7 @@ def parse_matches_locally_v5(html, p_names):
 
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results & Scores...")
+    # --- V63.0 FIX: Select Pending Matches ---
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -1079,7 +1018,6 @@ async def update_past_results(browser: Browser):
             table = soup.find('table', class_='result')
             if not table: continue
             
-            # Use 'tbody' if exists to skip header messes
             rows = table.find_all('tr')
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
@@ -1092,11 +1030,14 @@ async def update_past_results(browser: Browser):
                     p2_norm = normalize_db_name(pm['player2_name'])
                     
                     if p1_norm in row_norm and p2_norm in row_norm:
-                        # Extract detailed score
-                        score_cleaned = re.sub(r'[^0-9\-\s\(\)ret\.wo]', '', row_text).strip()
-                        # Better Score extraction logic needed here if regex fails, but let's stick to simple
+                        # --- V63.0 FIX: Robust Regex for Score ---
+                        # Extract "6-4 7-6(5)" or "6-2 6-3" or "ret." or "w.o."
+                        pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
+                        matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
+                        score_cleaned = " ".join(matches).strip() if matches else ""
+
+                        # Score logic for determining winner
                         score_matches = re.findall(r'(\d+)-(\d+)', row_text)
-                        
                         p1_sets = 0
                         p2_sets = 0
                         
@@ -1120,17 +1061,17 @@ async def update_past_results(browser: Browser):
                             if idx_p1 < idx_p2: winner = pm['player1_name']
                             else: winner = pm['player2_name']
                             
-                            # Validierung durch Sets
                             if not is_ret:
                                 if p1_sets > p2_sets: winner = pm['player1_name']
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
                             if winner:
-                                # Save Winner AND Score String
+                                # --- V63.0 FIX: SAVE THE SCORE! ---
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
-                                    "score": score_cleaned
+                                    "score": score_cleaned  # <--- THIS WAS MISSING
                                 }).eq("id", pm['id']).execute()
+                                
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
                                 log(f"      ✅ SETTLED: {winner} (Score: {score_cleaned})")
                                 break
@@ -1138,7 +1079,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V62.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V63.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1170,7 +1111,6 @@ async def run_pipeline():
                             n2 = p2_obj['last_name']
                             if n1 == n2: continue
                             
-                            # Basic Filters
                             if p1_obj.get('tour') != p2_obj.get('tour'):
                                 if "united cup" not in m['tour'].lower(): continue 
 
@@ -1214,14 +1154,11 @@ async def run_pipeline():
                             hunter_pick_player = None
 
                             if db_match_id and cached_ai:
-                                # Quick Recalculation
                                 new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 ai_text_final = cached_ai['ai_text']
                             else:
-                                # FULL QUANTUM ANALYSIS
-                                # Replaces old fetch_player_form_hybrid
                                 f1_data = await fetch_player_form_quantum(browser, n1)
                                 f2_data = await fetch_player_form_quantum(browser, n2)
                                 
