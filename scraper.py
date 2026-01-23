@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V72.0 - ANCHOR & FORENSIC)...")
+log("🔌 Initialisiere Neural Scout (V73.0 - FULL MARKET MOVEMENT)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -952,7 +952,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V72.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V73.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1069,10 +1069,18 @@ async def run_pipeline():
                                 if res_insert.data: final_match_id = res_insert.data[0]['id']
                                 log(f"💾 Saved: {n1} vs {n2}")
                             
-                            if final_match_id and is_hunter_pick_active:
+                            # --- V73.0: FULL MOVEMENT TRACKING LOGIC ---
+                            has_odds_moved = False
+                            if db_match_id and cached_ai:
+                                if abs(cached_ai['old_odds1'] - m['odds1']) > 0.001 or abs(cached_ai['old_odds2'] - m['odds2']) > 0.001:
+                                    has_odds_moved = True
+                            else:
+                                has_odds_moved = True # New match always tracks first movement
+
+                            if final_match_id and (has_odds_moved or is_hunter_pick_active):
                                 h_data = {
                                     "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
-                                    "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": True,
+                                    "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": is_hunter_pick_active,
                                     "pick_player_name": hunter_pick_player,
                                     "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                 }
