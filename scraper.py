@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V67.0 - DEEP TEXT SCANNER)...")
+log("🔌 Initialisiere Neural Scout (V68.0 - SCORE AGGREGATOR)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -724,7 +724,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V67.0: HYBRID PARSER (TD.RESULT + TD.SCORE + REGEX) ---
+# --- V68.0: SCORE AGGREGATOR ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -769,23 +769,42 @@ def parse_matches_locally_v5(html, p_names):
                 if len(all_odds) >= 2:
                     final_o1 = all_odds[0]; final_o2 = all_odds[1]
                     winner_found = None
-                    # V66.0: Aggressive Winner Check in Parser
-                    score_cell_p1 = prev_row.find('td', class_='result') or prev_row.find('td', class_='score')
-                    score_cell_p2 = row.find('td', class_='result') or row.find('td', class_='score')
+                    final_score = ""
                     
-                    if score_cell_p1 and score_cell_p2:
-                        t1 = score_cell_p1.get_text(strip=True); t2 = score_cell_p2.get_text(strip=True)
-                        if t1.isdigit() and t2.isdigit():
-                            s1 = int(t1); s2 = int(t2)
-                            if s1 >= 2 or s2 >= 2:
-                                if s1 > s2: winner_found = pending_p1_raw
-                                elif s2 > s1: winner_found = p2_raw
+                    # --- V68.0: AGGREGATE ALL SCORE CELLS ---
+                    # Find all result cells in both rows
+                    res_cells_p1 = prev_row.find_all('td', class_='result')
+                    res_cells_p2 = row.find_all('td', class_='result')
+                    
+                    # If we have matching result columns (e.g. 5 sets = 5 columns)
+                    if res_cells_p1 and res_cells_p2 and len(res_cells_p1) == len(res_cells_p2):
+                        s1_total = 0; s2_total = 0
+                        score_parts = []
+                        valid_score = True
+                        
+                        for idx, c1 in enumerate(res_cells_p1):
+                            t1 = c1.get_text(strip=True)
+                            t2 = res_cells_p2[idx].get_text(strip=True)
+                            
+                            if t1.isdigit() and t2.isdigit():
+                                score_parts.append(f"{t1}-{t2}")
+                                if int(t1) > int(t2): s1_total += 1
+                                elif int(t2) > int(t1): s2_total += 1
+                            elif t1 or t2: # Partial score or empty
+                                valid_score = False
+                        
+                        if s1_total >= 2 or s2_total >= 2:
+                            if s1_total > s2_total: winner_found = pending_p1_raw
+                            else: winner_found = p2_raw
+                            final_score = " ".join(score_parts)
+
                     found.append({
                         "p1_raw": pending_p1_raw, "p2_raw": p2_raw, 
                         "tour": clean_tournament_name(current_tour), 
                         "time": pending_time, "odds1": final_o1, "odds2": final_o2,
                         "p1_href": pending_p1_href, "p2_href": p2_href,
-                        "actual_winner": winner_found 
+                        "actual_winner": winner_found,
+                        "score": final_score # V68.0: ADDED SCORE FIELD
                     })
                 pending_p1_raw = None
             else:
@@ -794,10 +813,9 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V67.0: THE DEEP TEXT SCANNER (Auditor) ---
+# --- V67.0: AUDITOR (SAVES SCORE STRING) ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results & Scores (V67.0)...")
-    # Fetch pending matches
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -806,7 +824,6 @@ async def update_past_results(browser: Browser):
         t_date = datetime.now() - timedelta(days=day_off)
         page = await browser.new_page()
         try:
-            # Check the RESULTS page which has cleaner layout for finished matches
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
@@ -816,83 +833,56 @@ async def update_past_results(browser: Browser):
             rows = table.find_all('tr')
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
-                
-                # --- V67.0 CORE: FULL TEXT SCAN ---
-                row_text_raw = row.get_text(separator=" ", strip=True) # "12:00 Nadal - Djokovic 6-4 6-2"
-                row_norm = normalize_text(row_text_raw).lower()
+                row_text = row.get_text(separator=" ", strip=True).lower()
+                row_norm = normalize_text(row_text).lower()
 
                 for pm in list(safe_to_check):
                     p1_norm = normalize_db_name(pm['player1_name'])
                     p2_norm = normalize_db_name(pm['player2_name'])
-                    
-                    # Verify BOTH players are in the text row
                     if p1_norm in row_norm and p2_norm in row_norm:
                         score_cleaned = ""
+                        res_td = row.find("td", class_="result") or row.find("td", class_="score")
+                        if res_td:
+                            txt = res_td.get_text(strip=True)
+                            if re.search(r'\d-\d', txt): score_cleaned = txt
                         
-                        # 1. Try to find score via regex in the FULL TEXT
-                        # Matches patterns like: 6-4 6-3 | 6-7 6-2 6-0 | ret. | w.o.
-                        pattern = r'((?:\d{1,2}-\d{1,2}(?:\(\d+\))?\s*)+|ret\.|w\.o\.)'
-                        # We use findall to get all candidates, then filter logic
-                        candidates = re.findall(pattern, row_text_raw)
-                        
-                        best_candidate = ""
-                        for c in candidates:
-                            c = c.strip()
-                            # It must contain at least one dash or be a status
-                            if "-" in c or "ret" in c.lower() or "w.o" in c.lower():
-                                # Check if it looks like a score (digit-digit)
-                                if re.search(r'\d-\d', c):
-                                    # Filter out short odds like 1-2 (unlikely to be 1-2 score without context)
-                                    # But tennis scores can be 6-0.
-                                    # Heuristic: Accumulate sets
-                                    best_candidate += c + " "
-                                elif "ret" in c.lower() or "w.o" in c.lower():
-                                    best_candidate += c
-                        
-                        score_cleaned = best_candidate.strip()
+                        if not score_cleaned:
+                            pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
+                            all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
+                            valid_sets = []
+                            for m in all_matches:
+                                if "ret" in m or "w.o" in m: valid_sets.append(m)
+                                elif "-" in m:
+                                    try:
+                                        l, r = map(int, m.split('(')[0].split('-'))
+                                        if (l>=6 or r>=6) or (l+r >= 6): valid_sets.append(m)
+                                    except: pass
+                            score_cleaned = " ".join(valid_sets).strip()
 
-                        # 2. Winner Determination
                         score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
                         p1_sets = 0; p2_sets = 0
-                        
-                        # Need to identify who is left/right in the text relative to our DB
-                        # Usually text is "Winner - Loser" or "P1 - P2"
-                        # Finding positions in text
-                        idx_p1 = row_norm.find(p1_norm)
-                        idx_p2 = row_norm.find(p2_norm)
-                        
-                        p1_is_left_in_text = idx_p1 < idx_p2
-                        
                         for s in score_matches:
                             try:
-                                l = int(s[0]); r = int(s[1])
-                                if l > r: 
-                                    if p1_is_left_in_text: p1_sets += 1
-                                    else: p2_sets += 1
-                                elif r > l:
-                                    if p1_is_left_in_text: p2_sets += 1
-                                    else: p1_sets += 1
+                                sl = int(s[0]); sr = int(s[1])
+                                if sl > sr: p1_sets += 1
+                                elif sr > sl: p2_sets += 1
                             except: pass
                         
-                        is_ret = "ret" in row_norm or "w.o" in row_norm
+                        is_ret = "ret." in row_text or "w.o." in row_text
                         sets_needed = 2
                         if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()):
                             sets_needed = 3
                         
                         winner = None
                         if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
-                            if is_ret:
-                                # In retirement, usually the one listed first (Winner) advanced
-                                # Unless we parse "X ret." specifically.
-                                # Simple logic: Left side wins if retirement usually
-                                if p1_is_left_in_text: winner = pm['player1_name']
-                                else: winner = pm['player2_name']
-                            else:
+                            idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
+                            if idx_p1 < idx_p2: winner = pm['player1_name']
+                            else: winner = pm['player2_name']
+                            if not is_ret:
                                 if p1_sets > p2_sets: winner = pm['player1_name']
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
                             if winner:
-                                # SAVE SCORE TO DB
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
                                     "score": score_cleaned
@@ -904,7 +894,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V67.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V68.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -944,6 +934,17 @@ async def run_pipeline():
                             db_match_id = None; cached_ai = {}
                             if existing_match:
                                 db_match_id = existing_match['id']
+                                # --- V68.0: LIVE SCORE UPDATE LOGIC ---
+                                actual_winner_val = m.get('actual_winner')
+                                if actual_winner_val and not existing_match.get('actual_winner_name'):
+                                     # UPDATE WINNER AND SCORE!
+                                     update_payload = {"actual_winner_name": actual_winner_val}
+                                     if m.get('score'): update_payload["score"] = m['score']
+                                     
+                                     supabase.table("market_odds").update(update_payload).eq("id", db_match_id).execute()
+                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1})")
+                                     continue 
+                                     
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
