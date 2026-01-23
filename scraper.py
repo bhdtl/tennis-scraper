@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V66.0 - QUANTUM FORM ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V67.0 - DEEP TEXT SCANNER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -160,13 +160,9 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     return score
 
 # =================================================================
-# 3. NEW: QUANTUM FORM ENGINE (THE VEGAS-BEATER)
+# 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
 # =================================================================
 class QuantumFormEngine:
-    """
-    SOTA Rating System: Bewertet Performance relativ zu den Quoten + Score Dominanz.
-    """
-    
     @staticmethod
     def get_rating_visuals(score: float) -> Dict[str, str]:
         s = round(score, 1)
@@ -184,133 +180,68 @@ class QuantumFormEngine:
 
     @staticmethod
     def parse_score_details(score_str: str, player_won: bool) -> Dict[str, float]:
-        """Extrahiert 'Dominanz' aus einem Score-String."""
         if not score_str or "ret" in score_str.lower() or "wo" in score_str.lower():
             return {"dominance": 0.5}
-
         matches = re.findall(r'(\d+)-(\d+)', score_str)
         if not matches: return {"dominance": 0.5}
-
         games_won = 0; games_lost = 0; sets_won = 0; sets_lost = 0
-        
-        # Annahme: Der Score ist aus Sicht des Gewinners geschrieben, außer wir wissen es anders.
-        # Aber TennisExplorer schreibt Scores oft "Winner - Loser".
-        # Wenn player_won = True, nehmen wir die linke Zahl.
-        
         for s in matches:
             l = int(s[0]); r = int(s[1])
             p_games = l if player_won else r
             o_games = r if player_won else l
-            
-            games_won += p_games
-            games_lost += o_games
+            games_won += p_games; games_lost += o_games
             if p_games > o_games: sets_won += 1
             elif o_games > p_games: sets_lost += 1
-
         total_games = games_won + games_lost
         if total_games == 0: return {"dominance": 0.5}
-
-        game_ratio = games_won / total_games
-        dominance = game_ratio
-        
-        # Bonus für glatte Siege
+        dominance = games_won / total_games
         if player_won and sets_lost == 0: dominance += 0.1
-        # Bonus für knappe Niederlagen (als Underdog wichtig)
         if not player_won and sets_won > 0: dominance += 0.15
-        
         return {"dominance": min(max(dominance, 0.0), 1.0)}
 
     @staticmethod
     def calculate_match_performance(odds: float, won: bool, score_str: str) -> float:
-        """
-        Der Kern-Algorithmus: Berechnet das Rating-Delta für ein einzelnes Match.
-        """
         if odds <= 1.0: odds = 1.01
-        
         details = QuantumFormEngine.parse_score_details(score_str, won)
         dominance = details.get("dominance", 0.5)
-        
         delta = 0.0
-        
         if won:
-            # SCENARIO: WIN
-            if odds < 1.20: 
-                # Pflichtsieg. Wenig Punkte, außer totale Zerstörung.
-                delta = 0.1 + (dominance * 0.1) 
-            elif 1.20 <= odds <= 2.00:
-                # Solider Sieg.
-                delta = 0.3 + (dominance * 0.2)
-            elif 2.00 < odds <= 3.00:
-                # Starker Upset.
-                delta = 0.8 + (dominance * 0.3)
-            elif odds > 3.00:
-                # HUGE Upset (Moutet Scenario).
-                log_boost = math.log(odds, 2) # log2(21) ist ca 4.3
-                delta = 1.0 + (log_boost * 0.3)
+            if odds < 1.20: delta = 0.1 + (dominance * 0.1) 
+            elif 1.20 <= odds <= 2.00: delta = 0.3 + (dominance * 0.2)
+            elif 2.00 < odds <= 3.00: delta = 0.8 + (dominance * 0.3)
+            elif odds > 3.00: log_boost = math.log(odds, 2); delta = 1.0 + (log_boost * 0.3)
         else:
-            # SCENARIO: LOSS
-            if odds < 1.20:
-                # Alcaraz verliert gegen Noname -> Katastrophe.
-                delta = -1.5 - (1.0 - dominance) 
-            elif 1.20 <= odds <= 2.00:
-                # Enttäuschend.
-                delta = -0.6 - (0.5 - dominance)
+            if odds < 1.20: delta = -1.5 - (1.0 - dominance) 
+            elif 1.20 <= odds <= 2.00: delta = -0.6 - (0.5 - dominance)
             elif 2.00 < odds <= 3.00:
-                # Erwartbare Niederlage.
-                # Wenn dominance hoch (knappes Match), kleiner Bonus oder 0.
-                if dominance > 0.45: delta = +0.1 # "Moral Victory"
+                if dominance > 0.45: delta = +0.1 
                 else: delta = -0.2
             elif odds > 3.00:
-                # Longshot Loss. Egal.
-                if dominance > 0.4: delta = +0.2 # Gut gekämpft
+                if dominance > 0.4: delta = +0.2 
                 else: delta = 0.0
-
         return delta
 
     @classmethod
     def calculate_player_form(cls, matches: List[Dict], player_name: str) -> Dict[str, Any]:
-        """Aggregiert die letzten N Matches zu einem Rating."""
-        current_rating = 6.5 # Startwert
+        current_rating = 6.5 
         history_log = []
-        
-        # Sortiere nach Datum aufsteigend für Momentum
         sorted_matches = sorted(matches, key=lambda x: x.get('created_at', ''))
-        
         for i, m in enumerate(sorted_matches):
-            # Wer ist der Spieler?
             is_p1 = player_name.lower() in m['player1_name'].lower()
-            # Quote des Spielers
             odds = m['odds1'] if is_p1 else m['odds2']
-            
-            # Hat er gewonnen?
             winner_name = m.get('actual_winner_name', '')
             won = False
-            if winner_name:
-                won = player_name.lower() in winner_name.lower()
-            
+            if winner_name: won = player_name.lower() in winner_name.lower()
             score_str = m.get('score', '')
-            
             match_delta = cls.calculate_match_performance(odds, won, score_str)
-            
-            # Gewichtung: Neueste Spiele zählen mehr
             weight = 0.5 + (i * 0.2) 
             weighted_delta = match_delta * weight
-            
             current_rating += weighted_delta
-            
             icon = '✅' if won else '❌'
             history_log.append(f"{icon}(@{odds})")
-
-        # Clamp 0-10
         final_rating = max(0.0, min(10.0, current_rating))
         visuals = cls.get_rating_visuals(final_rating)
-        
-        return {
-            "score": round(final_rating, 2),
-            "color_data": visuals,
-            "text": f"{visuals['desc']} ({visuals['color']})",
-            "history_summary": " ".join(history_log[-5:]) 
-        }
+        return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
 
 # =================================================================
 # 4. GEMINI ENGINE
@@ -360,28 +291,17 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     finally: await page.close()
     return metadata
 
-# --- NEW: QUANTUM FORM FETCHER ---
 async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> Dict[str, Any]:
-    """
-    Holt die Match-Historie aus der DB und berechnet den Quantum Score.
-    """
     try:
-        # Hole Matches wo der Spieler dabei war UND ein Winner feststeht
         res = supabase.table("market_odds")\
             .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
-            .order("created_at", desc=True)\
-            .limit(8)\
-            .execute()
-        
+            .order("created_at", desc=True).limit(8).execute()
         matches = res.data
         if not matches: return {"text": "No Data", "score": 6.5, "history_summary": ""}
-        
-        # Nutze die letzten 5 validen Matches
         form_data = QuantumFormEngine.calculate_player_form(matches[:5], player_last_name) 
         return form_data
-        
     except Exception as e:
         log(f"   ⚠️ Form Calc Error {player_last_name}: {e}")
         return {"text": "Calc Error", "score": 6.5, "history_summary": ""}
@@ -625,7 +545,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     c1_score = get_offense(s1); c2_score = get_offense(s2)
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
-    # Use Quantum Form Scores!
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
     style_boost = 0
@@ -756,15 +675,12 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
-    # INJECT QUANTUM FORM DATA
     f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
-    
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
-    
     prompt = f"""
     ACT AS: World-Class Tennis Scout & Physicist.
     TASK: Simulate match outcome.
@@ -785,7 +701,6 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     """
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
-    # Override AI's form guess with our hard calculation
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
     return data
@@ -809,7 +724,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V66.0: HYBRID PARSER (TD.RESULT + TD.SCORE + REGEX) ---
+# --- V67.0: HYBRID PARSER (TD.RESULT + TD.SCORE + REGEX) ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -879,9 +794,10 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V66.0: AUDITOR (SAVES SCORE STRING) ---
+# --- V67.0: THE DEEP TEXT SCANNER (Auditor) ---
 async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores (V66.0)...")
+    log("🏆 The Auditor: Checking Real-Time Results & Scores (V67.0)...")
+    # Fetch pending matches
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -890,6 +806,7 @@ async def update_past_results(browser: Browser):
         t_date = datetime.now() - timedelta(days=day_off)
         page = await browser.new_page()
         try:
+            # Check the RESULTS page which has cleaner layout for finished matches
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
@@ -899,61 +816,83 @@ async def update_past_results(browser: Browser):
             rows = table.find_all('tr')
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
-                row_text = row.get_text(separator=" ", strip=True).lower()
-                row_norm = normalize_text(row_text).lower()
+                
+                # --- V67.0 CORE: FULL TEXT SCAN ---
+                row_text_raw = row.get_text(separator=" ", strip=True) # "12:00 Nadal - Djokovic 6-4 6-2"
+                row_norm = normalize_text(row_text_raw).lower()
 
                 for pm in list(safe_to_check):
                     p1_norm = normalize_db_name(pm['player1_name'])
                     p2_norm = normalize_db_name(pm['player2_name'])
+                    
+                    # Verify BOTH players are in the text row
                     if p1_norm in row_norm and p2_norm in row_norm:
-                        # V66.0: HYBRID SCORE EXTRACTION
                         score_cleaned = ""
-                        # Priority 1: Specific Cells
-                        res_td = row.find("td", class_="result") or row.find("td", class_="score")
-                        if res_td:
-                            txt = res_td.get_text(strip=True)
-                            if re.search(r'\d-\d', txt): score_cleaned = txt
                         
-                        # Priority 2: Full Row Regex
-                        if not score_cleaned:
-                            pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
-                            all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
-                            valid_sets = []
-                            for m in all_matches:
-                                if "ret" in m or "w.o" in m: valid_sets.append(m)
-                                elif "-" in m:
-                                    try:
-                                        l, r = map(int, m.split('(')[0].split('-'))
-                                        if (l>=6 or r>=6) or (l+r >= 6): valid_sets.append(m)
-                                    except: pass
-                            score_cleaned = " ".join(valid_sets).strip()
+                        # 1. Try to find score via regex in the FULL TEXT
+                        # Matches patterns like: 6-4 6-3 | 6-7 6-2 6-0 | ret. | w.o.
+                        pattern = r'((?:\d{1,2}-\d{1,2}(?:\(\d+\))?\s*)+|ret\.|w\.o\.)'
+                        # We use findall to get all candidates, then filter logic
+                        candidates = re.findall(pattern, row_text_raw)
+                        
+                        best_candidate = ""
+                        for c in candidates:
+                            c = c.strip()
+                            # It must contain at least one dash or be a status
+                            if "-" in c or "ret" in c.lower() or "w.o" in c.lower():
+                                # Check if it looks like a score (digit-digit)
+                                if re.search(r'\d-\d', c):
+                                    # Filter out short odds like 1-2 (unlikely to be 1-2 score without context)
+                                    # But tennis scores can be 6-0.
+                                    # Heuristic: Accumulate sets
+                                    best_candidate += c + " "
+                                elif "ret" in c.lower() or "w.o" in c.lower():
+                                    best_candidate += c
+                        
+                        score_cleaned = best_candidate.strip()
 
-                        # Determine Winner from Score
+                        # 2. Winner Determination
                         score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
                         p1_sets = 0; p2_sets = 0
+                        
+                        # Need to identify who is left/right in the text relative to our DB
+                        # Usually text is "Winner - Loser" or "P1 - P2"
+                        # Finding positions in text
+                        idx_p1 = row_norm.find(p1_norm)
+                        idx_p2 = row_norm.find(p2_norm)
+                        
+                        p1_is_left_in_text = idx_p1 < idx_p2
+                        
                         for s in score_matches:
                             try:
-                                sl = int(s[0]); sr = int(s[1])
-                                if sl > sr: p1_sets += 1
-                                elif sr > sl: p2_sets += 1
+                                l = int(s[0]); r = int(s[1])
+                                if l > r: 
+                                    if p1_is_left_in_text: p1_sets += 1
+                                    else: p2_sets += 1
+                                elif r > l:
+                                    if p1_is_left_in_text: p2_sets += 1
+                                    else: p1_sets += 1
                             except: pass
                         
-                        is_ret = "ret." in row_text or "w.o." in row_text
-                        sets_needed = 2 # Default
+                        is_ret = "ret" in row_norm or "w.o" in row_norm
+                        sets_needed = 2
                         if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()):
                             sets_needed = 3
                         
                         winner = None
                         if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
-                            idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
-                            if idx_p1 < idx_p2: winner = pm['player1_name']
-                            else: winner = pm['player2_name']
-                            if not is_ret:
+                            if is_ret:
+                                # In retirement, usually the one listed first (Winner) advanced
+                                # Unless we parse "X ret." specifically.
+                                # Simple logic: Left side wins if retirement usually
+                                if p1_is_left_in_text: winner = pm['player1_name']
+                                else: winner = pm['player2_name']
+                            else:
                                 if p1_sets > p2_sets: winner = pm['player1_name']
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
                             if winner:
-                                # SAVE SCORE TO DB! IMPORTANT!
+                                # SAVE SCORE TO DB
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
                                     "score": score_cleaned
@@ -965,7 +904,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V66.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V67.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1022,13 +961,11 @@ async def run_pipeline():
                             is_hunter_pick_active = False; hunter_pick_player = None
                             
                             if db_match_id and cached_ai:
-                                # RECALCULATION LOGIC FOR ODDS UPDATES
                                 new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 ai_text_final = cached_ai['ai_text']
                             else:
-                                # NEW QUANTUM CALCULATION
                                 f1_data = await fetch_player_form_quantum(browser, n1)
                                 f2_data = await fetch_player_form_quantum(browser, n2)
                                 elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
@@ -1069,7 +1006,6 @@ async def run_pipeline():
                             
                             final_match_id = None
                             if db_match_id:
-                                # UPDATE ODDS LOGIC
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
                                 log(f"🔄 Updated: {n1} vs {n2}")
