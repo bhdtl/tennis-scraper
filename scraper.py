@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V68.0 - SCORE AGGREGATOR)...")
+log("🔌 Initialisiere Neural Scout (V70.0 - VERTICAL STITCHER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -724,7 +724,7 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V68.0: SCORE AGGREGATOR ---
+# --- V70.0: VERTICAL STITCHER PARSER ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -771,31 +771,51 @@ def parse_matches_locally_v5(html, p_names):
                     winner_found = None
                     final_score = ""
                     
-                    # --- V68.0: AGGREGATE ALL SCORE CELLS ---
-                    # Find all result cells in both rows
-                    res_cells_p1 = prev_row.find_all('td', class_='result')
-                    res_cells_p2 = row.find_all('td', class_='result')
+                    # --- V70.0: VERTICAL STITCHER LOGIC ---
+                    sets_p1 = prev_row.find_all('td')
+                    sets_p2 = row.find_all('td')
                     
-                    # If we have matching result columns (e.g. 5 sets = 5 columns)
-                    if res_cells_p1 and res_cells_p2 and len(res_cells_p1) == len(res_cells_p2):
-                        s1_total = 0; s2_total = 0
+                    # Identifiziere Spaltenstart für Scores (meist nach Name/Odds)
+                    # Wir suchen nach der Spalte, die 'score' im Class hat oder einfach numerisch ist nach dem Namen
+                    score_start_idx = -1
+                    for idx, c in enumerate(sets_p1):
+                        if 'score' in c.get('class', []):
+                            score_start_idx = idx
+                            break
+                    
+                    if score_start_idx == -1 and len(sets_p1) > 4: 
+                        # Fallback: Meistens Index 2 oder 3
+                        score_start_idx = 2 
+
+                    if score_start_idx != -1 and score_start_idx < len(sets_p1):
+                        # Calculate Sets Won (Spalte S)
+                        try:
+                            s1_t = int(sets_p1[score_start_idx].get_text(strip=True))
+                            s2_t = int(sets_p2[score_start_idx].get_text(strip=True))
+                            if s1_t > s2_t: winner_found = pending_p1_raw
+                            elif s2_t > s1_t: winner_found = p2_raw
+                        except: pass
+
+                        # Build Score String (Spalten 1, 2, 3...)
                         score_parts = []
-                        valid_score = True
-                        
-                        for idx, c1 in enumerate(res_cells_p1):
-                            t1 = c1.get_text(strip=True)
-                            t2 = res_cells_p2[idx].get_text(strip=True)
+                        for offset in range(1, 6): # Max 5 Sätze
+                            if score_start_idx + offset >= len(sets_p1): break
                             
-                            if t1.isdigit() and t2.isdigit():
-                                score_parts.append(f"{t1}-{t2}")
-                                if int(t1) > int(t2): s1_total += 1
-                                elif int(t2) > int(t1): s2_total += 1
-                            elif t1 or t2: # Partial score or empty
-                                valid_score = False
+                            # Clean Sup tags (Tiebreaks entfernen für sauberen Score)
+                            t1_node = sets_p1[score_start_idx + offset]
+                            t2_node = sets_p2[score_start_idx + offset]
+                            
+                            # Remove sups locally for text extraction
+                            [s.extract() for s in t1_node('sup')]
+                            [s.extract() for s in t2_node('sup')]
+                            
+                            val1 = t1_node.get_text(strip=True)
+                            val2 = t2_node.get_text(strip=True)
+                            
+                            if val1.isdigit() and val2.isdigit():
+                                score_parts.append(f"{val1}-{val2}")
                         
-                        if s1_total >= 2 or s2_total >= 2:
-                            if s1_total > s2_total: winner_found = pending_p1_raw
-                            else: winner_found = p2_raw
+                        if score_parts:
                             final_score = " ".join(score_parts)
 
                     found.append({
@@ -804,7 +824,7 @@ def parse_matches_locally_v5(html, p_names):
                         "time": pending_time, "odds1": final_o1, "odds2": final_o2,
                         "p1_href": pending_p1_href, "p2_href": p2_href,
                         "actual_winner": winner_found,
-                        "score": final_score # V68.0: ADDED SCORE FIELD
+                        "score": final_score
                     })
                 pending_p1_raw = None
             else:
@@ -813,9 +833,9 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V67.0: AUDITOR (SAVES SCORE STRING) ---
+# --- V70.0: AUDITOR (REUSED LOGIC) ---
 async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores (V67.0)...")
+    log("🏆 The Auditor: Checking Real-Time Results & Scores (V70.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -841,44 +861,43 @@ async def update_past_results(browser: Browser):
                     p2_norm = normalize_db_name(pm['player2_name'])
                     if p1_norm in row_norm and p2_norm in row_norm:
                         score_cleaned = ""
-                        res_td = row.find("td", class_="result") or row.find("td", class_="score")
-                        if res_td:
-                            txt = res_td.get_text(strip=True)
-                            if re.search(r'\d-\d', txt): score_cleaned = txt
-                        
-                        if not score_cleaned:
-                            pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
-                            all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
-                            valid_sets = []
-                            for m in all_matches:
-                                if "ret" in m or "w.o" in m: valid_sets.append(m)
-                                elif "-" in m:
-                                    try:
-                                        l, r = map(int, m.split('(')[0].split('-'))
-                                        if (l>=6 or r>=6) or (l+r >= 6): valid_sets.append(m)
-                                    except: pass
-                            score_cleaned = " ".join(valid_sets).strip()
+                        # Similar logic to parser but for single-line result rows (different layout on results page)
+                        pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
+                        all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
+                        valid_sets = []
+                        for m in all_matches:
+                            if "ret" in m or "w.o" in m: valid_sets.append(m)
+                            elif "-" in m:
+                                try:
+                                    l, r = map(int, m.split('(')[0].split('-'))
+                                    if (l>=6 or r>=6) or (l+r >= 6): valid_sets.append(m)
+                                except: pass
+                        score_cleaned = " ".join(valid_sets).strip()
 
                         score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
                         p1_sets = 0; p2_sets = 0
+                        idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
+                        p1_is_left = idx_p1 < idx_p2
                         for s in score_matches:
                             try:
                                 sl = int(s[0]); sr = int(s[1])
-                                if sl > sr: p1_sets += 1
-                                elif sr > sl: p2_sets += 1
+                                if sl > sr: 
+                                    if p1_is_left: p1_sets += 1
+                                    else: p2_sets += 1
+                                elif sr > sl: 
+                                    if p1_is_left: p2_sets += 1
+                                    else: p1_sets += 1
                             except: pass
-                        
                         is_ret = "ret." in row_text or "w.o." in row_text
                         sets_needed = 2
-                        if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()):
-                            sets_needed = 3
+                        if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()): sets_needed = 3
                         
                         winner = None
                         if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
-                            idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
-                            if idx_p1 < idx_p2: winner = pm['player1_name']
-                            else: winner = pm['player2_name']
-                            if not is_ret:
+                            if is_ret:
+                                if p1_is_left: winner = pm['player1_name']
+                                else: winner = pm['player2_name']
+                            else:
                                 if p1_sets > p2_sets: winner = pm['player1_name']
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
@@ -894,7 +913,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V68.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V70.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -934,17 +953,13 @@ async def run_pipeline():
                             db_match_id = None; cached_ai = {}
                             if existing_match:
                                 db_match_id = existing_match['id']
-                                # --- V68.0: LIVE SCORE UPDATE LOGIC ---
                                 actual_winner_val = m.get('actual_winner')
                                 if actual_winner_val and not existing_match.get('actual_winner_name'):
-                                     # UPDATE WINNER AND SCORE!
                                      update_payload = {"actual_winner_name": actual_winner_val}
                                      if m.get('score'): update_payload["score"] = m['score']
-                                     
                                      supabase.table("market_odds").update(update_payload).eq("id", db_match_id).execute()
                                      log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1})")
                                      continue 
-                                     
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
