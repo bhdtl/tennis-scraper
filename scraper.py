@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V71.0 - SAFETY NET PATCH)...")
+log("🔌 Initialisiere Neural Scout (V72.0 - ANCHOR & FORENSIC)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -724,10 +724,11 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V71.0: CRASH-PROOF VERTICAL STITCHER PARSER ---
+# --- V72.0: THE ANCHOR PARSER (FORENSIC MODE) ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
+    
     for table in soup.find_all("table", class_="result"):
         rows = table.find_all("tr")
         current_tour = "Unknown"
@@ -735,29 +736,44 @@ def parse_matches_locally_v5(html, p_names):
         i = 0
         while i < len(rows):
             row = rows[i]
+            
+            # --- Tour Header ---
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 pending_p1_raw = None
                 i += 1; continue
+            
+            # --- Valid Data Row Check ---
             cols = row.find_all('td')
             if len(cols) < 2: i += 1; continue
+            
+            # --- Time Extraction ---
             first_cell = row.find('td', class_='first')
             if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
                 tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
                 if tm: pending_time = tm.group(1).zfill(5)
+            
+            # --- Player Extraction ---
             p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
             if not p_cell: i += 1; continue
             p_raw = clean_player_name(p_cell.get_text(strip=True))
             p_href = p_cell.find('a')['href']
+            
+            # --- Odds Extraction ---
             raw_odds = []
             for c in row.find_all('td', class_=re.compile(r'course')):
                 try:
                     val = float(c.get_text(strip=True))
                     if 1.01 <= val <= 100.0: raw_odds.append(val)
                 except: pass
+
+            # --- Match Pair Logic ---
             if pending_p1_raw:
                 p2_raw = p_raw; p2_href = p_href
-                if '/' in pending_p1_raw or '/' in p2_raw: pending_p1_raw = None; i += 1; continue
+                # Invalid pair check (e.g. doubles usually have /)
+                if '/' in pending_p1_raw or '/' in p2_raw: 
+                    pending_p1_raw = None; i += 1; continue
+                
                 prev_row = rows[i-1]
                 prev_odds = []
                 for c in prev_row.find_all('td', class_=re.compile(r'course')):
@@ -765,50 +781,67 @@ def parse_matches_locally_v5(html, p_names):
                         val = float(c.get_text(strip=True))
                         if 1.01 <= val <= 100.0: prev_odds.append(val)
                     except: pass
+                
                 all_odds = prev_odds + raw_odds
                 if len(all_odds) >= 2:
                     final_o1 = all_odds[0]; final_o2 = all_odds[1]
                     winner_found = None
                     final_score = ""
                     
-                    # --- V71.0: CRASH-PROOF VERTICAL STITCHER LOGIC ---
-                    sets_p1 = prev_row.find_all('td')
-                    sets_p2 = row.find_all('td')
+                    # --- V72.0: ANCHOR SCORE EXTRACTION ---
+                    # Strategy: Find Player Cell -> Next cell is Sets (S) -> Next are Scores
                     
-                    score_start_idx = -1
-                    for idx, c in enumerate(sets_p1):
-                        if 'score' in c.get('class', []):
-                            score_start_idx = idx
-                            break
+                    def extract_row_data(r_row):
+                        # Find player cell index
+                        cells = r_row.find_all('td')
+                        p_idx = -1
+                        for idx, c in enumerate(cells):
+                            if c.find('a') and 'time' not in c.get('class', []):
+                                p_idx = idx
+                                break
+                        
+                        if p_idx != -1 and p_idx + 1 < len(cells):
+                            sets_cell = cells[p_idx + 1]
+                            sets_val = sets_cell.get_text(strip=True)
+                            
+                            # Validierung: Ist 'S' eine Zahl?
+                            if sets_val.isdigit():
+                                scores = []
+                                # Collect subsequent cells until non-digit (max 5)
+                                for k in range(1, 6):
+                                    if p_idx + 1 + k >= len(cells): break
+                                    sc_cell = cells[p_idx + 1 + k]
+                                    
+                                    # Clean sup tags for tiebreaks
+                                    # Copy text content without sup
+                                    raw_txt = ""
+                                    for child in sc_cell.children:
+                                        if child.name == 'sup': continue
+                                        raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
+                                    
+                                    # Remove HTML junk if any left
+                                    raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
+                                    
+                                    if raw_txt.isdigit():
+                                        scores.append(raw_txt)
+                                    else:
+                                        break
+                                return int(sets_val), scores
+                        return -1, []
+
+                    s1, scores1 = extract_row_data(prev_row)
+                    s2, scores2 = extract_row_data(row)
                     
-                    if score_start_idx == -1 and len(sets_p1) > 4: 
-                        score_start_idx = 2 
-
-                    if score_start_idx != -1 and score_start_idx < len(sets_p1) and score_start_idx < len(sets_p2):
-                        # Calculate Sets Won (Spalte S) - SAFETY CHECK ADDED
-                        try:
-                            s1_t = int(sets_p1[score_start_idx].get_text(strip=True))
-                            s2_t = int(sets_p2[score_start_idx].get_text(strip=True))
-                            if s1_t > s2_t: winner_found = pending_p1_raw
-                            elif s2_t > s1_t: winner_found = p2_raw
-                        except: pass
-
+                    if s1 != -1 and s2 != -1:
+                        # LOGIC: Verify valid tennis score (e.g. 2-0, 2-1, 3-2)
+                        if s1 > s2: winner_found = pending_p1_raw
+                        elif s2 > s1: winner_found = p2_raw
+                        
                         # Build Score String
                         score_parts = []
-                        for offset in range(1, 6): # Max 5 Sätze
-                            # SAFETY CHECK V71.0: Ensure index exists in BOTH rows
-                            if score_start_idx + offset >= len(sets_p1) or score_start_idx + offset >= len(sets_p2): 
-                                break
-                            
-                            t1_node = sets_p1[score_start_idx + offset]
-                            t2_node = sets_p2[score_start_idx + offset]
-                            
-                            # Clean Sups safely
-                            t1_text = ''.join([t for t in t1_node.contents if isinstance(t, str)]).strip()
-                            t2_text = ''.join([t for t in t2_node.contents if isinstance(t, str)]).strip()
-                            
-                            if t1_text.isdigit() and t2_text.isdigit():
-                                score_parts.append(f"{t1_text}-{t2_text}")
+                        min_len = min(len(scores1), len(scores2))
+                        for k in range(min_len):
+                            score_parts.append(f"{scores1[k]}-{scores2[k]}")
                         
                         if score_parts:
                             final_score = " ".join(score_parts)
@@ -828,9 +861,9 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V70.0: AUDITOR (REUSED LOGIC) ---
+# --- V72.0: AUDITOR (ANCHOR REUSE) ---
 async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores (V70.0)...")
+    log("🏆 The Auditor: Checking Real-Time Results & Scores (V72.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -848,6 +881,12 @@ async def update_past_results(browser: Browser):
             rows = table.find_all('tr')
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
+                
+                # --- V72.0: Anchor Logic for Results Page (Often Single Line) ---
+                # On results page, layout is: Time | P1 | Score | P2 | ...
+                # Or sometimes P1 | Score | P2
+                # We stick to regex here because Results Page layout is weirdly dynamic
+                
                 row_text = row.get_text(separator=" ", strip=True).lower()
                 row_norm = normalize_text(row_text).lower()
 
@@ -855,7 +894,8 @@ async def update_past_results(browser: Browser):
                     p1_norm = normalize_db_name(pm['player1_name'])
                     p2_norm = normalize_db_name(pm['player2_name'])
                     if p1_norm in row_norm and p2_norm in row_norm:
-                        score_cleaned = ""
+                        # 1. Regex Score Extraction
+                        # Matches 6-4 7-6 etc.
                         pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
                         all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
                         valid_sets = []
@@ -864,7 +904,9 @@ async def update_past_results(browser: Browser):
                             elif "-" in m:
                                 try:
                                     l, r = map(int, m.split('(')[0].split('-'))
-                                    if (l>=6 or r>=6) or (l+r >= 6): valid_sets.append(m)
+                                    # Tennis sanity check: at least one side >= 6 OR total >= 6 (tiebreak 7-6)
+                                    if (l >= 6 or r >= 6) or (l+r >= 6): 
+                                        valid_sets.append(m)
                                 except: pass
                         score_cleaned = " ".join(valid_sets).strip()
 
@@ -872,6 +914,7 @@ async def update_past_results(browser: Browser):
                         p1_sets = 0; p2_sets = 0
                         idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
                         p1_is_left = idx_p1 < idx_p2
+                        
                         for s in score_matches:
                             try:
                                 sl = int(s[0]); sr = int(s[1])
@@ -882,6 +925,7 @@ async def update_past_results(browser: Browser):
                                     if p1_is_left: p2_sets += 1
                                     else: p1_sets += 1
                             except: pass
+                        
                         is_ret = "ret." in row_text or "w.o." in row_text
                         sets_needed = 2
                         if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()): sets_needed = 3
@@ -896,18 +940,19 @@ async def update_past_results(browser: Browser):
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
                             if winner:
+                                # FORENSIC LOG
+                                log(f"      🔍 AUDITOR FOUND: {score_cleaned} -> Winner: {winner}")
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
                                     "score": score_cleaned
                                 }).eq("id", pm['id']).execute()
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
-                                log(f"      ✅ SETTLED: {winner} (Score: {score_cleaned})")
                                 break
         except: pass
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V71.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V72.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -952,7 +997,7 @@ async def run_pipeline():
                                      update_payload = {"actual_winner_name": actual_winner_val}
                                      if m.get('score'): update_payload["score"] = m['score']
                                      supabase.table("market_odds").update(update_payload).eq("id", db_match_id).execute()
-                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1})")
+                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1}) [Score: {m.get('score', '?')}]")
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
