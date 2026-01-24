@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V74.0 - SEASONAL INTELLIGENCE)...")
+log("🔌 Initialisiere Neural Scout (V75.0 - BIO-METRIC & TACTICAL DEEP DIVE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -350,49 +350,89 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
     except Exception as e: return None
 
+# --- V75.0: BIO-METRIC FATIGUE ENGINE (Deep Dive) ---
 async def get_advanced_load_analysis(supabase_client: Client, player_name: str) -> str:
+    """
+    Calculates detailed fatigue based on sets, tiebreaks, and rest days.
+    """
     try:
+        # Fetch last 5 matches with scores to analyze intensity
         res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name')\
             .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
             .not_.is_("actual_winner_name", "null")\
             .order('created_at', desc=True).limit(5).execute()
+        
         recent_matches = res.data
-        if not recent_matches: return "Fresh"
+        if not recent_matches: return "Fresh (No recent data)"
+        
         now_ts = datetime.now().timestamp()
-        fatigue_points = 0
+        fatigue_score = 0.0
+        details = []
+
         last_match = recent_matches[0]
-        try: lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
+        try:
+            lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
+            hours_since_last = (now_ts - lm_time) / 3600
         except: return "Unknown"
-        hours_since_last = (now_ts - lm_time) / 3600
-        if hours_since_last < 24: fatigue_points += 50
-        elif hours_since_last < 48: fatigue_points += 25
-        elif hours_since_last > 500: return "Rusty (Long break)"
-        if hours_since_last < 48 and last_match.get('score'):
+
+        # 1. REST FACTOR
+        if hours_since_last < 24: 
+            fatigue_score += 50; details.append("Back-to-back match")
+        elif hours_since_last < 48: 
+            fatigue_score += 25; details.append("Short rest")
+        elif hours_since_last > 336: # 14 days
+            return "Rusty (2+ weeks break)"
+
+        # 2. INTENSITY FACTOR (Last Match)
+        if hours_since_last < 72 and last_match.get('score'):
             score_str = str(last_match['score']).lower()
-            if 'ret' in score_str or 'wo' in score_str: fatigue_points *= 0.3
+            if 'ret' in score_str or 'wo' in score_str:
+                fatigue_score *= 0.5 # Less fatigue if retirement
             else:
-                score_matches = re.findall(r'(\d+)-(\d+)', score_str)
-                if score_matches:
-                    sets_count = len(score_matches)
-                    total_games = 0
-                    for s in score_matches:
-                        try: total_games += int(s[0]) + int(s[1])
-                        except: pass
-                    tiebreaks = len(re.findall(r'7-6|6-7', score_str))
-                    if total_games > 28: fatigue_points += 20
-                    if sets_count >= 3: fatigue_points += 15
-                    if tiebreaks >= 1: fatigue_points += 10
-        matches_last_7_days = 0
+                # Count Sets
+                sets = len(re.findall(r'(\d+)-(\d+)', score_str))
+                # Count Tiebreaks
+                tiebreaks = len(re.findall(r'7-6|6-7', score_str))
+                # Count Total Games
+                total_games = 0
+                for s in re.findall(r'(\d+)-(\d+)', score_str):
+                    try: total_games += int(s[0]) + int(s[1])
+                    except: pass
+                
+                if sets >= 3: 
+                    fatigue_score += 20; details.append("Last match 3+ sets")
+                if total_games > 30: 
+                    fatigue_score += 15; details.append("Marathon match (>30 games)")
+                if tiebreaks > 0: 
+                    fatigue_score += 5 * tiebreaks; details.append(f"{tiebreaks} Tiebreaks played")
+
+        # 3. ACCUMULATED LOAD (Last 7 Days)
+        matches_in_week = 0
+        sets_in_week = 0
         for m in recent_matches:
             try:
                 mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00')).timestamp()
-                if (now_ts - mt) < (7 * 24 * 3600): matches_last_7_days += 1
+                if (now_ts - mt) < (7 * 24 * 3600):
+                    matches_in_week += 1
+                    if m.get('score'):
+                        sets_in_week += len(re.findall(r'\d+-\d+', str(m['score'])))
             except: pass
-        if matches_last_7_days >= 4: fatigue_points += 25
-        if fatigue_points > 70: return "CRITICAL FATIGUE (High risk of fading)"
-        if fatigue_points > 40: return "Heavy Legs (Played recently)"
-        if fatigue_points > 20: return "In Rhythm"
-        return "Optimal Physical Condition"
+        
+        if matches_in_week >= 4: 
+            fatigue_score += 20; details.append(f"Busy week ({matches_in_week} matches)")
+        if sets_in_week > 10:
+            fatigue_score += 15; details.append(f"Heavy leg load ({sets_in_week} sets in 7 days)")
+
+        # VERDICT
+        status = "Fresh"
+        if fatigue_score > 75: status = "CRITICAL FATIGUE"
+        elif fatigue_score > 50: status = "Heavy Legs"
+        elif fatigue_score > 30: status = "In Rhythm (Active)"
+        
+        if details:
+            return f"{status} [{', '.join(details)}]"
+        return status
+
     except Exception: return "Unknown"
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
@@ -651,7 +691,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
         except: pass
     return None
 
-async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): # V74.0: Added match_date
+async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
@@ -670,7 +710,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
              elif month in [4, 5, 6, 7, 8, 9]: s_low = "oeiras red clay"
         elif "nottingham" in s_clean:
              if month in [6, 7]: s_low = "nottingham grass"
-             else: s_low = "nottingham" # Default/Indoor
+             else: s_low = "nottingham" 
 
     best_match = None; best_score = 0
     for t in db_tours:
@@ -686,35 +726,61 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         return surf, bsi, note
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
+# --- V75.0: DEEP ANALYTICAL AI ENGINE ---
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
     f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
+    
+    # 1. HARD FATIGUE DATA
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
+    
+    # 2. STYLE MATCHUP DATA
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
+    
+    # 3. CONTEXT INJECTION (THE "VETERAN" PROMPT)
     prompt = f"""
-    ACT AS: World-Class Tennis Scout & Physicist.
-    TASK: Simulate match outcome.
+    ACT AS: Elite Tennis Analyst & Physicist.
+    OBJECTIVE: Predict match outcome using BIO-METRICS, PHYSICS & TACTICAL FIT.
+
     MATCHUP: {p1['last_name']} vs {p2['last_name']}
-    SURFACE: {surface} (BSI: {bsi}/10)
+    CONTEXT: {surface} (BSI: {bsi}/10) | {notes}
+    
     PLAYER A: {p1['last_name']}
-    - VEGAS-BEATER FORM: {f1_txt}
-    - Recent Trend: {form1_data.get('history_summary', '')}
-    - Fatigue: {fatigueA}
-    - Style Matchup: {styleA_vs_B['verdict'] if styleA_vs_B else "Unknown"}
+    - Style: {p1.get('play_style', 'Unknown')}
+    - FORM (Vegas-Beater): {f1_txt}
+    - BIO-LOAD: {fatigueA}
+    - Matchup History: {styleA_vs_B['verdict'] if styleA_vs_B else "No specific data"}
+    
     PLAYER B: {p2['last_name']}
-    - VEGAS-BEATER FORM: {f2_txt}
-    - Recent Trend: {form2_data.get('history_summary', '')}
-    - Fatigue: {fatigueB}
-    - Style Matchup: {styleB_vs_A['verdict'] if styleB_vs_A else "Unknown"}
+    - Style: {p2.get('play_style', 'Unknown')}
+    - FORM (Vegas-Beater): {f2_txt}
+    - BIO-LOAD: {fatigueB}
+    - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No specific data"}
+
+    ANALYSIS RULES:
+    1. **FATIGUE IMPACT**: If a player has "Heavy Legs" or "Critical Fatigue", significantly reduce their win probability, especially against "Grinders" or in high BSI conditions.
+    2. **STYLE CLASH**: If P1 is a "Server" and P2 is a "Returner" on Slow Hard/Clay, advantage P2. On Fast Hard/Grass, advantage P1.
+    3. **SURFACE SPECIFICITY**: Use the BSI (Court Speed). High BSI favors Aggressors. Low BSI favors Defenders.
+
     OUTPUT JSON ONLY:
-    {{ "p1_tactical_score": [0-10], "p2_tactical_score": [0-10], "p1_form_score": {form1_data['score']}, "p2_form_score": {form2_data['score']}, "ai_text": "Brief Analysis.", "p1_win_sentiment": [0.0-1.0] }}
+    {{ 
+        "p1_tactical_score": [0-10], 
+        "p2_tactical_score": [0-10], 
+        "p1_form_score": {form1_data['score']}, 
+        "p2_form_score": {form2_data['score']}, 
+        "ai_text": "Deep insight combining fatigue, surface & style (max 25 words).", 
+        "p1_win_sentiment": [0.0-1.0] 
+    }}
     """
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
+    
+    # FORCE OVERRIDE: We trust our math more than the LLM for the form score
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
+    
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
@@ -964,7 +1030,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V74.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V75.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1016,10 +1082,7 @@ async def run_pipeline():
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
                             
                             c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
-                            
-                            # V74.0: Pass target_date for Seasonal Context
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
-                            
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
