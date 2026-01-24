@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V73.0 - FULL MARKET MOVEMENT)...")
+log("🔌 Initialisiere Neural Scout (V74.0 - SEASONAL INTELLIGENCE)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -651,7 +651,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
         except: pass
     return None
 
-async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown"):
+async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): # V74.0: Added match_date
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
@@ -660,6 +660,18 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
+
+    # V74.0: SEASONAL DISAMBIGUATION
+    if match_date:
+        month = match_date.month
+        s_clean = s_low.lower()
+        if "oeiras" in s_clean:
+             if month in [1, 2, 3, 10, 11, 12]: s_low = "oeiras indoor"
+             elif month in [4, 5, 6, 7, 8, 9]: s_low = "oeiras red clay"
+        elif "nottingham" in s_clean:
+             if month in [6, 7]: s_low = "nottingham grass"
+             else: s_low = "nottingham" # Default/Indoor
+
     best_match = None; best_score = 0
     for t in db_tours:
         score = calculate_fuzzy_score(s_low, t['name'])
@@ -952,7 +964,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V73.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V74.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1004,7 +1016,10 @@ async def run_pipeline():
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
                             
                             c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
-                            surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
+                            
+                            # V74.0: Pass target_date for Seasonal Context
+                            surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                            
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                             r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                             r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
