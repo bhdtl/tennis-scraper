@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V75.0 - BIO-METRIC & TACTICAL DEEP DIVE)...")
+log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -352,61 +352,40 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
 
 # --- V75.0: BIO-METRIC FATIGUE ENGINE (Deep Dive) ---
 async def get_advanced_load_analysis(supabase_client: Client, player_name: str) -> str:
-    """
-    Calculates detailed fatigue based on sets, tiebreaks, and rest days.
-    """
     try:
-        # Fetch last 5 matches with scores to analyze intensity
         res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name')\
             .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
             .not_.is_("actual_winner_name", "null")\
             .order('created_at', desc=True).limit(5).execute()
-        
         recent_matches = res.data
         if not recent_matches: return "Fresh (No recent data)"
-        
         now_ts = datetime.now().timestamp()
         fatigue_score = 0.0
         details = []
-
         last_match = recent_matches[0]
         try:
             lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
             hours_since_last = (now_ts - lm_time) / 3600
         except: return "Unknown"
+        
+        if hours_since_last < 24: fatigue_score += 50; details.append("Back-to-back match")
+        elif hours_since_last < 48: fatigue_score += 25; details.append("Short rest")
+        elif hours_since_last > 336: return "Rusty (2+ weeks break)"
 
-        # 1. REST FACTOR
-        if hours_since_last < 24: 
-            fatigue_score += 50; details.append("Back-to-back match")
-        elif hours_since_last < 48: 
-            fatigue_score += 25; details.append("Short rest")
-        elif hours_since_last > 336: # 14 days
-            return "Rusty (2+ weeks break)"
-
-        # 2. INTENSITY FACTOR (Last Match)
         if hours_since_last < 72 and last_match.get('score'):
             score_str = str(last_match['score']).lower()
-            if 'ret' in score_str or 'wo' in score_str:
-                fatigue_score *= 0.5 # Less fatigue if retirement
+            if 'ret' in score_str or 'wo' in score_str: fatigue_score *= 0.5
             else:
-                # Count Sets
                 sets = len(re.findall(r'(\d+)-(\d+)', score_str))
-                # Count Tiebreaks
                 tiebreaks = len(re.findall(r'7-6|6-7', score_str))
-                # Count Total Games
                 total_games = 0
                 for s in re.findall(r'(\d+)-(\d+)', score_str):
                     try: total_games += int(s[0]) + int(s[1])
                     except: pass
-                
-                if sets >= 3: 
-                    fatigue_score += 20; details.append("Last match 3+ sets")
-                if total_games > 30: 
-                    fatigue_score += 15; details.append("Marathon match (>30 games)")
-                if tiebreaks > 0: 
-                    fatigue_score += 5 * tiebreaks; details.append(f"{tiebreaks} Tiebreaks played")
+                if sets >= 3: fatigue_score += 20; details.append("Last match 3+ sets")
+                if total_games > 30: fatigue_score += 15; details.append("Marathon match (>30 games)")
+                if tiebreaks > 0: fatigue_score += 5 * tiebreaks; details.append(f"{tiebreaks} Tiebreaks played")
 
-        # 3. ACCUMULATED LOAD (Last 7 Days)
         matches_in_week = 0
         sets_in_week = 0
         for m in recent_matches:
@@ -414,25 +393,17 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
                 mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00')).timestamp()
                 if (now_ts - mt) < (7 * 24 * 3600):
                     matches_in_week += 1
-                    if m.get('score'):
-                        sets_in_week += len(re.findall(r'\d+-\d+', str(m['score'])))
+                    if m.get('score'): sets_in_week += len(re.findall(r'\d+-\d+', str(m['score'])))
             except: pass
-        
-        if matches_in_week >= 4: 
-            fatigue_score += 20; details.append(f"Busy week ({matches_in_week} matches)")
-        if sets_in_week > 10:
-            fatigue_score += 15; details.append(f"Heavy leg load ({sets_in_week} sets in 7 days)")
+        if matches_in_week >= 4: fatigue_score += 20; details.append(f"Busy week ({matches_in_week} matches)")
+        if sets_in_week > 10: fatigue_score += 15; details.append(f"Heavy leg load ({sets_in_week} sets in 7 days)")
 
-        # VERDICT
         status = "Fresh"
         if fatigue_score > 75: status = "CRITICAL FATIGUE"
         elif fatigue_score > 50: status = "Heavy Legs"
         elif fatigue_score > 30: status = "In Rhythm (Active)"
-        
-        if details:
-            return f"{status} [{', '.join(details)}]"
+        if details: return f"{status} [{', '.join(details)}]"
         return status
-
     except Exception: return "Unknown"
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
@@ -726,20 +697,13 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         return surf, bsi, note
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
-# --- V75.0: DEEP ANALYTICAL AI ENGINE ---
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
     f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
-    
-    # 1. HARD FATIGUE DATA
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
-    
-    # 2. STYLE MATCHUP DATA
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
-    
-    # 3. CONTEXT INJECTION (THE "VETERAN" PROMPT)
     prompt = f"""
     ACT AS: Elite Tennis Analyst & Physicist.
     OBJECTIVE: Predict match outcome using BIO-METRICS, PHYSICS & TACTICAL FIT.
@@ -776,11 +740,8 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     """
     res = await call_gemini(prompt)
     data = ensure_dict(safe_get_ai_data(res))
-    
-    # FORCE OVERRIDE: We trust our math more than the LLM for the form score
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
-    
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
@@ -1030,7 +991,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V75.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V73.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1079,7 +1040,7 @@ async def run_pipeline():
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
-                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0)}
+                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')} # V76.0: Added timestamp to cache
                             
                             c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
@@ -1093,12 +1054,50 @@ async def run_pipeline():
                             
                             is_hunter_pick_active = False; hunter_pick_player = None
                             
+                            # --- V76.0: SMART CACHE LOGIC ---
+                            should_run_ai = True
+                            
                             if db_match_id and cached_ai:
+                                # 1. Check Odds Movement > 5% (0.05)
+                                odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
+                                is_significant_move = odds_diff > (m['odds1'] * 0.05)
+                                
+                                # 2. Check Time Decay (> 6 hours)
+                                try:
+                                    last_up = datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))
+                                    is_stale = (datetime.now(timezone.utc) - last_up) > timedelta(hours=6)
+                                except: is_stale = True
+                                
+                                if not is_significant_move and not is_stale:
+                                    should_run_ai = False
+                                    
+                            if not should_run_ai:
+                                # REUSE OLD AI (Smart Cache Hit)
+                                log(f"   ❄️ Smart Cache: Reusing AI for {n1} vs {n2} (Stable Market)")
+                                ai_text_final = cached_ai['ai_text']
                                 new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                                ai_text_final = cached_ai['ai_text']
+                                
+                                # Re-run Betting Logic with new odds but old AI sentiment
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5) # Default sentiment if cached
+                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
+                                
+                                betting_advice = ""
+                                if bet_p1["is_bet"]: 
+                                    betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
+                                    is_hunter_pick_active = True; hunter_pick_player = n1
+                                elif bet_p2["is_bet"]: 
+                                    betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
+                                    is_hunter_pick_active = True; hunter_pick_player = n2
+                                
+                                # Update advice part of string
+                                ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
+                                ai_text_final = ai_text_base + betting_advice
+
                             else:
+                                # RUN FRESH AI (Cache Miss or Stale)
+                                log(f"   🧠 Fresh Analysis: {n1} vs {n2} (Market Move/Stale)")
                                 f1_data = await fetch_player_form_quantum(browser, n1)
                                 f2_data = await fetch_player_form_quantum(browser, n2)
                                 elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
