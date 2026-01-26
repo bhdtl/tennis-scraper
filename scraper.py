@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC)...")
+log("🔌 Initialisiere Neural Scout (V77.1 - DEEP LINK IDENTITY CHECK)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,13 +42,15 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-flash-latest'
+MODEL_NAME = 'gemini-2.0-flash'
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
+# V77.1: Neuer Cache für URL -> Full Name Mapping
+PLAYER_ID_CACHE: Dict[str, str] = {} 
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -108,12 +110,80 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
+# --- V77.1: DEEP LINK IDENTITY CHECK ---
+async def resolve_player_identity_via_profile(browser: Browser, relative_url: str) -> Optional[str]:
+    """
+    Besucht kurz die Profilseite, um den VOLLEN Namen zu holen (z.B. 'Dali Blanch').
+    Nur nötig, wenn 'Blanch D.' mehrdeutig ist.
+    """
+    if not relative_url: return None
+    # Cache Check
+    if relative_url in PLAYER_ID_CACHE:
+        return PLAYER_ID_CACHE[relative_url]
+    
+    url = f"https://www.tennisexplorer.com{relative_url}"
+    page = await browser.new_page()
+    full_name = None
+    try:
+        # Fast load, block images/css
+        await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font"] else route.continue_())
+        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
+        
+        # TennisExplorer Profilseiten haben oft eine H1 oder Title mit dem vollen Namen
+        # Oder in der Breadcrumb / Tabelle
+        content = await page.content()
+        soup = BeautifulSoup(content, 'html.parser')
+        
+        # Strategie 1: H3 in #center (oft der Name)
+        # Strategie 2: Title Tag
+        # Strategie 3: Table Header
+        
+        # Title ist meist "Dali Blanch - Tennis Explorer"
+        title_tag = soup.title.string if soup.title else ""
+        if "-" in title_tag:
+            full_name = title_tag.split("-")[0].strip()
+        
+        if full_name:
+            PLAYER_ID_CACHE[relative_url] = full_name
+            log(f"   🕵️‍♂️ Identity Revealed: {relative_url} -> {full_name}")
+            
+    except: pass
+    finally: await page.close()
+    return full_name
+
+async def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str], scraped_href: Optional[str] = None, browser: Browser = None) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
+    
     clean_scrape = clean_player_name(scraped_name_raw)
+    
+    # Check for Ambiguity (Blanch D.)
+    parts = clean_scrape.split()
+    is_ambiguous = len(parts) >= 2 and len(parts[-1].replace('.', '')) == 1
+    
+    final_search_name = clean_scrape
+    
+    # V77.1: If ambiguous and we have a link, try to resolve full name
+    if is_ambiguous and scraped_href and browser:
+        # Check cache first to avoid request
+        if scraped_href in PLAYER_ID_CACHE:
+            final_search_name = PLAYER_ID_CACHE[scraped_href]
+        else:
+            # Only fetch if we have multiple candidates in DB to save time
+            # Pre-check candidates count
+            potential_last = parts[0] if parts else ""
+            matches = [p for p in db_players if normalize_db_name(p['last_name']) == normalize_db_name(potential_last)]
+            if len(matches) > 1:
+                # Mehr als 1 Blanch? Dann müssen wir den Link prüfen!
+                resolved_name = await resolve_player_identity_via_profile(browser, scraped_href)
+                if resolved_name:
+                    final_search_name = resolved_name
+
+    # Normal Matching Logic with potentially resolved name
+    clean_scrape = clean_player_name(final_search_name)
     parts = clean_scrape.split()
     scrape_last = ""
     scrape_initial = ""
+    
     if len(parts) >= 2:
         last_token = parts[-1].replace('.', '')
         if len(last_token) == 1 and last_token.isalpha():
@@ -127,19 +197,28 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
 
     target_last = normalize_db_name(scrape_last)
     candidates = []
+    
     for p in db_players:
         db_last_raw = p.get('last_name', '')
         db_last = normalize_db_name(db_last_raw)
+        
         match_score = 0
         if db_last == target_last: match_score = 100
         elif target_last in db_last or db_last in target_last: 
             if len(target_last) > 3 and len(db_last) > 3: match_score = 80
+        
         if match_score > 0:
             db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial): match_score += 20 
+                # V77.1: If we have a full first name from resolution (e.g. Dali), match exactly
+                if len(scrape_initial) > 1:
+                    if db_first == scrape_initial: match_score += 50
+                    elif db_first in scrape_initial or scrape_initial in db_first: match_score += 40
+                # Else match initial
+                elif db_first.startswith(scrape_initial): match_score += 20 
                 else: match_score -= 50 
             if match_score > 50: candidates.append((p, match_score))
+
     if not candidates: return None
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
     return candidates[0][0]
@@ -991,7 +1070,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V73.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V76.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
