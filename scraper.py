@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V77.1 - DEEP LINK IDENTITY CHECK)...")
+log("🔌 Initialisiere Neural Scout (V79.0 - SIDECAR HTTP SNIFFER)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -42,15 +42,15 @@ if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-2.0-flash'
+MODEL_NAME = 'gemini-flash-latest'
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
-# V77.1: Neuer Cache für URL -> Full Name Mapping
-PLAYER_ID_CACHE: Dict[str, str] = {} 
+# V79.0: Cache für URL-Hashes
+PLAYER_IDENTITY_CACHE: Dict[str, str] = {} 
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -110,97 +110,92 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# --- V77.1: DEEP LINK IDENTITY CHECK ---
-async def resolve_player_identity_via_profile(browser: Browser, relative_url: str) -> Optional[str]:
+# --- V79.0: SIDECAR HTTP SNIFFER (NO PLAYWRIGHT) ---
+async def resolve_identity_via_http(relative_url: str) -> Optional[str]:
     """
-    Besucht kurz die Profilseite, um den VOLLEN Namen zu holen (z.B. 'Dali Blanch').
-    Nur nötig, wenn 'Blanch D.' mehrdeutig ist.
+    Nutzt HTTPX (leichtgewichtig), um den Titel der Profilseite zu holen.
+    Löst Hash-Links wie 'blanch-5d667' in 'Dali Blanch' auf.
     """
     if not relative_url: return None
-    # Cache Check
-    if relative_url in PLAYER_ID_CACHE:
-        return PLAYER_ID_CACHE[relative_url]
-    
-    url = f"https://www.tennisexplorer.com{relative_url}"
-    page = await browser.new_page()
-    full_name = None
-    try:
-        # Fast load, block images/css
-        await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "stylesheet", "font"] else route.continue_())
-        await page.goto(url, timeout=10000, wait_until="domcontentloaded")
-        
-        # TennisExplorer Profilseiten haben oft eine H1 oder Title mit dem vollen Namen
-        # Oder in der Breadcrumb / Tabelle
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        
-        # Strategie 1: H3 in #center (oft der Name)
-        # Strategie 2: Title Tag
-        # Strategie 3: Table Header
-        
-        # Title ist meist "Dali Blanch - Tennis Explorer"
-        title_tag = soup.title.string if soup.title else ""
-        if "-" in title_tag:
-            full_name = title_tag.split("-")[0].strip()
-        
-        if full_name:
-            PLAYER_ID_CACHE[relative_url] = full_name
-            log(f"   🕵️‍♂️ Identity Revealed: {relative_url} -> {full_name}")
-            
-    except: pass
-    finally: await page.close()
-    return full_name
+    if relative_url in PLAYER_IDENTITY_CACHE: return PLAYER_IDENTITY_CACHE[relative_url]
 
-async def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str], scraped_href: Optional[str] = None, browser: Browser = None) -> Optional[Dict]:
+    url = f"https://www.tennisexplorer.com{relative_url}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+                # Suche nach <title>Dali Blanch - Tennis Explorer</title>
+                match = re.search(r'<title>(.*?) - Tennis Explorer</title>', html, re.IGNORECASE)
+                if match:
+                    full_name = match.group(1).strip()
+                    if len(full_name) > 3:
+                        PLAYER_IDENTITY_CACHE[relative_url] = full_name
+                        log(f"   🕵️‍♂️ Identity Sniffed: {relative_url} -> {full_name}")
+                        return full_name
+    except Exception as e:
+        pass
+    
+    return None
+
+async def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str], scraped_href: Optional[str] = None) -> Optional[Dict]:
     if not scraped_name_raw or not db_players: return None
     
     clean_scrape = clean_player_name(scraped_name_raw)
     
-    # Check for Ambiguity (Blanch D.)
+    # 1. Check auf Ambiguität (Ist es ein Initial? "Blanch D.")
     parts = clean_scrape.split()
     is_ambiguous = len(parts) >= 2 and len(parts[-1].replace('.', '')) == 1
     
-    final_search_name = clean_scrape
-    
-    # V77.1: If ambiguous and we have a link, try to resolve full name
-    if is_ambiguous and scraped_href and browser:
-        # Check cache first to avoid request
-        if scraped_href in PLAYER_ID_CACHE:
-            final_search_name = PLAYER_ID_CACHE[scraped_href]
-        else:
-            # Only fetch if we have multiple candidates in DB to save time
-            # Pre-check candidates count
-            potential_last = parts[0] if parts else ""
-            matches = [p for p in db_players if normalize_db_name(p['last_name']) == normalize_db_name(potential_last)]
-            if len(matches) > 1:
-                # Mehr als 1 Blanch? Dann müssen wir den Link prüfen!
-                resolved_name = await resolve_player_identity_via_profile(browser, scraped_href)
-                if resolved_name:
-                    final_search_name = resolved_name
+    search_name = clean_scrape
 
-    # Normal Matching Logic with potentially resolved name
-    clean_scrape = clean_player_name(final_search_name)
-    parts = clean_scrape.split()
+    # 2. SIDECAR ACTIVATION: Wenn mehrdeutig + Hash-Link -> HTTP Sniffing
+    if is_ambiguous and scraped_href:
+        # Check Cache
+        if scraped_href in PLAYER_IDENTITY_CACHE:
+             search_name = PLAYER_IDENTITY_CACHE[scraped_href]
+        else:
+             # Pre-Check: Nur sniffen, wenn es wirklich nötig ist (mehrere DB-Kandidaten)
+             last_name_cand = parts[0]
+             matches = [p for p in db_players if normalize_db_name(p['last_name']) == normalize_db_name(last_name_cand)]
+             
+             if len(matches) > 1:
+                 # STARTE SIDECAR SNIFFER
+                 resolved = await resolve_identity_via_http(scraped_href)
+                 if resolved: search_name = resolved
+
+    # 3. Matching mit (ggf. aufgelöstem) Namen
+    clean_search = clean_player_name(search_name)
+    parts_search = clean_search.split()
+    
     scrape_last = ""
     scrape_initial = ""
-    
-    if len(parts) >= 2:
-        last_token = parts[-1].replace('.', '')
+
+    if len(parts_search) >= 2:
+        last_token = parts_search[-1].replace('.', '')
+        # Fall A: Immer noch Initial (Sniffer failed oder kein Link)
         if len(last_token) == 1 and last_token.isalpha():
             scrape_initial = last_token.lower()
-            scrape_last = " ".join(parts[:-1]) 
+            scrape_last = " ".join(parts_search[:-1])
+        # Fall B: Voller Name (Sniffer success: "Dali Blanch")
         else:
-            scrape_last = parts[-1]
-            scrape_initial = parts[0][0].lower() if parts[0] else ""
+            scrape_last = parts_search[-1] 
+            scrape_initial = parts_search[0].lower() # "dali"
     else:
-        scrape_last = clean_scrape
+        scrape_last = clean_search
 
     target_last = normalize_db_name(scrape_last)
     candidates = []
     
     for p in db_players:
         db_last_raw = p.get('last_name', '')
+        db_first_raw = p.get('first_name', '')
         db_last = normalize_db_name(db_last_raw)
+        db_first = normalize_db_name(db_first_raw)
         
         match_score = 0
         if db_last == target_last: match_score = 100
@@ -208,15 +203,15 @@ async def find_player_smart(scraped_name_raw: str, db_players: List[Dict], repor
             if len(target_last) > 3 and len(db_last) > 3: match_score = 80
         
         if match_score > 0:
-            db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
-                # V77.1: If we have a full first name from resolution (e.g. Dali), match exactly
+                # V79.0: Wenn 'scrape_initial' lang ist (>1), ist es ein Vornamen-Match!
                 if len(scrape_initial) > 1:
-                    if db_first == scrape_initial: match_score += 50
-                    elif db_first in scrape_initial or scrape_initial in db_first: match_score += 40
-                # Else match initial
+                    if db_first == scrape_initial: match_score += 500 # BINGO
+                    elif db_first in scrape_initial or scrape_initial in db_first: match_score += 300
+                # Normaler Initial-Check (d == d)
                 elif db_first.startswith(scrape_initial): match_score += 20 
                 else: match_score -= 50 
+            
             if match_score > 50: candidates.append((p, match_score))
 
     if not candidates: return None
@@ -1070,7 +1065,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V76.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V79.0 QUANTUM FORM Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1092,8 +1087,8 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
-                        p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
+                        p1_obj = await find_player_smart(m['p1_raw'], players, report_ids, m.get('p1_href'), browser) # V78.0: Pass browser for identity check (but ignored now as we use HTTPX)
+                        p2_obj = await find_player_smart(m['p2_raw'], players, report_ids, m.get('p2_href'), browser)
                         if p1_obj and p2_obj:
                             n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                             if n1 == n2: continue
