@@ -32,7 +32,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V77.0 - IDENTITY RESOLVER & QUANTUM)...")
+log("🔌 Initialisiere Neural Scout (V77.1 - IDENTITY RESOLVER & SYNTAX FIX)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -511,7 +511,8 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         if "clay" in surface.lower(): target_header = "Clay"
         elif "grass" in surface.lower(): target_header = "Grass"
         elif "indoor" in surface.lower(): target_header = "Indoors"
-        tables = soup.find_all('table', class='result')
+        # --- SYNTAX FIX HERE: class_ instead of class ---
+        tables = soup.find_all('table', class_='result')
         total_matches = 0; total_wins = 0
         for table in tables:
             headers = [h.get_text(strip=True) for h in table.find_all('th')]
