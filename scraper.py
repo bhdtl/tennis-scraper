@@ -1,4 +1,4 @@
-# # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 import asyncio
 import json
@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V78.0 - SMART FREEZE / NO GARBAGE [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V80.0 - DIAMOND LOCK / CLV PRESERVER [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -162,15 +162,15 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
-# --- SMART FREEZE HELPER ---
-def is_valid_opening_odd(o1: float, o2: float) -> bool:
-    """
-    Checks if odds are plausible.
-    Rejects placeholders like 1.03 vs 1.03.
-    """
-    if o1 < 1.06 and o2 < 1.06: return False # Garbage detection
-    if o1 <= 1.01 or o2 <= 1.01: return False # Placeholder detection
-    return True
+# --- V80.0: BET LOCK PARSER ---
+def has_active_bet(text: Optional[str]) -> bool:
+    if not text: return False
+    # Check for V60+ Bracket format or V44 legacy format
+    # Example: [💎 HUNTER: ...]
+    if "[" in text and "]" in text:
+        if "💎" in text or "🛡️" in text or "⚖️" in text or "💰" in text:
+            return True
+    return False
 
 # =================================================================
 # 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
@@ -257,11 +257,10 @@ class QuantumFormEngine:
         return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
 
 # =================================================================
-# 4. GROQ ENGINE (Replaced Gemini)
+# 4. GROQ ENGINE
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     # [CHANGE]: Use Groq API (OpenAI Compatible)
-    # Minimal sleep needed for Groq
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -278,7 +277,6 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     }
     async with httpx.AsyncClient() as client:
         try:
-            # Groq is ultra fast, 30s timeout is plenty
             response = await client.post(url, headers=headers, json=payload, timeout=30.0)
             if response.status_code != 200:
                 log(f"   ⚠️ Groq API Error: {response.status_code} - {response.text}")
@@ -288,7 +286,6 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             log(f"   ⚠️ Groq Connection Failed: {e}")
             return None
 
-# Alias for compatibility if code calls call_gemini elsewhere
 call_gemini = call_groq 
 
 # =================================================================
@@ -665,10 +662,10 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
     p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
     oracle_data = p1_meta or p2_meta
     if oracle_data:
-         real_name = oracle_data.get('tournament', scraped_name)
-         prompt = f"TASK: Details for tennis tournament '{real_name}'. CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
+          real_name = oracle_data.get('tournament', scraped_name)
+          prompt = f"TASK: Details for tennis tournament '{real_name}'. CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
     else:
-         prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{scraped_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
+          prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{scraped_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
     res = await call_groq(prompt)
     if res:
         try: 
@@ -732,7 +729,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
     
-    # [OPTIMIZATION] Compressed Prompt: Same instructions, fewer tokens (saves ~20% input tokens)
+    # [OPTIMIZATION] Compressed Prompt
     prompt = f"""
     Role: Elite Tennis Analyst.
     MATCHUP: {p1['last_name']} vs {p2['last_name']}
@@ -855,10 +852,7 @@ def parse_matches_locally_v5(html, p_names):
                     final_score = ""
                     
                     # --- V72.0: ANCHOR SCORE EXTRACTION ---
-                    # Strategy: Find Player Cell -> Next cell is Sets (S) -> Next are Scores
-                    
                     def extract_row_data(r_row):
-                        # Find player cell index
                         cells = r_row.find_all('td')
                         p_idx = -1
                         for idx, c in enumerate(cells):
@@ -870,22 +864,17 @@ def parse_matches_locally_v5(html, p_names):
                             sets_cell = cells[p_idx + 1]
                             sets_val = sets_cell.get_text(strip=True)
                             
-                            # Validierung: Ist 'S' eine Zahl?
                             if sets_val.isdigit():
                                 scores = []
-                                # Collect subsequent cells until non-digit (max 5)
                                 for k in range(1, 6):
                                     if p_idx + 1 + k >= len(cells): break
                                     sc_cell = cells[p_idx + 1 + k]
                                     
-                                    # Clean sup tags for tiebreaks
-                                    # Copy text content without sup
                                     raw_txt = ""
                                     for child in sc_cell.children:
                                         if child.name == 'sup': continue
                                         raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
                                     
-                                    # Remove HTML junk if any left
                                     raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
                                     
                                     if raw_txt.isdigit():
@@ -899,11 +888,9 @@ def parse_matches_locally_v5(html, p_names):
                     s2, scores2 = extract_row_data(row)
                     
                     if s1 != -1 and s2 != -1:
-                        # LOGIC: Verify valid tennis score (e.g. 2-0, 2-1, 3-2)
                         if s1 > s2: winner_found = pending_p1_raw
                         elif s2 > s1: winner_found = p2_raw
                         
-                        # Build Score String
                         score_parts = []
                         min_len = min(len(scores1), len(scores2))
                         for k in range(min_len):
@@ -948,11 +935,6 @@ async def update_past_results(browser: Browser):
             for row in rows:
                 if 'flags' in str(row) or 'head' in str(row): continue
                 
-                # --- V72.0: Anchor Logic for Results Page (Often Single Line) ---
-                # On results page, layout is: Time | P1 | Score | P2 | ...
-                # Or sometimes P1 | Score | P2
-                # We stick to regex here because Results Page layout is weirdly dynamic
-                
                 row_text = row.get_text(separator=" ", strip=True).lower()
                 row_norm = normalize_text(row_text).lower()
 
@@ -960,8 +942,6 @@ async def update_past_results(browser: Browser):
                     p1_norm = normalize_db_name(pm['player1_name'])
                     p2_norm = normalize_db_name(pm['player2_name'])
                     if p1_norm in row_norm and p2_norm in row_norm:
-                        # 1. Regex Score Extraction
-                        # Matches 6-4 7-6 etc.
                         pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
                         all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
                         valid_sets = []
@@ -970,7 +950,6 @@ async def update_past_results(browser: Browser):
                             elif "-" in m:
                                 try:
                                     l, r = map(int, m.split('(')[0].split('-'))
-                                    # Tennis sanity check: at least one side >= 6 OR total >= 6 (tiebreak 7-6)
                                     if (l >= 6 or r >= 6) or (l+r >= 6): 
                                         valid_sets.append(m)
                                 except: pass
@@ -1006,7 +985,6 @@ async def update_past_results(browser: Browser):
                                 elif p2_sets > p1_sets: winner = pm['player2_name']
                             
                             if winner:
-                                # FORENSIC LOG
                                 log(f"      🔍 AUDITOR FOUND: {score_cleaned} -> Winner: {winner}")
                                 supabase.table("market_odds").update({
                                     "actual_winner_name": winner,
@@ -1019,16 +997,12 @@ async def update_past_results(browser: Browser):
 
 # --- SMART FREEZE HELPER ---
 def is_valid_opening_odd(o1: float, o2: float) -> bool:
-    """
-    Checks if odds are plausible.
-    Rejects placeholders like 1.03 vs 1.03.
-    """
-    if o1 < 1.06 and o2 < 1.06: return False # Garbage detection
-    if o1 <= 1.01 or o2 <= 1.01: return False # Placeholder detection
+    if o1 < 1.06 and o2 < 1.06: return False 
+    if o1 <= 1.01 or o2 <= 1.01: return False 
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V78.0 SMART FREEZE (GROQ) Starting...")
+    log(f"🚀 Neural Scout V80.0 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1051,7 +1025,7 @@ async def run_pipeline():
                 for m in matches:
                     try:
                         # [OPTIMIZATION] Rate Limit Safety
-                        await asyncio.sleep(1.0) 
+                        await asyncio.sleep(0.5) 
                         
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
@@ -1062,161 +1036,174 @@ async def run_pipeline():
                                 if "united cup" not in m['tour'].lower(): continue 
                             
                             existing_match = None
-                            # [V78.0 CHANGE]: Fetch opening_odds to check if they are already set/valid
-                            res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, opening_odds1, opening_odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
+                            res1 = supabase.table("market_odds").select("*").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
                             if res1.data: existing_match = res1.data[0]
                             else:
-                                res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, opening_odds1, opening_odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
+                                res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                                 if res2.data: existing_match = res2.data[0]
                             
-                            db_match_id = None; cached_ai = {}
+                            db_match_id = None
+                            
+                            # --- V80.0: DIAMOND LOCK CHECK ---
+                            # Check if the existing record already has a bet placed.
+                            # If so, we DO NOT recalculate the bet. We only update current odds.
+                            is_bet_locked = False
                             if existing_match:
                                 db_match_id = existing_match['id']
+                                # 1. Update Winner if found
                                 actual_winner_val = m.get('actual_winner')
                                 if actual_winner_val and not existing_match.get('actual_winner_name'):
                                      update_payload = {"actual_winner_name": actual_winner_val}
                                      if m.get('score'): update_payload["score"] = m['score']
                                      supabase.table("market_odds").update(update_payload).eq("id", db_match_id).execute()
-                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won (vs {n2 if actual_winner_val==n1 else n1}) [Score: {m.get('score', '?')}]")
+                                     log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won")
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
-                                if existing_match.get('ai_analysis_text'):
-                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
-                            
-                            c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
-                            surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
-                            s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
-                            r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
-                            r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
-                            style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
-                            style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
-                            surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
-                            surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
-                            
-                            is_hunter_pick_active = False; hunter_pick_player = None
-                            
-                            # --- V76.0: SMART CACHE LOGIC ---
-                            should_run_ai = True
-                            
-                            if db_match_id and cached_ai:
-                                odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
-                                is_significant_move = odds_diff > (m['odds1'] * 0.05)
-                                try:
-                                    last_up = datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))
-                                    is_stale = (datetime.now(timezone.utc) - last_up) > timedelta(hours=6)
-                                except: is_stale = True
-                                
-                                if not is_significant_move and not is_stale:
-                                    should_run_ai = False
-                                    
-                            if not should_run_ai:
-                                log(f"   ❄️ Smart Cache: Reusing AI for {n1} vs {n2} (Stable Market)")
-                                ai_text_final = cached_ai['ai_text']
-                                new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
-                                fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
-                                fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                                
-                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
-                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
-                                
-                                betting_advice = ""
-                                if bet_p1["is_bet"]: 
-                                    betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                    is_hunter_pick_active = True; hunter_pick_player = n1
-                                elif bet_p2["is_bet"]: 
-                                    betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                    is_hunter_pick_active = True; hunter_pick_player = n2
-                                
-                                ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
-                                ai_text_final = ai_text_base + betting_advice
 
-                            else:
-                                log(f"   🧠 Fresh Analysis: {n1} vs {n2} (Market Move/Stale)")
-                                f1_data = await fetch_player_form_quantum(browser, n1)
-                                f2_data = await fetch_player_form_quantum(browser, n2)
-                                elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
-                                e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
-                                e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
+                                # 2. Check for Lock
+                                if has_active_bet(existing_match.get('ai_analysis_text', '')):
+                                    is_bet_locked = True
+                                    log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2} (Preserving Entry Price)")
+
+                            # --- UPDATE LOGIC WITH LOCK ---
+                            if is_bet_locked:
+                                # ONLY Update Current Odds & History. Do NOT touch AI Text or Fair Odds.
+                                update_data = {
+                                    "odds1": m['odds1'], # Live Market Move
+                                    "odds2": m['odds2'],
+                                    # Ensure Opening Odds are set if they were missing before
+                                }
                                 
-                                ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
-                                prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
-                                
-                                fair1 = round(1/prob, 2) if prob > 0.01 else 99
-                                fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                                p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
-                                p2_sentiment = 1.0 - p1_sentiment
-                                
-                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
-                                bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
-                                
-                                betting_advice = ""
-                                if bet_p1["is_bet"]: 
-                                    betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                    is_hunter_pick_active = True; hunter_pick_player = n1
-                                elif bet_p2["is_bet"]: 
-                                    betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                    is_hunter_pick_active = True; hunter_pick_player = n2
-                                
-                                ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
-                                ai_text_final = f"{ai_text_base} {betting_advice}"
-                                if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
-                            
-                            # [V78.0 CHANGE]: DATA OBJECT STRUCTURE WITH SMART FREEZE
-                            data = {
-                                "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
-                                "odds1": m['odds1'], "odds2": m['odds2'], # Live Odds (Updates always)
-                                "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
-                                "ai_analysis_text": ai_text_final,
-                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
-                            }
-                            
-                            final_match_id = None
-                            if db_match_id:
-                                # UPDATE CASE: 
-                                # 1. Update Live Odds.
-                                # 2. CHECK if stored opening_odds are valid. If not (NULL or <1.06), overwrite them with current (if current is valid).
+                                # Fix opening odds if they were garbage before but valid now
                                 stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
                                 stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
+                                if not is_valid_opening_odd(stored_op1, stored_op2) and is_valid_opening_odd(m['odds1'], m['odds2']):
+                                     update_data["opening_odds1"] = m['odds1']
+                                     update_data["opening_odds2"] = m['odds2']
+
+                                supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                                 
-                                if not is_valid_opening_odd(stored_op1, stored_op2):
+                                # Add to History for CLV tracking
+                                if abs(existing_match.get('odds1', 0) - m['odds1']) > 0.01:
+                                    # We keep the ORIGINAL Fair Odds for CLV Calc against current market
+                                    h_data = {
+                                        "match_id": db_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
+                                        "fair_odds1": existing_match.get('ai_fair_odds1'), 
+                                        "fair_odds2": existing_match.get('ai_fair_odds2'),
+                                        "is_hunter_pick": True, # Still a pick
+                                        "pick_player_name": "LOCKED", # Can be extracted if needed, but bool is enough
+                                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    }
+                                    supabase.table("odds_history").insert(h_data).execute()
+
+                            else:
+                                # --- NO BET LOCKED OR NEW MATCH -> RUN FULL ANALYSIS ---
+                                cached_ai = {}
+                                if existing_match and existing_match.get('ai_analysis_text'):
+                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
+                                
+                                c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
+                                surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                                s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
+                                r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
+                                r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
+                                style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
+                                style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
+                                surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
+                                surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
+                                
+                                is_hunter_pick_active = False; hunter_pick_player = None
+                                
+                                # Smart Cache Logic for Non-Locked Matches
+                                should_run_ai = True
+                                if db_match_id and cached_ai:
+                                    odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
+                                    is_significant_move = odds_diff > (m['odds1'] * 0.05)
+                                    try:
+                                        last_up = datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))
+                                        is_stale = (datetime.now(timezone.utc) - last_up) > timedelta(hours=6)
+                                    except: is_stale = True
+                                    if not is_significant_move and not is_stale: should_run_ai = False
+                                    
+                                if not should_run_ai:
+                                    # RECALCULATE STAKE (Since not locked yet)
+                                    ai_text_final = cached_ai['ai_text']
+                                    new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
+                                    fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
+                                    fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
+                                    bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
+                                    bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
+                                    betting_advice = ""
+                                    if bet_p1["is_bet"]: 
+                                        betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
+                                        is_hunter_pick_active = True; hunter_pick_player = n1
+                                    elif bet_p2["is_bet"]: 
+                                        betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
+                                        is_hunter_pick_active = True; hunter_pick_player = n2
+                                    ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
+                                    ai_text_final = ai_text_base + betting_advice
+                                else:
+                                    log(f"   🧠 Fresh Analysis: {n1} vs {n2}")
+                                    f1_data = await fetch_player_form_quantum(browser, n1)
+                                    f2_data = await fetch_player_form_quantum(browser, n2)
+                                    elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
+                                    e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
+                                    e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
+                                    
+                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
+                                    prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
+                                    
+                                    fair1 = round(1/prob, 2) if prob > 0.01 else 99
+                                    fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
+                                    p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
+                                    p2_sentiment = 1.0 - p1_sentiment
+                                    bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
+                                    bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
+                                    
+                                    betting_advice = ""
+                                    if bet_p1["is_bet"]: 
+                                        betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
+                                        is_hunter_pick_active = True; hunter_pick_player = n1
+                                    elif bet_p2["is_bet"]: 
+                                        betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
+                                        is_hunter_pick_active = True; hunter_pick_player = n2
+                                    ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
+                                    ai_text_final = f"{ai_text_base} {betting_advice}"
+                                    if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
+                                
+                                data = {
+                                    "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
+                                    "odds1": m['odds1'], "odds2": m['odds2'], 
+                                    "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
+                                    "ai_analysis_text": ai_text_final,
+                                    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                                }
+                                
+                                final_match_id = None
+                                if db_match_id:
+                                    # UPDATE without locking logic (standard update)
+                                    supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                    final_match_id = db_match_id
+                                    log(f"🔄 Updated: {n1} vs {n2}")
+                                else:
+                                    # INSERT
                                     if is_valid_opening_odd(m['odds1'], m['odds2']):
                                         data["opening_odds1"] = m['odds1']
                                         data["opening_odds2"] = m['odds2']
-                                        log(f"   🧊 Fixed Garbage Opening Odds for {n1} vs {n2}")
-
-                                supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
-                                final_match_id = db_match_id
-                                log(f"🔄 Updated: {n1} vs {n2}")
-                            else:
-                                # INSERT CASE: 
-                                # Only freeze opening odds if they are VALID. Otherwise leave NULL (to be fixed by Update logic later)
-                                if is_valid_opening_odd(m['odds1'], m['odds2']):
-                                    data["opening_odds1"] = m['odds1']
-                                    data["opening_odds2"] = m['odds2']
-                                else:
-                                    log(f"   ⚠️ Garbage Opening Odds Detected ({m['odds1']} vs {m['odds2']}) - Not Freezing yet.")
+                                    res_insert = supabase.table("market_odds").insert(data).execute()
+                                    if res_insert.data: final_match_id = res_insert.data[0]['id']
+                                    log(f"💾 Saved: {n1} vs {n2}")
                                 
-                                res_insert = supabase.table("market_odds").insert(data).execute()
-                                if res_insert.data: final_match_id = res_insert.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2}")
-                            
-                            # --- V73.0: FULL MOVEMENT TRACKING LOGIC ---
-                            has_odds_moved = False
-                            if db_match_id and cached_ai:
-                                if abs(cached_ai['old_odds1'] - m['odds1']) > 0.001 or abs(cached_ai['old_odds2'] - m['odds2']) > 0.001:
-                                    has_odds_moved = True
-                            else:
-                                has_odds_moved = True # New match always tracks first movement
+                                if final_match_id and is_hunter_pick_active:
+                                    h_data = {
+                                        "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
+                                        "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": is_hunter_pick_active,
+                                        "pick_player_name": hunter_pick_player,
+                                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    }
+                                    supabase.table("odds_history").insert(h_data).execute()
 
-                            if final_match_id and (has_odds_moved or is_hunter_pick_active):
-                                h_data = {
-                                    "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
-                                    "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": is_hunter_pick_active,
-                                    "pick_player_name": hunter_pick_player,
-                                    "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                }
-                                supabase.table("odds_history").insert(h_data).execute()
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
     log("🏁 Cycle Finished.")
