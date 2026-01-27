@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V77.0 - CLV FREEZE LOGIC [GROQ EDITION])...")
+log("🔌 Initialisiere Neural Scout (V78.0 - SMART FREEZE / NO GARBAGE [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -161,6 +161,16 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
+
+# --- SMART FREEZE HELPER ---
+def is_valid_opening_odd(o1: float, o2: float) -> bool:
+    """
+    Checks if odds are plausible.
+    Rejects placeholders like 1.03 vs 1.03.
+    """
+    if o1 < 1.06 and o2 < 1.06: return False # Garbage detection
+    if o1 <= 1.01 or o2 <= 1.01: return False # Placeholder detection
+    return True
 
 # =================================================================
 # 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
@@ -1007,8 +1017,18 @@ async def update_past_results(browser: Browser):
         except: pass
         finally: await page.close()
 
+# --- SMART FREEZE HELPER ---
+def is_valid_opening_odd(o1: float, o2: float) -> bool:
+    """
+    Checks if odds are plausible.
+    Rejects placeholders like 1.03 vs 1.03.
+    """
+    if o1 < 1.06 and o2 < 1.06: return False # Garbage detection
+    if o1 <= 1.01 or o2 <= 1.01: return False # Placeholder detection
+    return True
+
 async def run_pipeline():
-    log(f"🚀 Neural Scout V77.0 CLV FREEZE (GROQ) Starting...")
+    log(f"🚀 Neural Scout V78.0 SMART FREEZE (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1030,8 +1050,7 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        # [OPTIMIZATION] Rate Limit Safety - wait 1 second between processing matches
-                        # This smooths out the token spike seen in your graph.
+                        # [OPTIMIZATION] Rate Limit Safety
                         await asyncio.sleep(1.0) 
                         
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
@@ -1043,10 +1062,11 @@ async def run_pipeline():
                                 if "united cup" not in m['tour'].lower(): continue 
                             
                             existing_match = None
-                            res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
+                            # [V78.0 CHANGE]: Fetch opening_odds to check if they are already set/valid
+                            res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, opening_odds1, opening_odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
                             if res1.data: existing_match = res1.data[0]
                             else:
-                                res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
+                                res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2, opening_odds1, opening_odds2, player2_name, ai_analysis_text, ai_fair_odds1, ai_fair_odds2").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                                 if res2.data: existing_match = res2.data[0]
                             
                             db_match_id = None; cached_ai = {}
@@ -1061,7 +1081,7 @@ async def run_pipeline():
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
                                 if existing_match.get('ai_analysis_text'):
-                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')} # V76.0: Added timestamp to cache
+                                    cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
                             
                             c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                             surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
@@ -1079,11 +1099,8 @@ async def run_pipeline():
                             should_run_ai = True
                             
                             if db_match_id and cached_ai:
-                                # 1. Check Odds Movement > 5% (0.05)
                                 odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
                                 is_significant_move = odds_diff > (m['odds1'] * 0.05)
-                                
-                                # 2. Check Time Decay (> 6 hours)
                                 try:
                                     last_up = datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))
                                     is_stale = (datetime.now(timezone.utc) - last_up) > timedelta(hours=6)
@@ -1093,15 +1110,13 @@ async def run_pipeline():
                                     should_run_ai = False
                                     
                             if not should_run_ai:
-                                # REUSE OLD AI (Smart Cache Hit)
                                 log(f"   ❄️ Smart Cache: Reusing AI for {n1} vs {n2} (Stable Market)")
                                 ai_text_final = cached_ai['ai_text']
                                 new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                 fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                 fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                 
-                                # Re-run Betting Logic with new odds but old AI sentiment
-                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5) # Default sentiment if cached
+                                bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
                                 bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
                                 
                                 betting_advice = ""
@@ -1112,12 +1127,10 @@ async def run_pipeline():
                                     betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
                                     is_hunter_pick_active = True; hunter_pick_player = n2
                                 
-                                # Update advice part of string
                                 ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                                 ai_text_final = ai_text_base + betting_advice
 
                             else:
-                                # RUN FRESH AI (Cache Miss or Stale)
                                 log(f"   🧠 Fresh Analysis: {n1} vs {n2} (Market Move/Stale)")
                                 f1_data = await fetch_player_form_quantum(browser, n1)
                                 f2_data = await fetch_player_form_quantum(browser, n2)
@@ -1148,7 +1161,7 @@ async def run_pipeline():
                                 ai_text_final = f"{ai_text_base} {betting_advice}"
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                             
-                            # [V77.0 CHANGE]: DATA OBJECT STRUCTURE
+                            # [V78.0 CHANGE]: DATA OBJECT STRUCTURE WITH SMART FREEZE
                             data = {
                                 "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
                                 "odds1": m['odds1'], "odds2": m['odds2'], # Live Odds (Updates always)
@@ -1160,17 +1173,33 @@ async def run_pipeline():
                             
                             final_match_id = None
                             if db_match_id:
-                                # UPDATE CASE: Only update LIVE odds, keep opening_odds untouched
+                                # UPDATE CASE: 
+                                # 1. Update Live Odds.
+                                # 2. CHECK if stored opening_odds are valid. If not (NULL or <1.06), overwrite them with current (if current is valid).
+                                stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
+                                stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
+                                
+                                if not is_valid_opening_odd(stored_op1, stored_op2):
+                                    if is_valid_opening_odd(m['odds1'], m['odds2']):
+                                        data["opening_odds1"] = m['odds1']
+                                        data["opening_odds2"] = m['odds2']
+                                        log(f"   🧊 Fixed Garbage Opening Odds for {n1} vs {n2}")
+
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
                                 log(f"🔄 Updated: {n1} vs {n2}")
                             else:
-                                # INSERT CASE: Freeze Opening Odds
-                                data["opening_odds1"] = m['odds1']
-                                data["opening_odds2"] = m['odds2']
+                                # INSERT CASE: 
+                                # Only freeze opening odds if they are VALID. Otherwise leave NULL (to be fixed by Update logic later)
+                                if is_valid_opening_odd(m['odds1'], m['odds2']):
+                                    data["opening_odds1"] = m['odds1']
+                                    data["opening_odds2"] = m['odds2']
+                                else:
+                                    log(f"   ⚠️ Garbage Opening Odds Detected ({m['odds1']} vs {m['odds2']}) - Not Freezing yet.")
+                                
                                 res_insert = supabase.table("market_odds").insert(data).execute()
                                 if res_insert.data: final_match_id = res_insert.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2} (Opening Frozen)")
+                                log(f"💾 Saved: {n1} vs {n2}")
                             
                             # --- V73.0: FULL MOVEMENT TRACKING LOGIC ---
                             has_odds_moved = False
