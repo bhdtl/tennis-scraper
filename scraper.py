@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+# # -*- coding: utf-8 -*-
 
 import asyncio
 import json
@@ -12,7 +12,6 @@ import random
 import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
-from urllib.parse import unquote
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Page
@@ -32,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V77.1 - IDENTITY RESOLVER & SYNTAX FIX)...")
+log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC)...")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -59,7 +58,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS & IDENTITY ENGINE (SOTA)
+# 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -81,8 +80,8 @@ def clean_tournament_name(raw: str) -> str:
     if not raw: return "Unknown"
     clean = raw
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'<.?>', '', clean)
-    clean = re.sub(r'S\d+.$', '', clean) 
+    clean = re.sub(r'<.*?>', '', clean)
+    clean = re.sub(r'S\d+.*$', '', clean) 
     clean = re.sub(r'H2H.*$', '', clean)
     clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\s\d+$', '', clean)
@@ -109,130 +108,41 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# --- V77.0: IDENTITY ENGINE (The Fix for Darwin/Dali Blanch) ---
-class IdentityEngine:
-    @staticmethod
-    def extract_slug_tokens(href: str) -> Set[str]:
-        """Extrahiert Namensteile aus der URL (z.B. /player/darwin-blanch/ -> {darwin, blanch})"""
-        if not href: return set()
-        try:
-            # Decode URL encodings (%20 etc)
-            decoded = unquote(href)
-            # Remove trailing slashes and split path
-            parts = decoded.strip('/').split('/')
-            if not parts: return set()
-            
-            # Usually the last part is the slug (e.g., "darwin-blanch")
-            slug = parts[-1]
-            # Split by hyphen or underscore
-            tokens = set(re.split(r'[-_]', slug.lower()))
-            # Filter numeric IDs if mixed in
-            return {t for t in tokens if t.isalpha() and len(t) > 1}
-        except: return set()
-
-    @staticmethod
-    def resolve_player(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str], scraped_href: str = None) -> Optional[Dict]:
-        """
-        SOTA Player Resolution: Prioritizes URL Slug matches over ambiguous display names.
-        Solves the 'D. Blanch' problem by looking at the href '/player/darwin-blanch/'.
-        """
-        if not scraped_name_raw or not db_players: return None
-        
-        clean_scrape = clean_player_name(scraped_name_raw)
-        scrape_norm = normalize_db_name(clean_scrape)
-        
-        # 1. Prepare Signals
-        slug_tokens = IdentityEngine.extract_slug_tokens(scraped_href)
-        
-        # Parse visual name (Fallback logic)
-        parts = clean_scrape.split()
-        scrape_last = ""
-        scrape_initial = ""
-        if len(parts) >= 2:
-            last_token = parts[-1].replace('.', '')
-            if len(last_token) == 1 and last_token.isalpha(): # Case: "Blanch D." (Rare)
-                scrape_initial = last_token.lower()
-                scrape_last = " ".join(parts[:-1]) 
-            else: # Case: "D. Blanch" or "Darwin Blanch"
-                scrape_last = parts[-1]
-                # Check if first part is an initial (ends with dot or len 1)
-                first_token = parts[0].replace('.', '')
-                if len(first_token) == 1:
-                    scrape_initial = first_token.lower()
-                else:
-                    # Likely full first name in text
-                    scrape_initial = first_token[0].lower()
+def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
+    if not scraped_name_raw or not db_players: return None
+    clean_scrape = clean_player_name(scraped_name_raw)
+    parts = clean_scrape.split()
+    scrape_last = ""
+    scrape_initial = ""
+    if len(parts) >= 2:
+        last_token = parts[-1].replace('.', '')
+        if len(last_token) == 1 and last_token.isalpha():
+            scrape_initial = last_token.lower()
+            scrape_last = " ".join(parts[:-1]) 
         else:
-            scrape_last = clean_scrape
+            scrape_last = parts[-1]
+            scrape_initial = parts[0][0].lower() if parts[0] else ""
+    else:
+        scrape_last = clean_scrape
 
-        target_last = normalize_db_name(scrape_last)
-        
-        candidates = []
-        
-        for p in db_players:
-            score = 0
-            db_first = normalize_db_name(p.get('first_name', ''))
-            db_last = normalize_db_name(p.get('last_name', ''))
-            
-            # --- STAGE 1: LAST NAME FILTER (Mandatory) ---
-            if db_last == target_last: 
-                score += 50
-            elif target_last in db_last or db_last in target_last: 
-                if len(target_last) > 3 and len(db_last) > 3: score += 40
-            
-            if score == 0: continue # No last name match, skip
-
-            # --- STAGE 2: SLUG EVIDENCE (The "Blanch" Fix) ---
-            # If we have a URL slug, it overrides visual ambiguity
-            if slug_tokens:
-                # Check if DB First Name is in Slug
-                # e.g. slug={darwin, blanch}, db_first="darwin" -> MATCH
-                if db_first in slug_tokens:
-                    score += 150 # HUGE BOOST
-                elif db_first and any(t.startswith(db_first) for t in slug_tokens):
-                    score += 100
-                
-                # Penalty: If slug has a name that is NOT this player's first name
-                # e.g. slug={dali, blanch}, db_first="darwin" -> Penalty
-                # This prevents Darwin matching a Dali slug just because of last name
-                if db_first and db_first not in slug_tokens:
-                     # Check if slug contains a completely different name?
-                     # Simple heuristic: If slug has 'dali' and this is 'darwin', don't boost
-                     pass
-
-            # --- STAGE 3: VISUAL EVIDENCE (Legacy) ---
-            # Only matters if Slug didn't decide it yet (or no slug available)
-            visual_match = False
+    target_last = normalize_db_name(scrape_last)
+    candidates = []
+    for p in db_players:
+        db_last_raw = p.get('last_name', '')
+        db_last = normalize_db_name(db_last_raw)
+        match_score = 0
+        if db_last == target_last: match_score = 100
+        elif target_last in db_last or db_last in target_last: 
+            if len(target_last) > 3 and len(db_last) > 3: match_score = 80
+        if match_score > 0:
+            db_first = p.get('first_name', '').lower()
             if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial): 
-                    score += 20
-                    visual_match = True
-                else: 
-                    score -= 50 # Wrong initial
-            
-            # Full name exact match in text overrides initial logic
-            if db_first in scrape_norm:
-                score += 30
-
-            # --- STAGE 4: TIE BREAKER (Reports & Status) ---
-            if p['id'] in report_ids:
-                score += 5
-
-            if score > 50:
-                candidates.append((p, score))
-
-        if not candidates: return None
-        
-        # Sort by Score DESC
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        
-        best_p, best_score = candidates[0]
-        
-        # DEBUG LOG for "Blanch" cases or similar conflicts
-        if "blanch" in target_last and len(candidates) > 1:
-            log(f"      🕵️ IDENTITY RESOLVER: '{scraped_name_raw}' (Slug: {slug_tokens}) -> Selected: {best_p['first_name']} (Score: {best_score}) vs {candidates[1][0]['first_name']} ({candidates[1][1]})")
-
-        return best_p
+                if db_first.startswith(scrape_initial): match_score += 20 
+                else: match_score -= 50 
+            if match_score > 50: candidates.append((p, match_score))
+    if not candidates: return None
+    candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
+    return candidates[0][0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
@@ -498,7 +408,7 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
     if not relative_url: return 0.5
-    cache_key = f"{relative_url}{surface}"
+    cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
     if not relative_url.startswith("/"): relative_url = f"/{relative_url}"
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
@@ -511,7 +421,6 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         if "clay" in surface.lower(): target_header = "Clay"
         elif "grass" in surface.lower(): target_header = "Grass"
         elif "indoor" in surface.lower(): target_header = "Indoors"
-        # --- SYNTAX FIX HERE: class_ instead of class ---
         tables = soup.find_all('table', class_='result')
         total_matches = 0; total_wins = 0
         for table in tables:
@@ -567,10 +476,10 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        players = supabase.table("players").select("").execute().data
-        skills = supabase.table("player_skills").select("").execute().data
-        reports = supabase.table("scouting_reports").select("").execute().data
-        tournaments = supabase.table("tournaments").select("").execute().data
+        players = supabase.table("players").select("*").execute().data
+        skills = supabase.table("player_skills").select("*").execute().data
+        reports = supabase.table("scouting_reports").select("*").execute().data
+        tournaments = supabase.table("tournaments").select("*").execute().data
         clean_skills = {}
         if skills:
             for entry in skills:
@@ -815,9 +724,9 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No specific data"}
 
     ANALYSIS RULES:
-    1. FATIGUE IMPACT: If a player has "Heavy Legs" or "Critical Fatigue", significantly reduce their win probability, especially against "Grinders" or in high BSI conditions.
-    2. STYLE CLASH: If P1 is a "Server" and P2 is a "Returner" on Slow Hard/Clay, advantage P2. On Fast Hard/Grass, advantage P1.
-    3. SURFACE SPECIFICITY: Use the BSI (Court Speed). High BSI favors Aggressors. Low BSI favors Defenders.
+    1. **FATIGUE IMPACT**: If a player has "Heavy Legs" or "Critical Fatigue", significantly reduce their win probability, especially against "Grinders" or in high BSI conditions.
+    2. **STYLE CLASH**: If P1 is a "Server" and P2 is a "Returner" on Slow Hard/Clay, advantage P2. On Fast Hard/Grass, advantage P1.
+    3. **SURFACE SPECIFICITY**: Use the BSI (Court Speed). High BSI favors Aggressors. Low BSI favors Defenders.
 
     OUTPUT JSON ONLY:
     {{ 
@@ -950,7 +859,7 @@ def parse_matches_locally_v5(html, p_names):
                                         raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
                                     
                                     # Remove HTML junk if any left
-                                    raw_txt = re.sub(r'<>+>', '', raw_txt).strip()
+                                    raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
                                     
                                     if raw_txt.isdigit():
                                         scores.append(raw_txt)
@@ -1104,10 +1013,8 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        # --- UPDATE CALL FOR IDENTITY ENGINE (Passing URL) ---
-                        p1_obj = IdentityEngine.resolve_player(m['p1_raw'], players, report_ids, m.get('p1_href'))
-                        p2_obj = IdentityEngine.resolve_player(m['p2_raw'], players, report_ids, m.get('p2_href'))
-                        
+                        p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
+                        p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         if p1_obj and p2_obj:
                             n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                             if n1 == n2: continue
@@ -1246,7 +1153,7 @@ async def run_pipeline():
                                     has_odds_moved = True
                             else:
                                 has_odds_moved = True # New match always tracks first movement
- 
+
                             if final_match_id and (has_odds_moved or is_hunter_pick_active):
                                 h_data = {
                                     "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
