@@ -721,29 +721,29 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
+    
+    # [OPTIMIZATION] Compressed Prompt: Same instructions, fewer tokens (saves ~20% input tokens)
     prompt = f"""
-    ACT AS: Elite Tennis Analyst & Physicist.
-    OBJECTIVE: Predict match outcome using BIO-METRICS, PHYSICS & TACTICAL FIT.
-
+    Role: Elite Tennis Analyst.
     MATCHUP: {p1['last_name']} vs {p2['last_name']}
     CONTEXT: {surface} (BSI: {bsi}/10) | {notes}
     
     PLAYER A: {p1['last_name']}
     - Style: {p1.get('play_style', 'Unknown')}
-    - FORM (Vegas-Beater): {f1_txt}
+    - FORM (Vegas): {f1_txt}
     - BIO-LOAD: {fatigueA}
-    - Matchup History: {styleA_vs_B['verdict'] if styleA_vs_B else "No specific data"}
+    - Matchup History: {styleA_vs_B['verdict'] if styleA_vs_B else "No data"}
     
     PLAYER B: {p2['last_name']}
     - Style: {p2.get('play_style', 'Unknown')}
-    - FORM (Vegas-Beater): {f2_txt}
+    - FORM (Vegas): {f2_txt}
     - BIO-LOAD: {fatigueB}
-    - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No specific data"}
+    - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No data"}
 
-    ANALYSIS RULES:
-    1. **FATIGUE IMPACT**: If a player has "Heavy Legs" or "Critical Fatigue", significantly reduce their win probability, especially against "Grinders" or in high BSI conditions.
-    2. **STYLE CLASH**: If P1 is a "Server" and P2 is a "Returner" on Slow Hard/Clay, advantage P2. On Fast Hard/Grass, advantage P1.
-    3. **SURFACE SPECIFICITY**: Use the BSI (Court Speed). High BSI favors Aggressors. Low BSI favors Defenders.
+    RULES:
+    1. FATIGUE: Reduce win% if "Heavy Legs"/"Critical Fatigue" (esp. vs Grinders or high BSI).
+    2. STYLE: Server vs Returner: Adv. Returner on Slow/Clay; Adv. Server on Fast/Grass.
+    3. SURFACE: High BSI favors Aggressors; Low BSI favors Defenders.
 
     OUTPUT JSON ONLY:
     {{ 
@@ -751,11 +751,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         "p2_tactical_score": [0-10], 
         "p1_form_score": {form1_data['score']}, 
         "p2_form_score": {form2_data['score']}, 
-        "ai_text": "Deep insight combining fatigue, surface & style (max 25 words).", 
+        "ai_text": "Insight (fatigue/style/surface, max 25 words).", 
         "p1_win_sentiment": [0.0-1.0] 
     }}
     """
-    # [CHANGE] Using Groq call
     res = await call_groq(prompt)
     data = ensure_dict(safe_get_ai_data(res))
     data['p1_form_score'] = form1_data['score']
@@ -1031,6 +1030,10 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
+                        # [OPTIMIZATION] Rate Limit Safety - wait 1 second between processing matches
+                        # This smooths out the token spike seen in your graph.
+                        await asyncio.sleep(1.0) 
+                        
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         if p1_obj and p2_obj:
