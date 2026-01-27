@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V80.0 - DIAMOND LOCK / CLV PRESERVER [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V81.0 - PURE VALUE / NO STAKING [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -162,13 +162,13 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
-# --- V80.0: BET LOCK PARSER ---
-def has_active_bet(text: Optional[str]) -> bool:
+# --- V81.0: VALUE LOCK PARSER ---
+def has_active_signal(text: Optional[str]) -> bool:
     if not text: return False
-    # Check for V60+ Bracket format or V44 legacy format
-    # Example: [💎 HUNTER: ...]
+    # Check for V60+ Bracket format or V44 legacy format OR V81 Value Signals
     if "[" in text and "]" in text:
-        if "💎" in text or "🛡️" in text or "⚖️" in text or "💰" in text:
+        # Legacy Icons + New Value Icons (Fire, Sparkles, Chart, Eyes)
+        if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
     return False
 
@@ -522,7 +522,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE
+# 6. MATH CORE (PURE VALUE ENGINE - NO STAKES)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -531,30 +531,36 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
-def calculate_dynamic_stake(fair_prob: float, market_odds: float, ai_sentiment_score: float = 0.5) -> Dict[str, Any]:
+def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
+    """
+    V81.0: Pure Value Engine. No Staking. No Bias.
+    Calculates Edge and defines Value Tier.
+    """
     if market_odds <= 1.01 or fair_prob <= 0: 
-        return {"stake_str": "0u", "type": "NONE", "is_bet": False}
-    market_odds = min(market_odds, 50.0)
-    b = market_odds - 1
-    q = 1 - fair_prob
-    if b == 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
-    full_kelly = (b * fair_prob - q) / b
-    if full_kelly <= 0: return {"stake_str": "0u", "type": "NONE", "is_bet": False}
-    label = "SKIP"; required_edge = 0.0; kelly_fraction = 0.0; max_stake = 0.0
-    if 1.10 <= market_odds < 1.50: required_edge = 0.03; kelly_fraction = 0.30; max_stake = 4.0; label = "🛡️ IRON BANKER"
-    elif 1.50 <= market_odds < 2.00: required_edge = 0.05; kelly_fraction = 0.25; max_stake = 3.0; label = "💰 VALUE FAV"
-    elif 2.00 <= market_odds < 3.00: required_edge = 0.08; kelly_fraction = 0.20; max_stake = 2.0; label = "⚖️ VALUE"
-    elif 3.00 <= market_odds <= 8.00: required_edge = 0.15; kelly_fraction = 0.10; max_stake = 1.0; label = "💎 HUNTER"
-    else: return {"stake_str": "0u", "type": "SKIP_EXTREME", "is_bet": False}
-    if label == "💎 HUNTER" and ai_sentiment_score < 0.60: return {"stake_str": "0u", "type": "FLB_FILTER", "is_bet": False}
+        return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
+    
+    market_odds = min(market_odds, 100.0)
+    
+    # Expected Value Calculation
+    # EV = (Probability * DecimalOdds) - 1
     edge = (fair_prob * market_odds) - 1
-    if edge < required_edge: return {"stake_str": "0u", "type": "LOW_EDGE", "is_bet": False}
-    safe_stake = full_kelly * kelly_fraction
-    raw_units = safe_stake * 100 * 0.5 
-    units = round(raw_units * 2) / 2
-    if units < 0.5: return {"stake_str": "0u", "type": "TOO_SMALL", "is_bet": False}
-    if units > max_stake: units = max_stake
-    return {"stake_str": f"{units}u", "type": label, "is_bet": True, "edge_percent": round(edge * 100, 1), "units": units}
+    edge_percent = round(edge * 100, 1)
+
+    if edge_percent <= 0.5:
+        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
+
+    # Value Tiers (Alpha Signals)
+    label = "VALUE"
+    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" # Massive Discrepancy
+    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" # Solid Edge
+    elif edge_percent >= 2.0: label = "📈 THIN VALUE" # Marginal Edge
+    else: label = "👀 WATCH"
+
+    return {
+        "type": label, 
+        "edge_percent": edge_percent, 
+        "is_value": True
+    }
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     ai_meta = ensure_dict(ai_meta)
@@ -1002,7 +1008,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V80.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V81.0 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1044,10 +1050,10 @@ async def run_pipeline():
                             
                             db_match_id = None
                             
-                            # --- V80.0: DIAMOND LOCK CHECK ---
-                            # Check if the existing record already has a bet placed.
-                            # If so, we DO NOT recalculate the bet. We only update current odds.
-                            is_bet_locked = False
+                            # --- V81.0: DIAMOND LOCK CHECK (VALUE SIGNAL) ---
+                            # Check if the existing record already has a VALUE SIGNAL placed.
+                            # If so, we DO NOT recalculate the value. We only update current odds.
+                            is_signal_locked = False
                             if existing_match:
                                 db_match_id = existing_match['id']
                                 # 1. Update Winner if found
@@ -1060,13 +1066,13 @@ async def run_pipeline():
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
 
-                                # 2. Check for Lock
-                                if has_active_bet(existing_match.get('ai_analysis_text', '')):
-                                    is_bet_locked = True
-                                    log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2} (Preserving Entry Price)")
+                                # 2. Check for Lock (Using new Value Icons)
+                                if has_active_signal(existing_match.get('ai_analysis_text', '')):
+                                    is_signal_locked = True
+                                    log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2} (Preserving Value Signal)")
 
                             # --- UPDATE LOGIC WITH LOCK ---
-                            if is_bet_locked:
+                            if is_signal_locked:
                                 # ONLY Update Current Odds & History. Do NOT touch AI Text or Fair Odds.
                                 update_data = {
                                     "odds1": m['odds1'], # Live Market Move
@@ -1090,14 +1096,14 @@ async def run_pipeline():
                                         "match_id": db_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
                                         "fair_odds1": existing_match.get('ai_fair_odds1'), 
                                         "fair_odds2": existing_match.get('ai_fair_odds2'),
-                                        "is_hunter_pick": True, # Still a pick
-                                        "pick_player_name": "LOCKED", # Can be extracted if needed, but bool is enough
+                                        "is_hunter_pick": True, # Still tracked as a pick/signal
+                                        "pick_player_name": "LOCKED", 
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
                                     supabase.table("odds_history").insert(h_data).execute()
 
                             else:
-                                # --- NO BET LOCKED OR NEW MATCH -> RUN FULL ANALYSIS ---
+                                # --- NO SIGNAL LOCKED OR NEW MATCH -> RUN FULL ANALYSIS ---
                                 cached_ai = {}
                                 if existing_match and existing_match.get('ai_analysis_text'):
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
@@ -1112,7 +1118,7 @@ async def run_pipeline():
                                 surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                                 surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                                 
-                                is_hunter_pick_active = False; hunter_pick_player = None
+                                is_value_active = False; value_pick_player = None
                                 
                                 # Smart Cache Logic for Non-Locked Matches
                                 should_run_ai = True
@@ -1126,23 +1132,33 @@ async def run_pipeline():
                                     if not is_significant_move and not is_stale: should_run_ai = False
                                     
                                 if not should_run_ai:
-                                    # RECALCULATE STAKE (Since not locked yet)
+                                    # RECALCULATE VALUE (Smart Cache Mode)
                                     ai_text_final = cached_ai['ai_text']
                                     new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
+                                    
                                     fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                     fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                                    bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], 0.5)
-                                    bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], 0.5)
-                                    betting_advice = ""
-                                    if bet_p1["is_bet"]: 
-                                        betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                        is_hunter_pick_active = True; hunter_pick_player = n1
-                                    elif bet_p2["is_bet"]: 
-                                        betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                        is_hunter_pick_active = True; hunter_pick_player = n2
+                                    
+                                    # PURE VALUE CHECK
+                                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
+                                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                                    
+                                    value_tag = ""
+                                    
+                                    if val_p1["is_value"]: 
+                                        # NEW FORMAT: [🔥 HIGH VALUE: PlayerName @ 2.50 | Fair: 2.00 | Edge: 25.0%]
+                                        value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                                        is_value_active = True; value_pick_player = n1
+                                    elif val_p2["is_value"]: 
+                                        value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                                        is_value_active = True; value_pick_player = n2
+                                    
+                                    # Strip old tags and append new one
                                     ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
-                                    ai_text_final = ai_text_base + betting_advice
+                                    ai_text_final = ai_text_base + value_tag
+
                                 else:
+                                    # FRESH ANALYSIS
                                     log(f"   🧠 Fresh Analysis: {n1} vs {n2}")
                                     f1_data = await fetch_player_form_quantum(browser, n1)
                                     f2_data = await fetch_player_form_quantum(browser, n2)
@@ -1155,20 +1171,22 @@ async def run_pipeline():
                                     
                                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                                    p1_sentiment = to_float(ai.get('p1_win_sentiment', 0.5), 0.5)
-                                    p2_sentiment = 1.0 - p1_sentiment
-                                    bet_p1 = calculate_dynamic_stake(1/fair1, m['odds1'], p1_sentiment)
-                                    bet_p2 = calculate_dynamic_stake(1/fair2, m['odds2'], p2_sentiment)
                                     
-                                    betting_advice = ""
-                                    if bet_p1["is_bet"]: 
-                                        betting_advice = f" [{bet_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {bet_p1['edge_percent']}% | Stake: {bet_p1['stake_str']}]"
-                                        is_hunter_pick_active = True; hunter_pick_player = n1
-                                    elif bet_p2["is_bet"]: 
-                                        betting_advice = f" [{bet_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {bet_p2['edge_percent']}% | Stake: {bet_p2['stake_str']}]"
-                                        is_hunter_pick_active = True; hunter_pick_player = n2
+                                    # PURE VALUE CHECK
+                                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
+                                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                                    
+                                    value_tag = ""
+                                    
+                                    if val_p1["is_value"]: 
+                                        value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                                        is_value_active = True; value_pick_player = n1
+                                    elif val_p2["is_value"]: 
+                                        value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                                        is_value_active = True; value_pick_player = n2
+                                    
                                     ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
-                                    ai_text_final = f"{ai_text_base} {betting_advice}"
+                                    ai_text_final = f"{ai_text_base} {value_tag}"
                                     if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                                 
                                 data = {
@@ -1195,11 +1213,11 @@ async def run_pipeline():
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
                                 
-                                if final_match_id and is_hunter_pick_active:
+                                if final_match_id and is_value_active:
                                     h_data = {
                                         "match_id": final_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
-                                        "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": is_hunter_pick_active,
-                                        "pick_player_name": hunter_pick_player,
+                                        "fair_odds1": fair1, "fair_odds2": fair2, "is_hunter_pick": True,
+                                        "pick_player_name": value_pick_player,
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
                                     supabase.table("odds_history").insert(h_data).execute()
