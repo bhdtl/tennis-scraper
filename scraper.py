@@ -31,18 +31,21 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC)...")
+log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC [GROQ EDITION])...")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# [CHANGE]: Switch to Groq API Key
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-if not GEMINI_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub Secrets.")
+if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
+    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/Groq Secrets.")
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-MODEL_NAME = 'gemini-flash-latest'
+
+# [CHANGE]: Use Llama 3 on Groq for max speed/quality
+MODEL_NAME = 'llama-3.3-70b-versatile'
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
@@ -244,25 +247,39 @@ class QuantumFormEngine:
         return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
 
 # =================================================================
-# 4. GEMINI ENGINE
+# 4. GROQ ENGINE (Replaced Gemini)
 # =================================================================
-async def call_gemini(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    await asyncio.sleep(0.5) 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
+async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
+    # [CHANGE]: Use Groq API (OpenAI Compatible)
+    # Minimal sleep needed for Groq
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.4}
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a tennis analyst. Return ONLY valid JSON."},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"}
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=60.0)
+            # Groq is ultra fast, 30s timeout is plenty
+            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
             if response.status_code != 200:
-                log(f"   ⚠️ Gemini API Error: {response.status_code}")
+                log(f"   ⚠️ Groq API Error: {response.status_code} - {response.text}")
                 return None
-            return response.json()['candidates'][0]['content']['parts'][0]['text']
+            return response.json()['choices'][0]['message']['content']
         except Exception as e:
+            log(f"   ⚠️ Groq Connection Failed: {e}")
             return None
+
+# Alias for compatibility if code calls call_gemini elsewhere
+call_gemini = call_groq 
 
 # =================================================================
 # 5. DATA FETCHING & ORACLE
@@ -608,7 +625,7 @@ async def build_country_city_map(browser: Browser):
         await page.goto(url, timeout=20000, wait_until="networkidle")
         text_content = await page.inner_text("body")
         prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
-        res = await call_gemini(prompt)
+        res = await call_groq(prompt)
         if res:
             try:
                 data = json.loads(res.replace("json", "").replace("```", "").strip())
@@ -622,7 +639,7 @@ async def resolve_united_cup_via_country(p1):
     cache_key = f"COUNTRY_{p1}"
     if cache_key in TOURNAMENT_LOC_CACHE: country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
-        res = await call_gemini(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
+        res = await call_groq(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
         try:
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
@@ -642,7 +659,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
          prompt = f"TASK: Details for tennis tournament '{real_name}'. CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
     else:
          prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{scraped_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
-    res = await call_gemini(prompt)
+    res = await call_groq(prompt)
     if res:
         try: 
             data = json.loads(res.replace("json", "").replace("```", "").strip())
@@ -738,7 +755,8 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         "p1_win_sentiment": [0.0-1.0] 
     }}
     """
-    res = await call_gemini(prompt)
+    # [CHANGE] Using Groq call
+    res = await call_groq(prompt)
     data = ensure_dict(safe_get_ai_data(res))
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
@@ -991,7 +1009,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V73.0 QUANTUM FORM Starting...")
+    log(f"🚀 Neural Scout V76.0 QUANTUM FORM (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
