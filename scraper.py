@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V76.0 - SMART CACHE & BIO-METRIC [GROQ EDITION])...")
+log("🔌 Initialisiere Neural Scout (V77.0 - CLV FREEZE LOGIC [GROQ EDITION])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1008,7 +1008,7 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V76.0 QUANTUM FORM (GROQ) Starting...")
+    log(f"🚀 Neural Scout V77.0 CLV FREEZE (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1148,9 +1148,10 @@ async def run_pipeline():
                                 ai_text_final = f"{ai_text_base} {betting_advice}"
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                             
+                            # [V77.0 CHANGE]: DATA OBJECT STRUCTURE
                             data = {
                                 "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
-                                "odds1": m['odds1'], "odds2": m['odds2'],
+                                "odds1": m['odds1'], "odds2": m['odds2'], # Live Odds (Updates always)
                                 "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final,
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1159,13 +1160,17 @@ async def run_pipeline():
                             
                             final_match_id = None
                             if db_match_id:
+                                # UPDATE CASE: Only update LIVE odds, keep opening_odds untouched
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
                                 log(f"🔄 Updated: {n1} vs {n2}")
                             else:
+                                # INSERT CASE: Freeze Opening Odds
+                                data["opening_odds1"] = m['odds1']
+                                data["opening_odds2"] = m['odds2']
                                 res_insert = supabase.table("market_odds").insert(data).execute()
                                 if res_insert.data: final_match_id = res_insert.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2}")
+                                log(f"💾 Saved: {n1} vs {n2} (Opening Frozen)")
                             
                             # --- V73.0: FULL MOVEMENT TRACKING LOGIC ---
                             has_odds_moved = False
