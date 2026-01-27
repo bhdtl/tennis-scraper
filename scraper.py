@@ -45,7 +45,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # [CHANGE]: Use Llama 3 on Groq for max speed/quality
-MODEL_NAME = 'llama-3.3-70b-versatile'
+MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
