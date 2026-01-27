@@ -37,9 +37,9 @@ jobs:
       - name: Run Scraper
         env:
           # SECURITY: Ensure these secrets are set in GitHub Repo Settings
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}             # <--- NEU: Der Schlüssel für Groq
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }} # Public Anon Key usually
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}             # Public Anon Key usually
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Admin Key for bypass RLS
         run: |
           python scraper.py
