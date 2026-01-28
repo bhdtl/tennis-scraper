@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.0 - SMART PHYSICS WEIGHTING [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V84.0 - LOCATION PIPELINE FIX [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -150,16 +150,24 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
+    
+    # [V84.0 FIX] Improved Exact Matching
+    if d_norm == s_norm: return 100
     if d_norm in s_norm and len(d_norm) > 3: return 100
+    
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
     stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger'}
     s_tokens -= stop_words; d_tokens -= stop_words
+    
     if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
     score = len(common) * 10
+    
+    # Specific Boosts
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
+    
     return score
 
 # --- V81.0: VALUE LOCK PARSER ---
@@ -200,7 +208,8 @@ class PhysicsEngine:
                     PhysicsEngine.GEO_CACHE[city_name] = coords
                     return coords
         except Exception as e:
-            print(f"⚠️ Geo Error ({city_name}): {e}")
+            # print(f"⚠️ Geo Error ({city_name}): {e}") # Silent fail to keep logs clean
+            pass
         return None
 
     @staticmethod
@@ -210,12 +219,9 @@ class PhysicsEngine:
         """
         coords = await PhysicsEngine.get_coordinates(city)
         if not coords: 
-            return {"bsi": 5.0, "desc": "Standard Conditions", "temp": 20, "humidity": 50}
+            return {"bsi": 5.0, "desc": "Unknown Location", "temp": 20, "humidity": 50}
 
         try:
-            # Open-Meteo braucht YYYY-MM-DD
-            # Wir nehmen einfach den Daily Max für den Tag, das reicht als Näherung
-            # Falls date_iso None ist oder kaputt, nimm heute
             if not date_iso: date_iso = datetime.now().isoformat()
             
             try:
@@ -243,11 +249,6 @@ class PhysicsEngine:
                 elevation = coords["elevation"]
 
                 # --- SILICON VALLEY PHYSICS MODEL ---
-                # Basis: 5.0 (Neutral)
-                # Hitze: Heiße Luft ist weniger dicht -> Ball fliegt schneller (+ Drag sinkt)
-                # Feuchtigkeit: Feuchte Luft ist leichter (!), aber Bälle saugen Wasser auf -> Schwerer/Langsamer
-                # Höhe: Dünnere Luft -> Schneller
-                
                 bsi = 5.0
                 
                 # 1. Temperature Impact
@@ -283,7 +284,6 @@ class PhysicsEngine:
                 }
 
         except Exception as e:
-            # print(f"⚠️ Weather Error: {e}") # Silent fail
             return {"bsi": 5.0, "desc": "Calc Error", "temp": 20, "humidity": 50}
 
 # =================================================================
@@ -676,7 +676,6 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
         "is_value": True
     }
 
-# --- V83.0: PHYSICS AWARE FAIR ODDS CALCULATION ---
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     """
     V83.0: Incorporates Physics Engine (BSI) into weighting.
@@ -846,14 +845,15 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
     return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
+    # [V84.0 FIX] Returns 4 values now: surf, bsi, notes, city
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
         if arena_target:
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
-                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
-        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})", t.get('location', 'Unknown')
+        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)", "Sydney"
 
     # V74.0: SEASONAL DISAMBIGUATION
     if match_date:
@@ -870,17 +870,23 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
     for t in db_tours:
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
-    if best_match and best_score >= 20: return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
+    
+    if best_match and best_score >= 20: 
+        # [V84.0] Return found location from DB
+        return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', ''), best_match.get('location', 'Unknown')
+        
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
     ai_loc = ensure_dict(ai_loc)
     if ai_loc and ai_loc.get('city'):
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         bsi = ai_loc.get('bsi_estimate', 6.5)
         note = ai_loc.get('note', 'AI Guess')
-        return surf, bsi, note
-    return 'Hard Court Outdoor', 6.5, 'Fallback'
+        city = ai_loc.get('city', 'Unknown')
+        return surf, bsi, note, city
+        
+    return 'Hard Court Outdoor', 6.5, 'Fallback', 'Unknown'
 
-async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
+async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, city_name):
     f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
@@ -889,14 +895,9 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
     
     # -------------------------------------------------------------
-    # [V82.0 FEATURE]: PHYSICS ENGINE INTEGRATION
+    # [V84.0 FEATURE]: PHYSICS ENGINE INTEGRATION (CORRECTED)
     # -------------------------------------------------------------
-    city_name = "Unknown"
-    # Versuche City aus Notes (wenn AI sie gefunden hat)
-    if "AI/Oracle:" in notes:
-        try: city_name = notes.split("AI/Oracle:")[1].strip()
-        except: pass
-    
+    # Now uses the city_name passed from the pipeline (DB or AI)
     physics = await PhysicsEngine.get_weather_impact(city_name, datetime.now().isoformat())
     
     # [OPTIMIZATION] Compressed Prompt with Physics Data
@@ -906,6 +907,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     CONTEXT: {surface} (Base BSI: {bsi}/10)
     
     🏟️ ATMOSPHERIC CONDITIONS (PHYSICS ENGINE):
+    - Location: {city_name}
     - Temp: {physics['temp']}°C | Humidity: {physics['humidity']}%
     - Ball Speed Index (BSI): {physics['bsi']}/10
     - Context: {physics['desc']}
@@ -1181,7 +1183,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V84.0 LOCATION PIPELINE FIX (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1224,8 +1226,6 @@ async def run_pipeline():
                             db_match_id = None
                             
                             # --- V81.0: DIAMOND LOCK CHECK (VALUE SIGNAL) ---
-                            # Check if the existing record already has a VALUE SIGNAL placed.
-                            # If so, we DO NOT recalculate the value. We only update current odds.
                             is_signal_locked = False
                             if existing_match:
                                 db_match_id = existing_match['id']
@@ -1246,11 +1246,10 @@ async def run_pipeline():
 
                             # --- UPDATE LOGIC WITH LOCK ---
                             if is_signal_locked:
-                                # ONLY Update Current Odds & History. Do NOT touch AI Text or Fair Odds.
+                                # ONLY Update Current Odds & History.
                                 update_data = {
                                     "odds1": m['odds1'], # Live Market Move
                                     "odds2": m['odds2'],
-                                    # Ensure Opening Odds are set if they were missing before
                                 }
                                 
                                 # Fix opening odds if they were garbage before but valid now
@@ -1264,12 +1263,11 @@ async def run_pipeline():
                                 
                                 # Add to History for CLV tracking
                                 if abs(existing_match.get('odds1', 0) - m['odds1']) > 0.01:
-                                    # We keep the ORIGINAL Fair Odds for CLV Calc against current market
                                     h_data = {
                                         "match_id": db_match_id, "odds1": m['odds1'], "odds2": m['odds2'],
                                         "fair_odds1": existing_match.get('ai_fair_odds1'), 
                                         "fair_odds2": existing_match.get('ai_fair_odds2'),
-                                        "is_hunter_pick": True, # Still tracked as a pick/signal
+                                        "is_hunter_pick": True, 
                                         "pick_player_name": "LOCKED", 
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
@@ -1282,7 +1280,10 @@ async def run_pipeline():
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
                                 
                                 c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
-                                surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                                
+                                # [V84.0 FIX] UNPACK CITY/LOCATION HERE
+                                surf, bsi, notes, city_name = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                                
                                 s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                                 r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                                 r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
@@ -1319,29 +1320,28 @@ async def run_pipeline():
                                     value_tag = ""
                                     
                                     if val_p1["is_value"]: 
-                                        # NEW FORMAT: [🔥 HIGH VALUE: PlayerName @ 2.50 | Fair: 2.00 | Edge: 25.0%]
                                         value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n1
                                     elif val_p2["is_value"]: 
                                         value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n2
                                     
-                                    # Strip old tags and append new one
                                     ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                                     ai_text_final = ai_text_base + value_tag
-                                    # Preserve weather data from existing record if possible
                                     weather_data = existing_match.get('weather_data')
 
                                 else:
                                     # FRESH ANALYSIS
-                                    log(f"   🧠 Fresh Analysis: {n1} vs {n2}")
+                                    log(f"   🧠 Fresh Analysis: {n1} vs {n2} @ {city_name}")
                                     f1_data = await fetch_player_form_quantum(browser, n1)
                                     f2_data = await fetch_player_form_quantum(browser, n2)
                                     elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                     e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                     e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                     
-                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
+                                    # [V84.0] PASS CITY NAME CORRECTLY HERE
+                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, city_name)
+                                    
                                     prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                     
                                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -1352,7 +1352,6 @@ async def run_pipeline():
                                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                                     
                                     value_tag = ""
-                                    
                                     if val_p1["is_value"]: 
                                         value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n1
@@ -1381,7 +1380,6 @@ async def run_pipeline():
                                     final_match_id = db_match_id
                                     log(f"🔄 Updated: {n1} vs {n2}")
                                 else:
-                                    # INSERT
                                     if is_valid_opening_odd(m['odds1'], m['odds2']):
                                         data["opening_odds1"] = m['odds1']
                                         data["opening_odds2"] = m['odds2']
