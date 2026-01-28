@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V82.0 - PHYSICS ENGINE / WEATHER AWARE [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.0 - SMART PHYSICS WEIGHTING [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -173,7 +173,7 @@ def has_active_signal(text: Optional[str]) -> bool:
     return False
 
 # =================================================================
-# X. PHYSICS ENGINE (NEW MODULE)
+# X. PHYSICS ENGINE (WEATHER & ATMOSPHERE)
 # =================================================================
 class PhysicsEngine:
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
@@ -210,7 +210,7 @@ class PhysicsEngine:
         """
         coords = await PhysicsEngine.get_coordinates(city)
         if not coords: 
-            return {"bsi": 5.0, "desc": "Unknown Conditions", "temp": 20, "humidity": 50}
+            return {"bsi": 5.0, "desc": "Standard Conditions", "temp": 20, "humidity": 50}
 
         try:
             # Open-Meteo braucht YYYY-MM-DD
@@ -236,13 +236,13 @@ class PhysicsEngine:
                 resp = await client.get(PhysicsEngine.BASE_URL, params=params)
                 data = resp.json()
                 
-                if "daily" not in data: return {"bsi": 5.0, "desc": "Data Error", "temp": 20, "humidity": 50}
+                if "daily" not in data: return {"bsi": 5.0, "desc": "Data Unavailable", "temp": 20, "humidity": 50}
                 
                 temp = data["daily"]["temperature_2m_max"][0]
                 humid = data["daily"]["relative_humidity_2m_mean"][0]
                 elevation = coords["elevation"]
 
-                # --- THE PHYSICS CALCULATION (SILICON VALLEY MATH) ---
+                # --- SILICON VALLEY PHYSICS MODEL ---
                 # Basis: 5.0 (Neutral)
                 # Hitze: Heiße Luft ist weniger dicht -> Ball fliegt schneller (+ Drag sinkt)
                 # Feuchtigkeit: Feuchte Luft ist leichter (!), aber Bälle saugen Wasser auf -> Schwerer/Langsamer
@@ -269,9 +269,9 @@ class PhysicsEngine:
                 bsi = max(0.0, min(10.0, bsi))
                 
                 desc = "Neutral"
-                if bsi >= 8.0: desc = "🚀 HYPER FAST (Serve Bot Paradise)"
+                if bsi >= 8.0: desc = "🚀 HYPER FAST"
                 elif bsi >= 6.5: desc = "⚡ FAST / LIVELY"
-                elif bsi <= 3.5: desc = "🐌 SLOW / HEAVY (Grinder's Joy)"
+                elif bsi <= 3.5: desc = "🐌 SLOW / HEAVY"
                 elif bsi <= 2.0: desc = "🧱 DEAD SLOW"
                 
                 return {
@@ -676,17 +676,43 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
         "is_value": True
     }
 
+# --- V83.0: PHYSICS AWARE FAIR ODDS CALCULATION ---
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
+    """
+    V83.0: Incorporates Physics Engine (BSI) into weighting.
+    Max Impact of Physics: ~5%
+    """
     ai_meta = ensure_dict(ai_meta)
     n1 = get_last_name(p1_name); n2 = get_last_name(p2_name)
-    tour = "ATP"; bsi_val = to_float(bsi, 6.0)
+    tour = "ATP"; bsi_val = to_float(bsi, 6.0) # Default to 6.0 if None
+    
+    # 1. Physics / Weather Weighting (The Veteran Move)
+    # Detect Attributes (Serve/Power vs Speed/Stamina)
+    # If no skill data, assume 50 (neutral)
+    p1_aggression = s1.get('serve', 50) + s1.get('power', 50)
+    p2_aggression = s2.get('serve', 50) + s2.get('power', 50)
+    p1_defense = s1.get('speed', 50) + s1.get('stamina', 50)
+    p2_defense = s2.get('speed', 50) + s2.get('stamina', 50)
+
+    physics_boost_p1 = 0.0
+    
+    # CASE A: FAST CONDITIONS (Heat/Altitude) -> Boost Aggressors
+    if bsi_val >= 7.0:
+        if p1_aggression > p2_aggression: physics_boost_p1 += 0.03 # +3% for P1
+        elif p2_aggression > p1_aggression: physics_boost_p1 -= 0.03 # +3% for P2
+    
+    # CASE B: SLOW CONDITIONS (Humid/Cold) -> Boost Defenders
+    elif bsi_val <= 4.0:
+        if p1_defense > p2_defense: physics_boost_p1 += 0.03
+        elif p2_defense > p1_defense: physics_boost_p1 -= 0.03
+
+    # 2. Standard Model
     p1_stats = ELO_CACHE.get(tour, {}).get(n1, {}); p2_stats = ELO_CACHE.get(tour, {}).get(n2, {})
     elo_surf = 'Clay' if 'clay' in surface.lower() else ('Grass' if 'grass' in surface.lower() else 'Hard')
     elo1 = p1_stats.get(elo_surf, 1500); elo2 = p2_stats.get(elo_surf, 1500)
     elo_diff_model = elo1 - elo2
     if market_odds1 > 0 and market_odds2 > 0:
-        inv1 = 1/market_odds1; inv2 = 1/market_odds2
-        implied_p1 = inv1 / (inv1 + inv2)
+        inv1 = 1/market_odds1; inv2 = 1/market_odds2; implied_p1 = inv1 / (inv1 + inv2)
         if 0.01 < implied_p1 < 0.99:
             try: elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
             except: elo_diff_market = elo_diff_model
@@ -694,29 +720,42 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
     else: elo_diff_final = elo_diff_model
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
+    
     m1 = to_float(ai_meta.get('p1_tactical_score', 5)); m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
+    
     def get_offense(s): return s.get('serve', 50) + s.get('power', 50)
     c1_score = get_offense(s1); c2_score = get_offense(s2)
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
+    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12) # This is raw skill comparison
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
     f1 = to_float(ai_meta.get('p1_form_score', 5)); f2 = to_float(ai_meta.get('p2_form_score', 5))
     prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
+    
     style_boost = 0
     if style_stats_p1 and style_stats_p1['verdict'] == "DOMINANT": style_boost += 0.08 
     if style_stats_p1 and style_stats_p1['verdict'] == "STRUGGLES": style_boost -= 0.06
     if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
+    
+    # WEIGHTS (V83 Updated)
+    # Skills: 25%, Matchup: 20%, Form: 20%, ELO: 10%, Physics: 5% (implicitly added later), Market: remaining
     weights = [0.20, 0.15, 0.05, 0.50, 0.10]; model_trust_factor = 0.45 
     total_w = sum(weights); weights = [w/total_w for w in weights]
+    
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
+    
+    # APPLY MODIFIERS
     prob_alpha += style_boost
+    prob_alpha += physics_boost_p1 # The Weather Impact (Max +/- 3-5%)
+    
     if prob_alpha > 0.60: prob_alpha = min(prob_alpha * 1.05, 0.98)
     elif prob_alpha < 0.40: prob_alpha = max(prob_alpha * 0.95, 0.02)
+    
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1; inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
+    
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
@@ -1142,7 +1181,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V82.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.0 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1290,6 +1329,8 @@ async def run_pipeline():
                                     # Strip old tags and append new one
                                     ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                                     ai_text_final = ai_text_base + value_tag
+                                    # Preserve weather data from existing record if possible
+                                    weather_data = existing_match.get('weather_data')
 
                                 else:
                                     # FRESH ANALYSIS
@@ -1322,6 +1363,7 @@ async def run_pipeline():
                                     ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
                                     ai_text_final = f"{ai_text_base} {value_tag}"
                                     if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
+                                    weather_data = ai.get('weather_data')
                                 
                                 data = {
                                     "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
@@ -1330,13 +1372,11 @@ async def run_pipeline():
                                     "ai_analysis_text": ai_text_final,
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z",
-                                    # Save weather data if available in ai dict
-                                    "weather_data": ai.get('weather_data') if isinstance(ai, dict) else None
+                                    "weather_data": weather_data
                                 }
                                 
                                 final_match_id = None
                                 if db_match_id:
-                                    # UPDATE without locking logic (standard update)
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                     final_match_id = db_match_id
                                     log(f"🔄 Updated: {n1} vs {n2}")
