@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V85.0 - SUBSTRING DOMINANCE FIX [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V84.0 - LOCATION PIPELINE FIX [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -147,30 +147,22 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
     return candidates[0][0]
 
-# --- V85.0 FIX: AGGRESSIVE SUBSTRING MATCHING ---
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
     
-    # 1. EXACT SUBSTRING DOMINANCE (The Fix for 'Concepcion')
-    # If the DB name (e.g. "Concepcion") is fully inside the scraped name ("Challenger Concepcion")
-    # AND the DB name is significant enough (> 3 chars), we grant a massive score.
-    if d_norm in s_norm and len(d_norm) > 3:
-        return 100 
+    # [V85.0 FIX]: Exact Substring Match = Instant Win
+    if d_norm in s_norm and len(d_norm) > 3: return 100
     
-    # 2. Token Matching (Legacy)
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
-    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger', '125', '75', '50'}
+    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger'}
     s_tokens -= stop_words; d_tokens -= stop_words
-    
     if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
-    score = len(common) * 15 # Increased weight per token
-    
+    score = len(common) * 10
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
-    
     return score
 
 # --- V81.0: VALUE LOCK PARSER ---
@@ -207,8 +199,10 @@ class PhysicsEngine:
 
     @staticmethod
     async def get_weather_impact(city: str, date_iso: str) -> Dict[str, Any]:
+        # Coordinates fetch
         coords = await PhysicsEngine.get_coordinates(city)
-        if not coords: return {"bsi": 5.0, "desc": "Unknown Location", "temp": 20, "humidity": 50}
+        if not coords: 
+            return {"bsi": 5.0, "desc": "Unknown Location", "temp": 20, "humidity": 50}
 
         try:
             if not date_iso: date_iso = datetime.now().isoformat()
@@ -231,18 +225,15 @@ class PhysicsEngine:
 
                 # --- SILICON VALLEY PHYSICS MODEL ---
                 bsi = 5.0
-                # Temp: Heat reduces air density -> Faster (+1.5 max)
                 if temp > 30: bsi += 1.5
                 elif temp > 25: bsi += 0.8
                 elif temp < 15: bsi -= 1.0
                 elif temp < 10: bsi -= 2.0
                 
-                # Humidity: Heavy Air / Fluffy Ball -> Slower (-2.0 max)
                 if humid > 70: bsi -= 1.0
                 elif humid > 90: bsi -= 2.0
                 elif humid < 30: bsi += 0.5
                 
-                # Elevation: Thinner Air -> Faster (+1.5 max)
                 if elevation > 500: bsi += 1.0
                 if elevation > 1000: bsi += 1.5
 
@@ -344,30 +335,21 @@ class QuantumFormEngine:
 # 4. GROQ ENGINE
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    # [CHANGE]: Use Groq API (OpenAI Compatible)
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a tennis analyst. Return ONLY valid JSON."},
-            {"role": "user", "content": prompt}
-        ],
+        "messages": [{"role": "system", "content": "You are a tennis analyst. Return ONLY valid JSON."}, {"role": "user", "content": prompt}],
         "temperature": 0.1,
         "response_format": {"type": "json_object"}
     }
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=30.0)
-            if response.status_code != 200:
-                log(f"   ⚠️ Groq API Error: {response.status_code} - {response.text}")
-                return None
+            if response.status_code != 200: return None
             return response.json()['choices'][0]['message']['content']
         except Exception as e:
-            log(f"   ⚠️ Groq Connection Failed: {e}")
+            log(f"   ⚠️ Groq Failed: {e}")
             return None
 
 call_gemini = call_groq 
@@ -401,28 +383,19 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
 
 async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> Dict[str, Any]:
     try:
-        res = supabase.table("market_odds")\
-            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at")\
-            .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
-            .not_.is_("actual_winner_name", "null")\
-            .order("created_at", desc=True).limit(8).execute()
+        res = supabase.table("market_odds").select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at").or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(8).execute()
         matches = res.data
         if not matches: return {"text": "No Data", "score": 6.5, "history_summary": ""}
         form_data = QuantumFormEngine.calculate_player_form(matches[:5], player_last_name) 
         return form_data
-    except Exception as e:
-        log(f"   ⚠️ Form Calc Error {player_last_name}: {e}")
-        return {"text": "Calc Error", "score": 6.5, "history_summary": ""}
+    except Exception: return {"text": "Calc Error", "score": 6.5, "history_summary": ""}
 
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
     if not target_style or target_style == 'Unknown': return None
     try:
-        res = supabase_client.table('market_odds').select('player1_name, player2_name, actual_winner_name')\
-            .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
-            .not_.is_("actual_winner_name", "null")\
-            .order('created_at', desc=True).limit(80).execute()
+        res = supabase_client.table('market_odds').select('player1_name, player2_name, actual_winner_name').or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%").not_.is_("actual_winner_name", "null").order('created_at', desc=True).limit(80).execute()
         matches = res.data
         if not matches or len(matches) < 3: return None
         opponent_names_to_fetch = []
@@ -456,15 +429,11 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         if win_rate > 65: verdict = "Dominant vs this style"
         elif win_rate < 40: verdict = "Struggles significantly vs this style"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-    except Exception as e: return None
+    except Exception: return None
 
-# --- V75.0: BIO-METRIC FATIGUE ENGINE (Deep Dive) ---
 async def get_advanced_load_analysis(supabase_client: Client, player_name: str) -> str:
     try:
-        res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name')\
-            .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
-            .not_.is_("actual_winner_name", "null")\
-            .order('created_at', desc=True).limit(5).execute()
+        res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name').or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%").not_.is_("actual_winner_name", "null").order('created_at', desc=True).limit(5).execute()
         recent_matches = res.data
         if not recent_matches: return "Fresh (No recent data)"
         now_ts = datetime.now().timestamp()
@@ -484,9 +453,7 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
             score_str = str(last_match['score']).lower()
             if 'ret' in score_str or 'wo' in score_str: fatigue_score *= 0.5
             else:
-                sets = len(re.findall(r'(\d+)-(\d+)', score_str))
-                tiebreaks = len(re.findall(r'7-6|6-7', score_str))
-                total_games = 0
+                sets = len(re.findall(r'(\d+)-(\d+)', score_str)); tiebreaks = len(re.findall(r'7-6|6-7', score_str)); total_games = 0
                 for s in re.findall(r'(\d+)-(\d+)', score_str):
                     try: total_games += int(s[0]) + int(s[1])
                     except: pass
@@ -494,8 +461,7 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
                 if total_games > 30: fatigue_score += 15; details.append("Marathon match (>30 games)")
                 if tiebreaks > 0: fatigue_score += 5 * tiebreaks; details.append(f"{tiebreaks} Tiebreaks played")
 
-        matches_in_week = 0
-        sets_in_week = 0
+        matches_in_week = 0; sets_in_week = 0
         for m in recent_matches:
             try:
                 mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00')).timestamp()
@@ -523,14 +489,12 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     page = await browser.new_page()
     try:
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
+        content = await page.content(); soup = BeautifulSoup(content, 'html.parser')
         target_header = "Hard"
         if "clay" in surface.lower(): target_header = "Clay"
         elif "grass" in surface.lower(): target_header = "Grass"
         elif "indoor" in surface.lower(): target_header = "Indoors"
-        tables = soup.find_all('table', class_='result')
-        total_matches = 0; total_wins = 0
+        tables = soup.find_all('table', class_='result'); total_matches = 0; total_wins = 0
         for table in tables:
             headers = [h.get_text(strip=True) for h in table.find_all('th')]
             if "Summary" in headers and target_header in headers:
@@ -542,16 +506,11 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
                             if len(cols) > col_idx:
                                 stats_text = cols[col_idx].get_text(strip=True)
                                 if "/" in stats_text:
-                                    w, l = map(int, stats_text.split('/'))
-                                    total_matches = w + l
-                                    total_wins = w
-                                    break
+                                    w, l = map(int, stats_text.split('/')); total_matches = w + l; total_wins = w; break
                 except: pass
                 break
         if total_matches > 0:
-            rate = total_wins / total_matches
-            SURFACE_STATS_CACHE[cache_key] = rate
-            return rate
+            rate = total_wins / total_matches; SURFACE_STATS_CACHE[cache_key] = rate; return rate
     except: pass
     finally: await page.close()
     return 0.5
@@ -563,8 +522,7 @@ async def fetch_elo_ratings(browser: Browser):
         page = await browser.new_page()
         try:
             await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
-            content = await page.content()
-            soup = BeautifulSoup(content, 'html.parser')
+            content = await page.content(); soup = BeautifulSoup(content, 'html.parser')
             table = soup.find('table', {'id': 'reportable'})
             if table:
                 rows = table.find_all('tr')[1:]
@@ -573,11 +531,7 @@ async def fetch_elo_ratings(browser: Browser):
                     if len(cols) > 4:
                         name = normalize_text(cols[0].get_text(strip=True)).lower()
                         last_name = name.split()[-1] if " " in name else name
-                        ELO_CACHE[tour][last_name] = {
-                            'Hard': to_float(cols[3].get_text(strip=True), 1500),
-                            'Clay': to_float(cols[4].get_text(strip=True), 1500),
-                            'Grass': to_float(cols[5].get_text(strip=True), 1500)
-                        }
+                        ELO_CACHE[tour][last_name] = {'Hard': to_float(cols[3].get_text(strip=True), 1500), 'Clay': to_float(cols[4].get_text(strip=True), 1500), 'Grass': to_float(cols[5].get_text(strip=True), 1500)}
                 log(f"   ✅ {tour} Elo geladen: {len(ELO_CACHE[tour])}")
         except: pass
         finally: await page.close()
@@ -594,19 +548,13 @@ async def get_db_data():
                 if not isinstance(entry, dict): continue
                 pid = entry.get('player_id')
                 if pid:
-                    clean_skills[pid] = {
-                        'serve': to_float(entry.get('serve')), 'power': to_float(entry.get('power')),
-                        'forehand': to_float(entry.get('forehand')), 'backhand': to_float(entry.get('backhand')),
-                        'speed': to_float(entry.get('speed')), 'stamina': to_float(entry.get('stamina')),
-                        'mental': to_float(entry.get('mental'))
-                    }
+                    clean_skills[pid] = {'serve': to_float(entry.get('serve')), 'power': to_float(entry.get('power')), 'forehand': to_float(entry.get('forehand')), 'backhand': to_float(entry.get('backhand')), 'speed': to_float(entry.get('speed')), 'stamina': to_float(entry.get('stamina')), 'mental': to_float(entry.get('mental'))}
         return players or [], clean_skills, reports or [], tournaments or []
     except Exception as e:
-        log(f"❌ DB Load Error: {e}")
-        return [], {}, [], []
+        log(f"❌ DB Load Error: {e}"); return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE (PURE VALUE ENGINE - NO STAKES)
+# 6. MATH CORE (PURE VALUE ENGINE)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -616,36 +564,19 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     return 0.5 * (1 + math.erf(z))
 
 def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
-    """
-    V81.0: Pure Value Engine. No Staking. No Bias.
-    Calculates Edge and defines Value Tier.
-    """
-    if market_odds <= 1.01 or fair_prob <= 0: 
-        return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
-    
+    if market_odds <= 1.01 or fair_prob <= 0: return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
     market_odds = min(market_odds, 100.0)
-    
-    # Expected Value Calculation
-    # EV = (Probability * DecimalOdds) - 1
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
-
-    if edge_percent <= 0.5:
-        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
-
-    # Value Tiers (Alpha Signals)
+    if edge_percent <= 0.5: return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
     label = "VALUE"
-    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" # Massive Discrepancy
-    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" # Solid Edge
-    elif edge_percent >= 2.0: label = "📈 THIN VALUE" # Marginal Edge
+    if edge_percent >= 15.0: label = "🔥 HIGH VALUE"
+    elif edge_percent >= 8.0: label = "✨ GOOD VALUE"
+    elif edge_percent >= 2.0: label = "📈 THIN VALUE"
     else: label = "👀 WATCH"
+    return {"type": label, "edge_percent": edge_percent, "is_value": True}
 
-    return {
-        "type": label, 
-        "edge_percent": edge_percent, 
-        "is_value": True
-    }
-
+# --- V83.0: PHYSICS AWARE FAIR ODDS CALCULATION ---
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     """
     V83.0: Incorporates Physics Engine (BSI) into weighting.
@@ -743,9 +674,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
             inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
             new_prob_market = inv1 / (inv1 + inv2)
         new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
-        if new_market_odds1 < 1.10:
-             mkt_prob1 = 1/new_market_odds1
-             new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
+        if new_market_odds1 < 1.10: mkt_prob1 = 1/new_market_odds1; new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
         return new_final_prob
     except: return 0.5
 
