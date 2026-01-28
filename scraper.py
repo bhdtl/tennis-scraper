@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.0 - QUANTUM GAMES SIMULATION [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.1 - CALIBRATED GAMES SIMULATION [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1002,72 +1002,82 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 # =================================================================
-# 9. QUANTUM GAMES SIMULATOR (MONTE CARLO)
+# 9. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
 # =================================================================
 class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
-    Simulates match flow based on Skills, BSI, and Play Styles.
+    V83.1: Calibrated for realistic 3-set frequencies and hold percentages.
     """
     
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
-        # BASELINES (ATP Hard Court Average ~ 80% Hold, WTA ~ 64%)
-        # Wir starten konservativ bei 72% und modulieren dann.
-        p_hold = 72.0 
+        # BASELINES ADJUSTMENT (Lowered to avoid inflation)
+        # ATP Avg ~78%, WTA ~62%. We start at a neutral ground.
+        p_hold = 67.0 
         
-        # 1. SERVER IMPACT
+        # 1. SERVER IMPACT (Dampened Curve)
         # Serve: Primärfaktor. Power: Sekundärfaktor.
         srv = server_skills.get('serve', 50)
         pwr = server_skills.get('power', 50)
-        # Ein 90er Serve bringt massive Vorteile (+10-15%)
-        p_hold += (srv - 50) * 0.45
-        p_hold += (pwr - 50) * 0.15
+        
+        # V83.1: Konservativere Kurve. 
+        # Vorher: (srv-50)*0.45. Jetzt: *0.35.
+        p_hold += (srv - 50) * 0.35
+        p_hold += (pwr - 50) * 0.10
 
         # 2. RETURNER IMPACT (Defense)
-        # Return Skill wird aus Speed, Mental und Backhand approximiert (falls nicht explizit da)
         ret_speed = returner_skills.get('speed', 50)
         ret_mental = returner_skills.get('mental', 50)
-        # Gute Returner drücken die Hold-Quote
-        p_hold -= (ret_speed - 50) * 0.20
-        p_hold -= (ret_mental - 50) * 0.10
+        
+        p_hold -= (ret_speed - 50) * 0.15
+        p_hold -= (ret_mental - 50) * 0.08
 
         # 3. SURFACE / BSI PHYSICS
-        # BSI 1 (Slow) bis 10 (Fast). Average 5-6.
-        # Fast Court (8+) hilft dem Server massiv. Slow Court (3) hilft dem Returner.
-        bsi_delta = (bsi - 5.5) * 1.8 # Pro BSI Punkt ~1.8% Shift
+        # BSI 1-10. Normalisierung um 6.0 (Hardcourt Avg).
+        # Vorher 1.8. Jetzt 1.4 für weniger Volatilität.
+        bsi_delta = (bsi - 6.0) * 1.4 
         p_hold += bsi_delta
 
         # 4. CLAMPING (Realismus-Grenzen)
-        # Isner/Karlovic Peak: ~94%. Schwartzman Low: ~65% (ATP).
-        return max(50.0, min(96.0, p_hold)) / 100.0
+        # Absolute Obergrenze 94% (Karlovic), Untergrenze 52% (WTA Clay).
+        return max(52.0, min(94.0, p_hold)) / 100.0
 
     @staticmethod
-    def simulate_set(p1_prob: float, p2_prob: float) -> int:
-        """Simuliert einen Satz Game für Game."""
+    def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
+        """
+        Simuliert einen Satz und gibt (Winner, TotalGames) zurück.
+        1 = P1 gewinnt, 2 = P2 gewinnt.
+        """
         g1, g2 = 0, 0
         while True:
-            # Game Simulation (vereinfacht über p_hold)
             # P1 serviert
             if random.random() < p1_prob: g1 += 1
             else: g2 += 1 # Break
             
-            if g1 >= 6 and g1 - g2 >= 2: return g1 + g2
-            if g2 >= 6 and g2 - g1 >= 2: return g1 + g2
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
             
             # Tiebreak bei 6-6
             if g1 == 6 and g2 == 6:
-                return 13 # 7-6 oder 6-7 sind immer 13 Games
+                # Tiebreak Simulation (Coinflip weighted by hold probs)
+                # Vereinfacht: Wer besser serviert, gewinnt TB eher
+                tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
+                if random.random() < tb_prob_p1: return (1, 13)
+                else: return (2, 13)
             
             # P2 serviert
             if random.random() < p2_prob: g2 += 1
             else: g1 += 1 # Break
             
-            if g1 >= 6 and g1 - g2 >= 2: return g1 + g2
-            if g2 >= 6 and g2 - g1 >= 2: return g1 + g2
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
             
             if g1 == 6 and g2 == 6:
-                return 13
+                # Tiebreak Logic (Same as above)
+                tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
+                if random.random() < tb_prob_p1: return (1, 13)
+                else: return (2, 13)
 
     @staticmethod
     def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
@@ -1077,26 +1087,30 @@ class QuantumGamesSimulator:
         
         total_games_log = []
         
-        # 2. Monte Carlo Loop (Speed Optimized)
+        # 2. Monte Carlo Loop
         for _ in range(iterations):
-            # Best of 3 Simulation
-            set1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-            set2 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            # SATZ 1
+            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
             
-            total = set1 + set2
+            # MOMENTUM LOGIC (V83.1)
+            # Der Gewinner von Satz 1 spielt in Satz 2 oft befreiter (Confidence Boost).
+            # Wir erhöhen seine Hold-Prob temporär leicht (+2%) für Satz 2.
+            # Das reduziert die Wahrscheinlichkeit eines 3. Satzes.
             
-            # Prüfen ob 3. Satz nötig (grob vereinfacht: 50/50 split der Sätze oder basierend auf Skill Gap)
-            # Wir nutzen hier eine Skill-Gap-Logik für Satz-Siege
-            skill_diff = (p1_hold_prob - p2_hold_prob)
-            p1_win_set_prob = 0.5 + (skill_diff * 2.0) # Heuristik
+            p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
+            p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
             
-            s1_winner = 1 if random.random() < p1_win_set_prob else 2
-            s2_winner = 1 if random.random() < p1_win_set_prob else 2
+            # SATZ 2
+            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
             
-            if s1_winner != s2_winner:
-                # Dritter Satz
-                set3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-                total += set3
+            total = games_s1 + games_s2
+            
+            # 3. SATZ CHECK
+            if winner_s1 != winner_s2:
+                # Dritter Satz wird gespielt
+                # Reset Momentum (Fight to death)
+                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+                total += games_s3
                 
             total_games_log.append(total)
             
@@ -1130,7 +1144,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.1 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1364,7 +1378,7 @@ async def run_pipeline():
                                     
                                     # Determine Pick Name
                                     # If Value -> Player Name. If just Market Move -> NULL or special tag.
-                                    pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None)
+                                    pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None) 
                                     
                                     h_data = {
                                         "match_id": final_match_id, 
@@ -1380,6 +1394,11 @@ async def run_pipeline():
 
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
+    
+    # --- PHASE: DATA RETENTION ---
+    # Optional: Python-based cleanup (redundant if pg_cron is active, but safe)
+    # await run_retention_policy() 
+    
     log("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
