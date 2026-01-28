@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V82.0 - FULL MARKET TRACKING [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.0 - QUANTUM GAMES SIMULATION [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1001,6 +1001,128 @@ async def update_past_results(browser: Browser):
         except: pass
         finally: await page.close()
 
+# =================================================================
+# 9. QUANTUM GAMES SIMULATOR (MONTE CARLO)
+# =================================================================
+class QuantumGamesSimulator:
+    """
+    SOTA Monte Carlo Engine for Tennis Totals.
+    Simulates match flow based on Skills, BSI, and Play Styles.
+    """
+    
+    @staticmethod
+    def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
+        # BASELINES (ATP Hard Court Average ~ 80% Hold, WTA ~ 64%)
+        # Wir starten konservativ bei 72% und modulieren dann.
+        p_hold = 72.0 
+        
+        # 1. SERVER IMPACT
+        # Serve: Primärfaktor. Power: Sekundärfaktor.
+        srv = server_skills.get('serve', 50)
+        pwr = server_skills.get('power', 50)
+        # Ein 90er Serve bringt massive Vorteile (+10-15%)
+        p_hold += (srv - 50) * 0.45
+        p_hold += (pwr - 50) * 0.15
+
+        # 2. RETURNER IMPACT (Defense)
+        # Return Skill wird aus Speed, Mental und Backhand approximiert (falls nicht explizit da)
+        ret_speed = returner_skills.get('speed', 50)
+        ret_mental = returner_skills.get('mental', 50)
+        # Gute Returner drücken die Hold-Quote
+        p_hold -= (ret_speed - 50) * 0.20
+        p_hold -= (ret_mental - 50) * 0.10
+
+        # 3. SURFACE / BSI PHYSICS
+        # BSI 1 (Slow) bis 10 (Fast). Average 5-6.
+        # Fast Court (8+) hilft dem Server massiv. Slow Court (3) hilft dem Returner.
+        bsi_delta = (bsi - 5.5) * 1.8 # Pro BSI Punkt ~1.8% Shift
+        p_hold += bsi_delta
+
+        # 4. CLAMPING (Realismus-Grenzen)
+        # Isner/Karlovic Peak: ~94%. Schwartzman Low: ~65% (ATP).
+        return max(50.0, min(96.0, p_hold)) / 100.0
+
+    @staticmethod
+    def simulate_set(p1_prob: float, p2_prob: float) -> int:
+        """Simuliert einen Satz Game für Game."""
+        g1, g2 = 0, 0
+        while True:
+            # Game Simulation (vereinfacht über p_hold)
+            # P1 serviert
+            if random.random() < p1_prob: g1 += 1
+            else: g2 += 1 # Break
+            
+            if g1 >= 6 and g1 - g2 >= 2: return g1 + g2
+            if g2 >= 6 and g2 - g1 >= 2: return g1 + g2
+            
+            # Tiebreak bei 6-6
+            if g1 == 6 and g2 == 6:
+                return 13 # 7-6 oder 6-7 sind immer 13 Games
+            
+            # P2 serviert
+            if random.random() < p2_prob: g2 += 1
+            else: g1 += 1 # Break
+            
+            if g1 >= 6 and g1 - g2 >= 2: return g1 + g2
+            if g2 >= 6 and g2 - g1 >= 2: return g1 + g2
+            
+            if g1 == 6 and g2 == 6:
+                return 13
+
+    @staticmethod
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
+        # 1. Berechne Hold-Wahrscheinlichkeiten
+        p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
+        p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
+        
+        total_games_log = []
+        
+        # 2. Monte Carlo Loop (Speed Optimized)
+        for _ in range(iterations):
+            # Best of 3 Simulation
+            set1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            set2 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            
+            total = set1 + set2
+            
+            # Prüfen ob 3. Satz nötig (grob vereinfacht: 50/50 split der Sätze oder basierend auf Skill Gap)
+            # Wir nutzen hier eine Skill-Gap-Logik für Satz-Siege
+            skill_diff = (p1_hold_prob - p2_hold_prob)
+            p1_win_set_prob = 0.5 + (skill_diff * 2.0) # Heuristik
+            
+            s1_winner = 1 if random.random() < p1_win_set_prob else 2
+            s2_winner = 1 if random.random() < p1_win_set_prob else 2
+            
+            if s1_winner != s2_winner:
+                # Dritter Satz
+                set3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+                total += set3
+                
+            total_games_log.append(total)
+            
+        # 3. Statistik & Aggregation
+        total_games_log.sort()
+        median_games = total_games_log[len(total_games_log)//2]
+        avg_games = sum(total_games_log) / len(total_games_log)
+        
+        # Wahrscheinlichkeiten für gängige Lines
+        probs = {
+            "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
+            "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
+            "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
+            "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
+        }
+        
+        return {
+            "predicted_line": round(avg_games, 1),
+            "median_games": median_games,
+            "probabilities": probs,
+            "sim_details": {
+                "p1_est_hold_pct": round(p1_hold_prob * 100, 1),
+                "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
+            }
+        }
+
 # --- SMART FREEZE HELPER ---
 def is_valid_opening_odd(o1: float, o2: float) -> bool:
     if o1 < 1.06 and o2 < 1.06: return False 
@@ -1008,7 +1130,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V82.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.0 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1143,25 +1265,32 @@ async def run_pipeline():
 
                                 else:
                                     # FRESH ANALYSIS
-                                    log(f"   🧠 Fresh Analysis: {n1} vs {n2}")
+                                    log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
+                                    
+                                    # --- 1. EXISTING DATA FETCHING ---
                                     f1_data = await fetch_player_form_quantum(browser, n1)
                                     f2_data = await fetch_player_form_quantum(browser, n2)
                                     elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                     e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                     e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                     
+                                    # --- 2. NEW: QUANTUM GAMES SIMULATION ---
+                                    # Wir nutzen die Skills aus der DB (s1, s2) und den BSI
+                                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
+                                    
+                                    # --- 3. EXISTING AI & PROB CALC ---
                                     ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
                                     prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                     
                                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                                     
-                                    # PURE VALUE CHECK
+                                    # PURE VALUE CHECK (Winner Market)
                                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                                     
+                                    # --- 4. FORMATTING OUTPUT ---
                                     value_tag = ""
-                                    
                                     if val_p1["is_value"]: 
                                         value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n1
@@ -1169,8 +1298,11 @@ async def run_pipeline():
                                         value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n2
                                     
+                                    # Füge Games Prediction zum AI Text hinzu (für den User sichtbar)
+                                    games_tag = f" [🎲 SIM: {sim_result['predicted_line']} Games]"
+                                    
                                     ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
-                                    ai_text_final = f"{ai_text_base} {value_tag}"
+                                    ai_text_final = f"{ai_text_base} {value_tag} {games_tag}"
                                     if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                                 
                                 data = {
@@ -1178,6 +1310,8 @@ async def run_pipeline():
                                     "odds1": m['odds1'], "odds2": m['odds2'], 
                                     "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                     "ai_analysis_text": ai_text_final,
+                                    # SPEICHERE DIE JSON SIMULATION
+                                    "games_prediction": sim_result, 
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                                 }
