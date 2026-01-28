@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V81.0 - PURE VALUE / NO STAKING [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V82.0 - PHYSICS ENGINE / WEATHER AWARE [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -171,6 +171,120 @@ def has_active_signal(text: Optional[str]) -> bool:
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
     return False
+
+# =================================================================
+# X. PHYSICS ENGINE (NEW MODULE)
+# =================================================================
+class PhysicsEngine:
+    BASE_URL = "https://api.open-meteo.com/v1/forecast"
+    GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
+    
+    # Cache für Koordinaten, um API Calls zu sparen
+    GEO_CACHE: Dict[str, Dict[str, float]] = {} 
+
+    @staticmethod
+    async def get_coordinates(city_name: str) -> Optional[Dict[str, float]]:
+        """
+        Konvertiert Stadt -> Lat/Long. Caching included.
+        """
+        if not city_name or city_name == "Unknown": return None
+        if city_name in PhysicsEngine.GEO_CACHE: return PhysicsEngine.GEO_CACHE[city_name]
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{PhysicsEngine.GEO_URL}?name={city_name}&count=1&language=en&format=json")
+                data = resp.json()
+                if "results" in data and data["results"]:
+                    loc = data["results"][0]
+                    coords = {"lat": loc["latitude"], "lon": loc["longitude"], "elevation": loc.get("elevation", 50)}
+                    PhysicsEngine.GEO_CACHE[city_name] = coords
+                    return coords
+        except Exception as e:
+            print(f"⚠️ Geo Error ({city_name}): {e}")
+        return None
+
+    @staticmethod
+    async def get_weather_impact(city: str, date_iso: str) -> Dict[str, Any]:
+        """
+        Holt Wetterdaten und berechnet den BSI (Ball Speed Index).
+        """
+        coords = await PhysicsEngine.get_coordinates(city)
+        if not coords: 
+            return {"bsi": 5.0, "desc": "Unknown Conditions", "temp": 20, "humidity": 50}
+
+        try:
+            # Open-Meteo braucht YYYY-MM-DD
+            # Wir nehmen einfach den Daily Max für den Tag, das reicht als Näherung
+            # Falls date_iso None ist oder kaputt, nimm heute
+            if not date_iso: date_iso = datetime.now().isoformat()
+            
+            try:
+                date_str = date_iso.split("T")[0]
+            except:
+                date_str = datetime.now().strftime("%Y-%m-%d")
+            
+            params = {
+                "latitude": coords["lat"],
+                "longitude": coords["lon"],
+                "daily": ["temperature_2m_max", "relative_humidity_2m_mean"],
+                "timezone": "auto",
+                "start_date": date_str,
+                "end_date": date_str
+            }
+            
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(PhysicsEngine.BASE_URL, params=params)
+                data = resp.json()
+                
+                if "daily" not in data: return {"bsi": 5.0, "desc": "Data Error", "temp": 20, "humidity": 50}
+                
+                temp = data["daily"]["temperature_2m_max"][0]
+                humid = data["daily"]["relative_humidity_2m_mean"][0]
+                elevation = coords["elevation"]
+
+                # --- THE PHYSICS CALCULATION (SILICON VALLEY MATH) ---
+                # Basis: 5.0 (Neutral)
+                # Hitze: Heiße Luft ist weniger dicht -> Ball fliegt schneller (+ Drag sinkt)
+                # Feuchtigkeit: Feuchte Luft ist leichter (!), aber Bälle saugen Wasser auf -> Schwerer/Langsamer
+                # Höhe: Dünnere Luft -> Schneller
+                
+                bsi = 5.0
+                
+                # 1. Temperature Impact
+                if temp > 30: bsi += 1.5      # Hitzeschlacht
+                elif temp > 25: bsi += 0.8    # Warm
+                elif temp < 15: bsi -= 1.0    # Kalt/Träge
+                elif temp < 10: bsi -= 2.0    # Kühlschrank
+                
+                # 2. Humidity Impact (Filz nimmt Wasser auf)
+                if humid > 70: bsi -= 1.0     # Schwer
+                elif humid > 90: bsi -= 2.0   # Sumpf
+                elif humid < 30: bsi += 0.5   # Trocken/Schnell
+                
+                # 3. Elevation Impact (Signifikant!)
+                if elevation > 500: bsi += 1.0
+                if elevation > 1000: bsi += 1.5
+
+                # Cap 0-10
+                bsi = max(0.0, min(10.0, bsi))
+                
+                desc = "Neutral"
+                if bsi >= 8.0: desc = "🚀 HYPER FAST (Serve Bot Paradise)"
+                elif bsi >= 6.5: desc = "⚡ FAST / LIVELY"
+                elif bsi <= 3.5: desc = "🐌 SLOW / HEAVY (Grinder's Joy)"
+                elif bsi <= 2.0: desc = "🧱 DEAD SLOW"
+                
+                return {
+                    "bsi": round(bsi, 1),
+                    "desc": desc,
+                    "temp": round(temp, 1),
+                    "humidity": round(humid, 1),
+                    "elevation": elevation
+                }
+
+        except Exception as e:
+            # print(f"⚠️ Weather Error: {e}") # Silent fail
+            return {"bsi": 5.0, "desc": "Calc Error", "temp": 20, "humidity": 50}
 
 # =================================================================
 # 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
@@ -735,11 +849,27 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
     
-    # [OPTIMIZATION] Compressed Prompt
+    # -------------------------------------------------------------
+    # [V82.0 FEATURE]: PHYSICS ENGINE INTEGRATION
+    # -------------------------------------------------------------
+    city_name = "Unknown"
+    # Versuche City aus Notes (wenn AI sie gefunden hat)
+    if "AI/Oracle:" in notes:
+        try: city_name = notes.split("AI/Oracle:")[1].strip()
+        except: pass
+    
+    physics = await PhysicsEngine.get_weather_impact(city_name, datetime.now().isoformat())
+    
+    # [OPTIMIZATION] Compressed Prompt with Physics Data
     prompt = f"""
-    Role: Elite Tennis Analyst.
+    Role: Elite Tennis Analyst (Physics-Aware).
     MATCHUP: {p1['last_name']} vs {p2['last_name']}
-    CONTEXT: {surface} (BSI: {bsi}/10) | {notes}
+    CONTEXT: {surface} (Base BSI: {bsi}/10)
+    
+    🏟️ ATMOSPHERIC CONDITIONS (PHYSICS ENGINE):
+    - Temp: {physics['temp']}°C | Humidity: {physics['humidity']}%
+    - Ball Speed Index (BSI): {physics['bsi']}/10
+    - Context: {physics['desc']}
     
     PLAYER A: {p1['last_name']}
     - Style: {p1.get('play_style', 'Unknown')}
@@ -753,10 +883,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     - BIO-LOAD: {fatigueB}
     - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No data"}
 
-    RULES:
-    1. FATIGUE: Reduce win% if "Heavy Legs"/"Critical Fatigue" (esp. vs Grinders or high BSI).
-    2. STYLE: Server vs Returner: Adv. Returner on Slow/Clay; Adv. Server on Fast/Grass.
-    3. SURFACE: High BSI favors Aggressors; Low BSI favors Defenders.
+    IMPACT RULES:
+    1. High BSI (>7.0): Air density is low. Ball flies fast. Advantage: Big Servers. Disadvantage: Defenders.
+    2. Low BSI (<4.0): Heavy air, ball fluffs up. Advantage: Grinders. Disadvantage: Flat hitters.
+    3. FATIGUE: Reduce win% if "Heavy Legs"/"Critical Fatigue".
 
     OUTPUT JSON ONLY:
     {{ 
@@ -764,7 +894,7 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
         "p2_tactical_score": [0-10], 
         "p1_form_score": {form1_data['score']}, 
         "p2_form_score": {form2_data['score']}, 
-        "ai_text": "Insight (fatigue/style/surface, max 25 words).", 
+        "ai_text": "Insight (include physics impact, max 25 words).", 
         "p1_win_sentiment": [0.0-1.0] 
     }}
     """
@@ -772,6 +902,10 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     data = ensure_dict(safe_get_ai_data(res))
     data['p1_form_score'] = form1_data['score']
     data['p2_form_score'] = form2_data['score']
+    
+    # Optional: Save weather data to DB if column exists (Silent Fail if not)
+    data['weather_data'] = physics
+    
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
@@ -1008,7 +1142,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V81.0 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V82.0 DIAMOND LOCK (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1195,7 +1329,9 @@ async def run_pipeline():
                                     "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                     "ai_analysis_text": ai_text_final,
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                    "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                                    "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z",
+                                    # Save weather data if available in ai dict
+                                    "weather_data": ai.get('weather_data') if isinstance(ai, dict) else None
                                 }
                                 
                                 final_match_id = None
