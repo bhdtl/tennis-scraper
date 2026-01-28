@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V84.0 - LOCATION PIPELINE FIX [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V85.0 - SUBSTRING DOMINANCE FIX [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -147,24 +147,27 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
     return candidates[0][0]
 
+# --- V85.0 FIX: AGGRESSIVE SUBSTRING MATCHING ---
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
     
-    # [V84.0 FIX] Improved Exact Matching
-    if d_norm == s_norm: return 100
-    if d_norm in s_norm and len(d_norm) > 3: return 100
+    # 1. EXACT SUBSTRING DOMINANCE (The Fix for 'Concepcion')
+    # If the DB name (e.g. "Concepcion") is fully inside the scraped name ("Challenger Concepcion")
+    # AND the DB name is significant enough (> 3 chars), we grant a massive score.
+    if d_norm in s_norm and len(d_norm) > 3:
+        return 100 
     
+    # 2. Token Matching (Legacy)
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
-    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger'}
+    stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger', '125', '75', '50'}
     s_tokens -= stop_words; d_tokens -= stop_words
     
     if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
-    score = len(common) * 10
+    score = len(common) * 15 # Increased weight per token
     
-    # Specific Boosts
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     
@@ -173,9 +176,7 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
 # --- V81.0: VALUE LOCK PARSER ---
 def has_active_signal(text: Optional[str]) -> bool:
     if not text: return False
-    # Check for V60+ Bracket format or V44 legacy format OR V81 Value Signals
     if "[" in text and "]" in text:
-        # Legacy Icons + New Value Icons (Fire, Sparkles, Chart, Eyes)
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
     return False
@@ -186,18 +187,12 @@ def has_active_signal(text: Optional[str]) -> bool:
 class PhysicsEngine:
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
     GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
-    
-    # Cache für Koordinaten, um API Calls zu sparen
     GEO_CACHE: Dict[str, Dict[str, float]] = {} 
 
     @staticmethod
     async def get_coordinates(city_name: str) -> Optional[Dict[str, float]]:
-        """
-        Konvertiert Stadt -> Lat/Long. Caching included.
-        """
         if not city_name or city_name == "Unknown": return None
         if city_name in PhysicsEngine.GEO_CACHE: return PhysicsEngine.GEO_CACHE[city_name]
-        
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"{PhysicsEngine.GEO_URL}?name={city_name}&count=1&language=en&format=json")
@@ -207,41 +202,27 @@ class PhysicsEngine:
                     coords = {"lat": loc["latitude"], "lon": loc["longitude"], "elevation": loc.get("elevation", 50)}
                     PhysicsEngine.GEO_CACHE[city_name] = coords
                     return coords
-        except Exception as e:
-            # print(f"⚠️ Geo Error ({city_name}): {e}") # Silent fail to keep logs clean
-            pass
+        except: pass
         return None
 
     @staticmethod
     async def get_weather_impact(city: str, date_iso: str) -> Dict[str, Any]:
-        """
-        Holt Wetterdaten und berechnet den BSI (Ball Speed Index).
-        """
         coords = await PhysicsEngine.get_coordinates(city)
-        if not coords: 
-            return {"bsi": 5.0, "desc": "Unknown Location", "temp": 20, "humidity": 50}
+        if not coords: return {"bsi": 5.0, "desc": "Unknown Location", "temp": 20, "humidity": 50}
 
         try:
             if not date_iso: date_iso = datetime.now().isoformat()
-            
-            try:
-                date_str = date_iso.split("T")[0]
-            except:
-                date_str = datetime.now().strftime("%Y-%m-%d")
+            try: date_str = date_iso.split("T")[0]
+            except: date_str = datetime.now().strftime("%Y-%m-%d")
             
             params = {
-                "latitude": coords["lat"],
-                "longitude": coords["lon"],
+                "latitude": coords["lat"], "longitude": coords["lon"],
                 "daily": ["temperature_2m_max", "relative_humidity_2m_mean"],
-                "timezone": "auto",
-                "start_date": date_str,
-                "end_date": date_str
+                "timezone": "auto", "start_date": date_str, "end_date": date_str
             }
-            
             async with httpx.AsyncClient() as client:
                 resp = await client.get(PhysicsEngine.BASE_URL, params=params)
                 data = resp.json()
-                
                 if "daily" not in data: return {"bsi": 5.0, "desc": "Data Unavailable", "temp": 20, "humidity": 50}
                 
                 temp = data["daily"]["temperature_2m_max"][0]
@@ -250,44 +231,33 @@ class PhysicsEngine:
 
                 # --- SILICON VALLEY PHYSICS MODEL ---
                 bsi = 5.0
+                # Temp: Heat reduces air density -> Faster (+1.5 max)
+                if temp > 30: bsi += 1.5
+                elif temp > 25: bsi += 0.8
+                elif temp < 15: bsi -= 1.0
+                elif temp < 10: bsi -= 2.0
                 
-                # 1. Temperature Impact
-                if temp > 30: bsi += 1.5      # Hitzeschlacht
-                elif temp > 25: bsi += 0.8    # Warm
-                elif temp < 15: bsi -= 1.0    # Kalt/Träge
-                elif temp < 10: bsi -= 2.0    # Kühlschrank
+                # Humidity: Heavy Air / Fluffy Ball -> Slower (-2.0 max)
+                if humid > 70: bsi -= 1.0
+                elif humid > 90: bsi -= 2.0
+                elif humid < 30: bsi += 0.5
                 
-                # 2. Humidity Impact (Filz nimmt Wasser auf)
-                if humid > 70: bsi -= 1.0     # Schwer
-                elif humid > 90: bsi -= 2.0   # Sumpf
-                elif humid < 30: bsi += 0.5   # Trocken/Schnell
-                
-                # 3. Elevation Impact (Signifikant!)
+                # Elevation: Thinner Air -> Faster (+1.5 max)
                 if elevation > 500: bsi += 1.0
                 if elevation > 1000: bsi += 1.5
 
-                # Cap 0-10
                 bsi = max(0.0, min(10.0, bsi))
-                
                 desc = "Neutral"
                 if bsi >= 8.0: desc = "🚀 HYPER FAST"
                 elif bsi >= 6.5: desc = "⚡ FAST / LIVELY"
                 elif bsi <= 3.5: desc = "🐌 SLOW / HEAVY"
                 elif bsi <= 2.0: desc = "🧱 DEAD SLOW"
                 
-                return {
-                    "bsi": round(bsi, 1),
-                    "desc": desc,
-                    "temp": round(temp, 1),
-                    "humidity": round(humid, 1),
-                    "elevation": elevation
-                }
-
-        except Exception as e:
-            return {"bsi": 5.0, "desc": "Calc Error", "temp": 20, "humidity": 50}
+                return {"bsi": round(bsi, 1), "desc": desc, "temp": round(temp, 1), "humidity": round(humid, 1), "elevation": elevation}
+        except: return {"bsi": 5.0, "desc": "Calc Error", "temp": 20, "humidity": 50}
 
 # =================================================================
-# 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
+# 3. QUANTUM FORM ENGINE
 # =================================================================
 class QuantumFormEngine:
     @staticmethod
