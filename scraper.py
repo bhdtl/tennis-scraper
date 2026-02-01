@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.2 - DUAL TRACKING ARCHITECT EDITION)...")
+log("🔌 Initialisiere Neural Scout (V83.3 - MARKET ANCHOR EDITION [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -593,7 +593,13 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if style_stats_p1 and style_stats_p1['verdict'] == "STRUGGLES": style_boost -= 0.06
     if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
-    weights = [0.20, 0.15, 0.05, 0.50, 0.10]; model_trust_factor = 0.45 
+    weights = [0.20, 0.15, 0.05, 0.50, 0.10];
+    
+    # [CHANGE: V83.3 MARKET ANCHOR]
+    # We set trust factor to 0.25 (25% AI / 75% Market).
+    # This anchors the fair odds heavily to the efficient market, reducing noise.
+    model_trust_factor = 0.25 
+    
     total_w = sum(weights); weights = [w/total_w for w in weights]
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
@@ -1144,7 +1150,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.2 DUAL-TRACKING (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.3 DUAL-TRACKING + MARKET ANCHOR (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
