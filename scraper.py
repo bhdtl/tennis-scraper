@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.1 - CALIBRATED GAMES SIMULATION [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.2 - DUAL TRACKING ARCHITECT EDITION)...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1144,7 +1144,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.1 DIAMOND LOCK (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.2 DUAL-TRACKING (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1345,19 +1345,21 @@ async def run_pipeline():
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
                             
-                            # --- V82.0: FULL DATA PERSISTENCE LAYER (FIXED) ---
-                            # Decoupled History Logging: Logs if (A) Value Signal OR (B) Significant Odds Movement
+                            # --- V83.2: DUAL-TRACKING PERSISTENCE LAYER (ARCHITECT FIX) ---
+                            # [ARCHITECT NOTE]: This block forces detailed logging for BOTH players curves
                             
                             should_log_history = False
                             movement_type = None
 
                             if final_match_id:
-                                # 1. Check for Odds Movement if it's an existing match
+                                # 1. Check for Odds Movement (EXISTING MATCH)
                                 if existing_match:
                                     prev_o1 = to_float(existing_match.get('odds1'), 0)
                                     prev_o2 = to_float(existing_match.get('odds2'), 0)
-                                    # LOG IF: Odds moved by > 2% (0.02)
-                                    if abs(prev_o1 - m['odds1']) > 0.02 or abs(prev_o2 - m['odds2']) > 0.02:
+                                    
+                                    # [FIX]: Wir speichern JEDE kleinste Bewegung (> 0.001).
+                                    # Wenn sich P1 bewegt, speichern wir AUCH P2, damit beide Graphen synchron bleiben.
+                                    if abs(prev_o1 - m['odds1']) > 0.001 or abs(prev_o2 - m['odds2']) > 0.001:
                                         should_log_history = True
                                         movement_type = "MARKET_MOVE"
                                 else:
@@ -1365,32 +1367,34 @@ async def run_pipeline():
                                     should_log_history = True
                                     movement_type = "OPENING"
                                 
-                                # 2. Force Log if Value is Active (Override)
+                                # 2. Value Signal erzwingt Speichern (Override)
                                 if is_value_active or is_signal_locked:
                                     should_log_history = True
                                     movement_type = "VALUE_SIGNAL"
 
                                 if should_log_history:
                                     # Determine Fair Odds Source
-                                    # If locked, use DB fair odds. If fresh, use calculated.
                                     f_o1 = existing_match.get('ai_fair_odds1') if is_signal_locked else (locals().get('fair1') or 0)
                                     f_o2 = existing_match.get('ai_fair_odds2') if is_signal_locked else (locals().get('fair2') or 0)
                                     
-                                    # Determine Pick Name
-                                    # If Value -> Player Name. If just Market Move -> NULL or special tag.
-                                    pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None) 
+                                    # [FIX]: Pick Name Logic - Only set name if it's strictly a value signal
+                                    pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None)
                                     
                                     h_data = {
                                         "match_id": final_match_id, 
-                                        "odds1": m['odds1'], "odds2": m['odds2'],
-                                        "fair_odds1": f_o1, "fair_odds2": f_o2, 
-                                        "is_hunter_pick": (is_value_active or is_signal_locked), # True only if value involved
+                                        "odds1": m['odds1'], # Save P1 Curve
+                                        "odds2": m['odds2'], # Save P2 Curve (Always saved together)
+                                        "fair_odds1": f_o1, 
+                                        "fair_odds2": f_o2, 
+                                        "is_hunter_pick": (is_value_active or is_signal_locked),
                                         "pick_player_name": pick_name,
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
-                                    supabase.table("odds_history").insert(h_data).execute()
-                                    if movement_type == "MARKET_MOVE":
-                                        log(f"      📉 Market Move Logged: {n1} ({m['odds1']}) vs {n2} ({m['odds2']})")
+                                    
+                                    try:
+                                        supabase.table("odds_history").insert(h_data).execute()
+                                    except Exception as db_err:
+                                        log(f"⚠️ History Insert Error: {db_err}")
 
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
