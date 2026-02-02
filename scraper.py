@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.4 - BACKFILL REPAIR EDITION)...")
+log("🔌 Initialisiere Neural Scout (V83.3 - MARKET ANCHOR EDITION [GROQ])...")
 
 # [CHANGE]: Switch to Groq API Key
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1150,7 +1150,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.4 BACKFILL REPAIR (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.3 DUAL-TRACKING + MARKET ANCHOR (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1336,16 +1336,6 @@ async def run_pipeline():
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                                 }
                                 
-                                # [ARCHITECT FIX] FORCE BACKFILL OPENING ODDS
-                                # Wenn das Match existiert, aber KEINE Opening Odds hat (Phantom-Startpunkt),
-                                # füllen wir sie jetzt auf, damit der Graph für BEIDE Spieler einen Startpunkt hat.
-                                if existing_match:
-                                    stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
-                                    if stored_op1 <= 1.01 and is_valid_opening_odd(m['odds1'], m['odds2']):
-                                        data["opening_odds1"] = m['odds1']
-                                        data["opening_odds2"] = m['odds2']
-                                        log(f"      🔧 Backfilled Opening Odds: {n1} ({m['odds1']})")
-
                                 final_match_id = None
                                 if db_match_id:
                                     # UPDATE without locking logic (standard update)
