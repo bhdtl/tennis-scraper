@@ -31,9 +31,9 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.3 - MARKET ANCHOR EDITION [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.4 - MARKET SANITY EDITION [GROQ])...")
 
-# [CHANGE]: Switch to Groq API Key
+# Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -44,7 +44,6 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# [CHANGE]: Use Llama 3 on Groq for max speed/quality
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -162,7 +161,6 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
-# --- V81.0: VALUE LOCK PARSER ---
 def has_active_signal(text: Optional[str]) -> bool:
     if not text: return False
     # Check for V60+ Bracket format or V44 legacy format OR V81 Value Signals
@@ -170,6 +168,43 @@ def has_active_signal(text: Optional[str]) -> bool:
         # Legacy Icons + New Value Icons (Fire, Sparkles, Chart, Eyes)
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
+    return False
+
+# --- NEW: MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
+def validate_market_integrity(o1: float, o2: float) -> bool:
+    """
+    Prüft, ob der Markt mathematisch valide ist.
+    Filtrert TennisExplorer Glitches wie 1.03 vs 1.03 oder extreme Arbitrage.
+    """
+    if o1 <= 1.01 or o2 <= 1.01: return False 
+    if o1 > 100 or o2 > 100: return False 
+
+    # Berechne Overround (Buchmacher Marge)
+    implied_prob = (1/o1) + (1/o2)
+    
+    # 1. Reject Massive Arbitrage (Fehlerhafte Daten)
+    if implied_prob < 0.92: return False 
+
+    # 2. Reject Massive Juice (Glitch)
+    if implied_prob > 1.25: return False
+
+    return True
+
+def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
+    """
+    Velocity Check: Blockiert unrealistische Sprünge (Spikes).
+    """
+    if old_o1 == 0 or old_o2 == 0: return False 
+
+    change_p1 = abs(new_o1 - old_o1) / old_o1
+    change_p2 = abs(new_o2 - old_o2) / old_o2
+
+    # REGEL: Wenn sich eine Quote um mehr als 35% ändert in EINEM Tick
+    if change_p1 > 0.35 or change_p2 > 0.35:
+        # Ausnahme: Extreme Favoriten
+        if old_o1 < 1.10 or old_o2 < 1.10: return False
+        return True
+    
     return False
 
 # =================================================================
@@ -260,7 +295,6 @@ class QuantumFormEngine:
 # 4. GROQ ENGINE
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
-    # [CHANGE]: Use Groq API (OpenAI Compatible)
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -374,7 +408,6 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
     except Exception as e: return None
 
-# --- V75.0: BIO-METRIC FATIGUE ENGINE (Deep Dive) ---
 async def get_advanced_load_analysis(supabase_client: Client, player_name: str) -> str:
     try:
         res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name')\
@@ -532,28 +565,21 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     return 0.5 * (1 + math.erf(z))
 
 def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
-    """
-    V81.0: Pure Value Engine. No Staking. No Bias.
-    Calculates Edge and defines Value Tier.
-    """
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
     
     market_odds = min(market_odds, 100.0)
     
-    # Expected Value Calculation
-    # EV = (Probability * DecimalOdds) - 1
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
 
     if edge_percent <= 0.5:
         return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
 
-    # Value Tiers (Alpha Signals)
     label = "VALUE"
-    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" # Massive Discrepancy
-    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" # Solid Edge
-    elif edge_percent >= 2.0: label = "📈 THIN VALUE" # Marginal Edge
+    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" 
+    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" 
+    elif edge_percent >= 2.0: label = "📈 THIN VALUE" 
     else: label = "👀 WATCH"
 
     return {
@@ -595,9 +621,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     weights = [0.20, 0.15, 0.05, 0.50, 0.10];
     
-    # [CHANGE: V83.3 MARKET ANCHOR]
-    # We set trust factor to 0.25 (25% AI / 75% Market).
-    # This anchors the fair odds heavily to the efficient market, reducing noise.
     model_trust_factor = 0.25 
     
     total_w = sum(weights); weights = [w/total_w for w in weights]
@@ -708,7 +731,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
                     return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
         return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
 
-    # V74.0: SEASONAL DISAMBIGUATION
     if match_date:
         month = match_date.month
         s_clean = s_low.lower()
@@ -741,7 +763,6 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
     styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
     
-    # [OPTIMIZATION] Compressed Prompt
     prompt = f"""
     Role: Elite Tennis Analyst.
     MATCHUP: {p1['last_name']} vs {p2['last_name']}
@@ -799,7 +820,6 @@ async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     except: return None
     finally: await page.close()
 
-# --- V72.0: THE ANCHOR PARSER (FORENSIC MODE) ---
 def parse_matches_locally_v5(html, p_names): 
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -812,29 +832,24 @@ def parse_matches_locally_v5(html, p_names):
         while i < len(rows):
             row = rows[i]
             
-            # --- Tour Header ---
             if "head" in row.get("class", []): 
                 current_tour = row.get_text(strip=True)
                 pending_p1_raw = None
                 i += 1; continue
             
-            # --- Valid Data Row Check ---
             cols = row.find_all('td')
             if len(cols) < 2: i += 1; continue
             
-            # --- Time Extraction ---
             first_cell = row.find('td', class_='first')
             if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
                 tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
                 if tm: pending_time = tm.group(1).zfill(5)
             
-            # --- Player Extraction ---
             p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
             if not p_cell: i += 1; continue
             p_raw = clean_player_name(p_cell.get_text(strip=True))
             p_href = p_cell.find('a')['href']
             
-            # --- Odds Extraction ---
             raw_odds = []
             for c in row.find_all('td', class_=re.compile(r'course')):
                 try:
@@ -842,10 +857,8 @@ def parse_matches_locally_v5(html, p_names):
                     if 1.01 <= val <= 100.0: raw_odds.append(val)
                 except: pass
 
-            # --- Match Pair Logic ---
             if pending_p1_raw:
                 p2_raw = p_raw; p2_href = p_href
-                # Invalid pair check (e.g. doubles usually have /)
                 if '/' in pending_p1_raw or '/' in p2_raw: 
                     pending_p1_raw = None; i += 1; continue
                 
@@ -863,7 +876,6 @@ def parse_matches_locally_v5(html, p_names):
                     winner_found = None
                     final_score = ""
                     
-                    # --- V72.0: ANCHOR SCORE EXTRACTION ---
                     def extract_row_data(r_row):
                         cells = r_row.find_all('td')
                         p_idx = -1
@@ -926,7 +938,6 @@ def parse_matches_locally_v5(html, p_names):
             i += 1
     return found
 
-# --- V72.0: AUDITOR (ANCHOR REUSE) ---
 async def update_past_results(browser: Browser):
     log("🏆 The Auditor: Checking Real-Time Results & Scores (V72.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
@@ -1013,119 +1024,82 @@ async def update_past_results(browser: Browser):
 class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
-    V83.1: Calibrated for realistic 3-set frequencies and hold percentages.
     """
     
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
-        # BASELINES ADJUSTMENT (Lowered to avoid inflation)
-        # ATP Avg ~78%, WTA ~62%. We start at a neutral ground.
         p_hold = 67.0 
         
-        # 1. SERVER IMPACT (Dampened Curve)
-        # Serve: Primärfaktor. Power: Sekundärfaktor.
         srv = server_skills.get('serve', 50)
         pwr = server_skills.get('power', 50)
         
-        # V83.1: Konservativere Kurve. 
-        # Vorher: (srv-50)*0.45. Jetzt: *0.35.
         p_hold += (srv - 50) * 0.35
         p_hold += (pwr - 50) * 0.10
 
-        # 2. RETURNER IMPACT (Defense)
         ret_speed = returner_skills.get('speed', 50)
         ret_mental = returner_skills.get('mental', 50)
         
         p_hold -= (ret_speed - 50) * 0.15
         p_hold -= (ret_mental - 50) * 0.08
 
-        # 3. SURFACE / BSI PHYSICS
-        # BSI 1-10. Normalisierung um 6.0 (Hardcourt Avg).
-        # Vorher 1.8. Jetzt 1.4 für weniger Volatilität.
         bsi_delta = (bsi - 6.0) * 1.4 
         p_hold += bsi_delta
 
-        # 4. CLAMPING (Realismus-Grenzen)
-        # Absolute Obergrenze 94% (Karlovic), Untergrenze 52% (WTA Clay).
         return max(52.0, min(94.0, p_hold)) / 100.0
 
     @staticmethod
     def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
-        """
-        Simuliert einen Satz und gibt (Winner, TotalGames) zurück.
-        1 = P1 gewinnt, 2 = P2 gewinnt.
-        """
         g1, g2 = 0, 0
         while True:
-            # P1 serviert
             if random.random() < p1_prob: g1 += 1
-            else: g2 += 1 # Break
+            else: g2 += 1 
             
             if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
             if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
             
-            # Tiebreak bei 6-6
             if g1 == 6 and g2 == 6:
-                # Tiebreak Simulation (Coinflip weighted by hold probs)
-                # Vereinfacht: Wer besser serviert, gewinnt TB eher
                 tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
                 if random.random() < tb_prob_p1: return (1, 13)
                 else: return (2, 13)
             
-            # P2 serviert
             if random.random() < p2_prob: g2 += 1
-            else: g1 += 1 # Break
+            else: g1 += 1 
             
             if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
             if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
             
             if g1 == 6 and g2 == 6:
-                # Tiebreak Logic (Same as above)
                 tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
                 if random.random() < tb_prob_p1: return (1, 13)
                 else: return (2, 13)
 
     @staticmethod
     def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
-        # 1. Berechne Hold-Wahrscheinlichkeiten
         p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
         p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
         
         total_games_log = []
         
-        # 2. Monte Carlo Loop
         for _ in range(iterations):
-            # SATZ 1
             winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-            
-            # MOMENTUM LOGIC (V83.1)
-            # Der Gewinner von Satz 1 spielt in Satz 2 oft befreiter (Confidence Boost).
-            # Wir erhöhen seine Hold-Prob temporär leicht (+2%) für Satz 2.
-            # Das reduziert die Wahrscheinlichkeit eines 3. Satzes.
             
             p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
             p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
             
-            # SATZ 2
             winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
             
             total = games_s1 + games_s2
             
-            # 3. SATZ CHECK
             if winner_s1 != winner_s2:
-                # Dritter Satz wird gespielt
-                # Reset Momentum (Fight to death)
                 winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
                 total += games_s3
                 
             total_games_log.append(total)
             
-        # 3. Statistik & Aggregation
         total_games_log.sort()
         median_games = total_games_log[len(total_games_log)//2]
         avg_games = sum(total_games_log) / len(total_games_log)
         
-        # Wahrscheinlichkeiten für gängige Lines
         probs = {
             "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
             "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
@@ -1150,7 +1124,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.3 DUAL-TRACKING + MARKET ANCHOR (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.4 MARKET INTEGRITY (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1172,7 +1146,6 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        # [OPTIMIZATION] Rate Limit Safety
                         await asyncio.sleep(0.5) 
                         
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
@@ -1183,6 +1156,12 @@ async def run_pipeline():
                             if p1_obj.get('tour') != p2_obj.get('tour'):
                                 if "united cup" not in m['tour'].lower(): continue 
                             
+                            # --- V83.4: MARKET SANITY GATEKEEPER ---
+                            # Wenn Odds Quatsch sind (z.B. 1.03 vs 1.03 oder extreme Arbitrage), ignorieren
+                            if not validate_market_integrity(m['odds1'], m['odds2']):
+                                log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
+                                continue 
+
                             existing_match = None
                             res1 = supabase.table("market_odds").select("*").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
                             if res1.data: existing_match = res1.data[0]
@@ -1190,13 +1169,19 @@ async def run_pipeline():
                                 res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                                 if res2.data: existing_match = res2.data[0]
                             
+                            # --- VELOCITY CHECK (Anti-Spike) ---
+                            if existing_match:
+                                prev_o1 = to_float(existing_match.get('odds1'), 0)
+                                prev_o2 = to_float(existing_match.get('odds2'), 0)
+                                if is_suspicious_movement(prev_o1, m['odds1'], prev_o2, m['odds2']):
+                                    log(f"   ⚠️ REJECTED SPIKE: {n1} ({prev_o1}->{m['odds1']}) vs {n2}")
+                                    continue
+
                             db_match_id = None
                             
-                            # --- V82.0: DIAMOND LOCK CHECK (VALUE SIGNAL) ---
                             is_signal_locked = False
                             if existing_match:
                                 db_match_id = existing_match['id']
-                                # 1. Update Winner if found
                                 actual_winner_val = m.get('actual_winner')
                                 if actual_winner_val and not existing_match.get('actual_winner_name'):
                                      update_payload = {"actual_winner_name": actual_winner_val}
@@ -1206,20 +1191,17 @@ async def run_pipeline():
                                      continue 
                                 if existing_match.get('actual_winner_name'): continue 
 
-                                # 2. Check for Lock (Using new Value Icons)
                                 if has_active_signal(existing_match.get('ai_analysis_text', '')):
                                     is_signal_locked = True
-                                    log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2} (Preserving Value Signal)")
+                                    log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
 
                             # --- UPDATE LOGIC WITH LOCK ---
                             if is_signal_locked:
-                                # ONLY Update Current Odds. Do NOT touch AI Text or Fair Odds.
                                 update_data = {
-                                    "odds1": m['odds1'], # Live Market Move
+                                    "odds1": m['odds1'], 
                                     "odds2": m['odds2'],
                                 }
                                 
-                                # Fix opening odds if they were garbage before but valid now
                                 stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
                                 stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
                                 if not is_valid_opening_odd(stored_op1, stored_op2) and is_valid_opening_odd(m['odds1'], m['odds2']):
@@ -1229,7 +1211,6 @@ async def run_pipeline():
                                 supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                                 
                             else:
-                                # --- NO SIGNAL LOCKED OR NEW MATCH -> RUN FULL ANALYSIS ---
                                 cached_ai = {}
                                 if existing_match and existing_match.get('ai_analysis_text'):
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
@@ -1246,7 +1227,6 @@ async def run_pipeline():
                                 
                                 is_value_active = False; value_pick_player = None
                                 
-                                # Smart Cache Logic for Non-Locked Matches
                                 should_run_ai = True
                                 if db_match_id and cached_ai:
                                     odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
@@ -1258,58 +1238,47 @@ async def run_pipeline():
                                     if not is_significant_move and not is_stale: should_run_ai = False
                                     
                                 if not should_run_ai:
-                                    # RECALCULATE VALUE (Smart Cache Mode)
                                     ai_text_final = cached_ai['ai_text']
                                     new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
                                     
                                     fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                                     fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                                     
-                                    # PURE VALUE CHECK
                                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                                     
                                     value_tag = ""
                                     
                                     if val_p1["is_value"]: 
-                                        # NEW FORMAT: [🔥 HIGH VALUE: PlayerName @ 2.50 | Fair: 2.00 | Edge: 25.0%]
                                         value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n1
                                     elif val_p2["is_value"]: 
                                         value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n2
                                     
-                                    # Strip old tags and append new one
                                     ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                                     ai_text_final = ai_text_base + value_tag
 
                                 else:
-                                    # FRESH ANALYSIS
                                     log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
                                     
-                                    # --- 1. EXISTING DATA FETCHING ---
                                     f1_data = await fetch_player_form_quantum(browser, n1)
                                     f2_data = await fetch_player_form_quantum(browser, n2)
                                     elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                     e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                     e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                     
-                                    # --- 2. NEW: QUANTUM GAMES SIMULATION ---
-                                    # Wir nutzen die Skills aus der DB (s1, s2) und den BSI
                                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                                     
-                                    # --- 3. EXISTING AI & PROB CALC ---
                                     ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
                                     prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                     
                                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                                     
-                                    # PURE VALUE CHECK (Winner Market)
                                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                                     
-                                    # --- 4. FORMATTING OUTPUT ---
                                     value_tag = ""
                                     if val_p1["is_value"]: 
                                         value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
@@ -1318,7 +1287,6 @@ async def run_pipeline():
                                         value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                         is_value_active = True; value_pick_player = n2
                                     
-                                    # Füge Games Prediction zum AI Text hinzu (für den User sichtbar)
                                     games_tag = f" [🎲 SIM: {sim_result['predicted_line']} Games]"
                                     
                                     ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
@@ -1330,7 +1298,6 @@ async def run_pipeline():
                                     "odds1": m['odds1'], "odds2": m['odds2'], 
                                     "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                     "ai_analysis_text": ai_text_final,
-                                    # SPEICHERE DIE JSON SIMULATION
                                     "games_prediction": sim_result, 
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
@@ -1338,12 +1305,10 @@ async def run_pipeline():
                                 
                                 final_match_id = None
                                 if db_match_id:
-                                    # UPDATE without locking logic (standard update)
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                     final_match_id = db_match_id
                                     log(f"🔄 Updated: {n1} vs {n2}")
                                 else:
-                                    # INSERT
                                     if is_valid_opening_odd(m['odds1'], m['odds2']):
                                         data["opening_odds1"] = m['odds1']
                                         data["opening_odds2"] = m['odds2']
@@ -1351,45 +1316,37 @@ async def run_pipeline():
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
                             
-                            # --- V83.2: DUAL-TRACKING PERSISTENCE LAYER (ARCHITECT FIX) ---
-                            # [ARCHITECT NOTE]: This block forces detailed logging for BOTH players curves
+                            # --- V83.2: DUAL-TRACKING PERSISTENCE LAYER ---
                             
-                            should_log_history = False
-                            movement_type = None
-
                             if final_match_id:
-                                # 1. Check for Odds Movement (EXISTING MATCH)
+                                should_log_history = False
+                                movement_type = None
+                                
                                 if existing_match:
                                     prev_o1 = to_float(existing_match.get('odds1'), 0)
                                     prev_o2 = to_float(existing_match.get('odds2'), 0)
                                     
-                                    # [FIX]: Wir speichern JEDE kleinste Bewegung (> 0.001).
-                                    # Wenn sich P1 bewegt, speichern wir AUCH P2, damit beide Graphen synchron bleiben.
                                     if abs(prev_o1 - m['odds1']) > 0.001 or abs(prev_o2 - m['odds2']) > 0.001:
                                         should_log_history = True
                                         movement_type = "MARKET_MOVE"
                                 else:
-                                    # New Match = Initial Log
                                     should_log_history = True
                                     movement_type = "OPENING"
                                 
-                                # 2. Value Signal erzwingt Speichern (Override)
                                 if is_value_active or is_signal_locked:
                                     should_log_history = True
                                     movement_type = "VALUE_SIGNAL"
 
                                 if should_log_history:
-                                    # Determine Fair Odds Source
                                     f_o1 = existing_match.get('ai_fair_odds1') if is_signal_locked else (locals().get('fair1') or 0)
                                     f_o2 = existing_match.get('ai_fair_odds2') if is_signal_locked else (locals().get('fair2') or 0)
                                     
-                                    # [FIX]: Pick Name Logic - Only set name if it's strictly a value signal
                                     pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None)
                                     
                                     h_data = {
                                         "match_id": final_match_id, 
-                                        "odds1": m['odds1'], # Save P1 Curve
-                                        "odds2": m['odds2'], # Save P2 Curve (Always saved together)
+                                        "odds1": m['odds1'], 
+                                        "odds2": m['odds2'], 
                                         "fair_odds1": f_o1, 
                                         "fair_odds2": f_o2, 
                                         "is_hunter_pick": (is_value_active or is_signal_locked),
@@ -1404,10 +1361,6 @@ async def run_pipeline():
 
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
-    
-    # --- PHASE: DATA RETENTION ---
-    # Optional: Python-based cleanup (redundant if pg_cron is active, but safe)
-    # await run_retention_policy() 
     
     log("🏁 Cycle Finished.")
 
