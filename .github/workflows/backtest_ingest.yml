@@ -1,7 +1,7 @@
-name: 🏺 Historical Data Ingest (Backtest)
+name: 🏺 Historical Data Ingest (V4)
 
 on:
-  workflow_dispatch: # Manueller Start Button
+  workflow_dispatch: # Manueller Start über GitHub
 
 jobs:
   ingest-history:
@@ -18,10 +18,14 @@ jobs:
 
       - name: 📦 Install Dependencies
         run: |
-          pip install pandas requests supabase openpyxl
+          pip install pandas requests supabase openpyxl python-dotenv
 
       - name: 🚀 Run Ingestion Script
+        # DAS HIER IST DER FEHLENDE SCHLÜSSEL ZUM ERFOLG:
         env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Nimm den Service Role Key für Schreibrechte!
+          # WICHTIG: Wir mappen den Service Key auf beide Variablen zur Sicherheit
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python backtest_ingest.py
