@@ -1,0 +1,27 @@
+name: 🏺 Historical Data Ingest (Backtest)
+
+on:
+  workflow_dispatch: # Manueller Start Button
+
+jobs:
+  ingest-history:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 📦 Install Dependencies
+        run: |
+          pip install pandas requests supabase openpyxl
+
+      - name: 🚀 Run Ingestion Script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Nimm den Service Role Key für Schreibrechte!
+        run: python backtest_ingest.py
