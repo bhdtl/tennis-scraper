@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-🎾 NEURAL SCOUT - HISTORICAL DATA INGESTION ENGINE (V2 - IDEMPOTENT)
+🎾 NEURAL SCOUT - HISTORICAL DATA INGESTION ENGINE (V3 - CANONICAL & ROBUST)
 Source: tennis-data.co.uk
 Target: Supabase 'market_odds'
-Feature: Deterministic IDs prevents duplicates automatically.
+Features: Canonical IDs, Requests Retry, Time-Travel Timestamping
 """
 
 import os
@@ -12,15 +12,22 @@ import sys
 import requests
 import pandas as pd
 import hashlib
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from supabase import create_client, Client
 
 # --- CONFIG ---
 DATA_URLS = [
+    # ATP
     "http://www.tennis-data.co.uk/2023/2023.xlsx",
     "http://www.tennis-data.co.uk/2024/2024.xlsx",
+    "http://www.tennis-data.co.uk/2025/2025.xlsx", # Falls verfügbar
+    # WTA
     "http://www.tennis-data.co.uk/2023w/2023.xlsx",
-    "http://www.tennis-data.co.uk/2024w/2024.xlsx"
+    "http://www.tennis-data.co.uk/2024w/2024.xlsx",
+    "http://www.tennis-data.co.uk/2025w/2025.xlsx"
 ]
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -32,77 +39,125 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def generate_deterministic_id(date_str, p1, p2):
-    """
-    Erstellt einen einzigartigen Fingerabdruck für das Match.
-    Gleiches Spiel = Gleiche ID. Verhindert Duplikate zu 100%.
-    """
-    raw = f"{date_str}_{p1}_{p2}".lower().encode('utf-8')
-    return hashlib.md5(raw).hexdigest() # Gibt eine UUID-ähnliche ID zurück
+# --- NETWORK SESSION WITH RETRY ---
+def get_session():
+    session = requests.Session()
+    retry = Retry(connect=3, backoff_factor=0.5)
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    return session
+
+# --- CORE LOGIC ---
 
 def normalize_name(name):
+    """
+    Standardisiert Namen: 'Sinner J.' -> 'Sinner'
+    """
     if not isinstance(name, str): return "Unknown"
-    # "Sinner J." -> "Sinner"
-    parts = name.strip().split()
+    name = name.strip()
+    # Entferne Initialen am Ende wenn vorhanden (Space + 1-2 Buchstaben + Punkt optional)
+    parts = name.split()
     if len(parts) > 1 and len(parts[-1]) <= 2:
         return " ".join(parts[:-1])
-    return name.strip()
+    return name
 
-def process_and_upload(url):
-    print(f"📥 Downloading: {url}...")
+def generate_canonical_id(date_str, p1, p2):
+    """
+    Erzeugt eine ID, die unabhängig von der Reihenfolge der Spieler ist.
+    Sinner vs Alcaraz = Alcaraz vs Sinner.
+    """
+    # 1. Namen normalisieren
+    n1 = normalize_name(p1).lower()
+    n2 = normalize_name(p2).lower()
+    
+    # 2. Alphabetisch sortieren (DAS IST DER FIX)
+    players = sorted([n1, n2])
+    
+    # 3. Hash erzeugen
+    raw = f"{date_str}_{players[0]}_{players[1]}".encode('utf-8')
+    md5_hash = hashlib.md5(raw).hexdigest()
+    
+    # 4. Als UUID formatieren
+    return f"{md5_hash[:8]}-{md5_hash[8:12]}-{md5_hash[12:16]}-{md5_hash[16:20]}-{md5_hash[20:]}"
+
+def process_and_upload(session, url):
+    filename = url.split("/")[-1]
+    folder = url.split("/")[-2]
+    label = f"[{folder}/{filename}]"
+    
+    print(f"📥 {label} Downloading...")
     
     try:
-        response = requests.get(url)
+        response = session.get(url, timeout=30)
+        if response.status_code == 404:
+            print(f"⚠️ {label} Not found (yet). Skipping.")
+            return
+
         response.raise_for_status()
-        df = pd.read_excel(io.BytesIO(response.content))
         
+        # Load Excel
+        df = pd.read_excel(io.BytesIO(response.content))
+        total_rows = len(df)
+        print(f"   📊 {label} Parsing {total_rows} matches...")
+
         records_to_upsert = []
         
-        print(f"   📊 Processing {len(df)} matches...")
-
         for _, row in df.iterrows():
             try:
-                if pd.isna(row['Winner']) or pd.isna(row['Loser']): continue
+                # Validierung
+                if pd.isna(row.get('Winner')) or pd.isna(row.get('Loser')): continue
                 
-                # Namen normalisieren
-                p1_name = normalize_name(row['Winner'])
-                p2_name = normalize_name(row['Loser'])
+                # Datum
+                raw_date = row.get('Date')
+                if pd.isna(raw_date): continue
                 
-                # Datum formatieren
-                raw_date = row['Date']
                 if isinstance(raw_date, datetime):
                     date_str = raw_date.strftime("%Y-%m-%d")
                 else:
-                    date_str = str(raw_date)[:10] # Fallback
-                
-                # Deterministic ID generieren (Der Duplikat-Killer)
-                # Wir nutzen ein Prefix 'hist_', damit man sie leicht erkennen kann
-                match_uuid = generate_deterministic_id(date_str, p1_name, p2_name)
-                # Supabase nutzt UUIDs, MD5 ist ein 32-char hex string. 
-                # Wir formatieren es als UUID: 8-4-4-4-12
-                fake_uuid = f"{match_uuid[:8]}-{match_uuid[8:12]}-{match_uuid[12:16]}-{match_uuid[16:20]}-{match_uuid[20:]}"
+                    # Fallback für Strings
+                    date_str = str(raw_date)[:10]
 
-                # Odds Check
-                o1 = row.get('B365W') if not pd.isna(row.get('B365W')) else row.get('AvgW')
-                o2 = row.get('B365L') if not pd.isna(row.get('B365L')) else row.get('AvgL')
+                # Namen
+                p1_name = normalize_name(row['Winner'])
+                p2_name = normalize_name(row['Loser'])
                 
-                if pd.isna(o1) or pd.isna(o2): continue
+                # CANONICAL ID
+                match_uuid = generate_canonical_id(date_str, p1_name, p2_name)
                 
+                # Odds (Priorität: Bet365 -> Avg -> Pinnacle)
+                o1 = row.get('B365W')
+                o2 = row.get('B365L')
+                
+                if pd.isna(o1) or pd.isna(o2):
+                    o1 = row.get('AvgW')
+                    o2 = row.get('AvgL')
+                
+                if pd.isna(o1) or pd.isna(o2): continue # Skip if no odds
+                
+                # Score & Surface
+                score = str(row.get('Score', '')) if not pd.isna(row.get('Score')) else ""
+                surface = str(row.get('Surface', 'Hard'))
+                
+                # Timestamp Simulation
+                # Wir setzen created_at auf das Match-Datum, damit die Sortierung stimmt
+                simulated_time = f"{date_str}T12:00:00Z"
+
                 match_obj = {
-                    "id": fake_uuid, # WICHTIG: Wir setzen die ID selbst!
+                    "id": match_uuid,
                     "player1_name": p1_name,
                     "player2_name": p2_name,
                     "tournament": str(row.get('Tournament', 'Unknown')),
-                    "match_time": f"{date_str}T12:00:00Z",
-                    "created_at": datetime.now().isoformat(),
+                    "match_time": simulated_time,
+                    "created_at": simulated_time, # TIME-TRAVEL FIX
                     "odds1": float(o1),
                     "odds2": float(o2),
-                    "opening_odds1": float(o1),
+                    "opening_odds1": float(o1), # Historisch = Closing ist unser Opening
                     "opening_odds2": float(o2),
-                    "actual_winner_name": p1_name, 
-                    "score": str(row.get('Score', '')),
+                    "actual_winner_name": p1_name, # Winner Spalte aus Excel
+                    "score": score,
                     "bookmaker": "Historical (B365)",
-                    "ai_analysis_text": f"[HISTORICAL] Surface: {row.get('Surface','Hard')}"
+                    "ai_analysis_text": f"[HISTORICAL] {surface} | Rank: {row.get('WRank','-')} vs {row.get('LRank','-')}"
                 }
                 
                 records_to_upsert.append(match_obj)
@@ -110,25 +165,32 @@ def process_and_upload(url):
             except Exception:
                 continue
 
-        # Batch Upsert
-        CHUNK_SIZE = 100
-        print(f"   🚀 Upserting {len(records_to_upsert)} matches...")
+        # BATCH UPSERT
+        if not records_to_upsert:
+            print(f"   ⚠️ {label} No valid records found.")
+            return
+
+        CHUNK_SIZE = 200 # Erhöht für Speed
+        print(f"   🚀 {label} Upserting {len(records_to_upsert)} matches...")
         
         for i in range(0, len(records_to_upsert), CHUNK_SIZE):
             chunk = records_to_upsert[i:i + CHUNK_SIZE]
             try:
-                # upsert statt insert! 
-                # on_conflict='id' sorgt dafür, dass existierende IDs überschrieben werden.
+                # upsert with ignore_duplicates=False (wir wollen überschreiben/updaten)
                 supabase.table("market_odds").upsert(chunk, on_conflict='id').execute()
-                print(f"      ✅ Chunk {i // CHUNK_SIZE + 1} synced.")
+                # Kleiner Sleep um API Rate Limits zu schonen
+                time.sleep(0.1) 
             except Exception as e:
                 print(f"      ⚠️ Chunk Error: {e}")
                 
-    except Exception as main_e:
-        print(f"❌ Failed: {main_e}")
+        print(f"   ✅ {label} Done.")
+
+    except Exception as e:
+        print(f"❌ {label} Critical Error: {e}")
 
 if __name__ == "__main__":
-    print("🏁 Starting Idempotent Backfill...")
-    for url in DATA_URLS:
-        process_and_upload(url)
-    print("✅ Complete.")
+    print("🏁 Starting Robust Historical Ingest...")
+    sess = get_session()
+    for u in DATA_URLS:
+        process_and_upload(sess, u)
+    print("✅ All jobs finished.")
