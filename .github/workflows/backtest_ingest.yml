@@ -1,31 +1,40 @@
-name: 🏺 Historical Data Ingest (V4)
+name: 🏺 Historical Data Ingest (Backtest Engine)
 
+# HIER IST DER SCHUTZ-MECHANISMUS:
+# Kein 'schedule' vorhanden -> Kein automatischer Start.
 on:
-  workflow_dispatch: # Manueller Start über GitHub
+  workflow_dispatch: # Das bedeutet: Nur "Run Workflow" Button.
 
 jobs:
-  ingest-history:
+  ingest:
+    name: Run Backtest Ingest
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 15 
+
     steps:
       - name: 📥 Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python
-        uses: actions/setup-python@v4
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.10'
+          cache: 'pip'
 
       - name: 📦 Install Dependencies
         run: |
+          python -m pip install --upgrade pip
+          # openpyxl ist wichtig für Excel, python-dotenv für Keys
           pip install pandas requests supabase openpyxl python-dotenv
 
-      - name: 🚀 Run Ingestion Script
-        # DAS HIER IST DER FEHLENDE SCHLÜSSEL ZUM ERFOLG:
+      - name: 🚀 Run Ingest Script (Manual Trigger)
         env:
+          # Wir injizieren die Secrets exakt wie beim Scraper
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          # WICHTIG: Wir mappen den Service Key auf beide Variablen zur Sicherheit
-          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Service Role Key für Schreibrechte (Upsert)
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python backtest_ingest.py
+        run: |
+          # Hier rufen wir das Backtest-Script auf, NICHT den Scraper
+          python backtest_ingest.py
