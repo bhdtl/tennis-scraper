@@ -32,7 +32,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V90.1 - FULL PRODUCTION RELEASE)...")
+log("🔌 Initialisiere Neural Scout (V92.0 - IRONCLAD EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -61,7 +61,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS (CORE UTILS)
+# 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -72,14 +72,9 @@ def normalize_text(text: str) -> str:
     if not text: return ""
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn')
 
+# --- SOTA: Deterministic Hashing (Fixes Duplicates) ---
 def generate_match_hash(p1_name: str, p2_name: str, tournament_name: str, date_str: str) -> str:
-    """
-    Erstellt einen deterministischen Hash für ein Match.
-    Namen werden alphabetisch sortiert, um P1 vs P2 und P2 vs P1 gleich zu behandeln.
-    Das verhindert Dubletten auch wenn sich die Uhrzeit ändert.
-    """
     names = sorted([normalize_db_name(p1_name), normalize_db_name(p2_name)])
-    # Wir nehmen nur Jahr-Monat-Tag für den Hash, ignorieren Uhrzeit für Idempotenz
     raw_str = f"{names[0]}|{names[1]}|{normalize_db_name(tournament_name)}|{date_str}"
     return hashlib.md5(raw_str.encode('utf-8')).hexdigest()
 
@@ -185,7 +180,7 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: return False 
     if o1 > 100 or o2 > 100: return False 
     implied_prob = (1/o1) + (1/o2)
-    # Etwas lockerer für ITF/Challenger damit wir nicht zu viel verwerfen
+    # Slightly looser tolerance for ITF
     if implied_prob < 0.85: return False 
     if implied_prob > 1.30: return False
     return True
@@ -615,6 +610,27 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         prob_market = inv1 / (inv1 + inv2)
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
+
+def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
+    try:
+        old_prob_market = 0.5
+        if old_market_odds1 > 1 and old_market_odds2 > 1:
+            inv1 = 1/old_market_odds1; inv2 = 1/old_market_odds2
+            old_prob_market = inv1 / (inv1 + inv2)
+        if old_fair_odds1 <= 1.01: return 0.5
+        old_final_prob = 1 / old_fair_odds1
+        alpha_part = old_final_prob - (old_prob_market * 0.40)
+        prob_alpha = alpha_part / 0.60
+        new_prob_market = 0.5
+        if new_market_odds1 > 1 and new_market_odds2 > 1:
+            inv1 = 1/new_market_odds1; inv2 = 1/new_market_odds2
+            new_prob_market = inv1 / (inv1 + inv2)
+        new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
+        if new_market_odds1 < 1.10:
+             mkt_prob1 = 1/new_market_odds1
+             new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
+        return new_final_prob
+    except: return 0.5
 
 # =================================================================
 # 7. PIPELINE UTILS
