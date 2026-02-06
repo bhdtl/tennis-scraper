@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.5 - HYBRID GOLDEN MASTER [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.6 - MOVEMENT HARDENING [GROQ])...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1124,7 +1124,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.5 HYBRID GOLDEN MASTER (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.6 MOVEMENT FIX (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1148,6 +1148,13 @@ async def run_pipeline():
                     try:
                         await asyncio.sleep(0.5) 
                         
+                        # --- INIT VARIABLES TO PREVENT SCOPE ERROR ---
+                        fair1 = 0
+                        fair2 = 0
+                        final_match_id = None
+                        is_value_active = False
+                        value_pick_player = None
+                        
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                         if p1_obj and p2_obj:
@@ -1156,8 +1163,6 @@ async def run_pipeline():
                             if p1_obj.get('tour') != p2_obj.get('tour'):
                                 if "united cup" not in m['tour'].lower(): continue 
                             
-                            # --- V83.4: MARKET SANITY GATEKEEPER ---
-                            # Wenn Odds Quatsch sind (z.B. 1.03 vs 1.03 oder extreme Arbitrage), ignorieren
                             if not validate_market_integrity(m['odds1'], m['odds2']):
                                 log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
                                 continue 
@@ -1169,7 +1174,6 @@ async def run_pipeline():
                                 res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                                 if res2.data: existing_match = res2.data[0]
                             
-                            # --- VELOCITY CHECK (Anti-Spike) ---
                             if existing_match:
                                 prev_o1 = to_float(existing_match.get('odds1'), 0)
                                 prev_o2 = to_float(existing_match.get('odds2'), 0)
@@ -1178,9 +1182,7 @@ async def run_pipeline():
                                     continue
 
                             db_match_id = None
-                            
                             is_signal_locked = False
-                            final_match_id = None
 
                             if existing_match:
                                 db_match_id = existing_match['id']
@@ -1197,13 +1199,11 @@ async def run_pipeline():
                                     is_signal_locked = True
                                     log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
 
-                            # --- UPDATE LOGIC WITH LOCK ---
                             if is_signal_locked:
                                 update_data = {
                                     "odds1": m['odds1'], 
                                     "odds2": m['odds2'],
                                 }
-                                
                                 stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
                                 stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
                                 if not is_valid_opening_odd(stored_op1, stored_op2) and is_valid_opening_odd(m['odds1'], m['odds2']):
@@ -1227,8 +1227,6 @@ async def run_pipeline():
                                 style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
                                 surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                                 surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
-                                
-                                is_value_active = False; value_pick_player = None
                                 
                                 should_run_ai = True
                                 if db_match_id and cached_ai:
@@ -1318,42 +1316,40 @@ async def run_pipeline():
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
                             
-                            # --- V85.0: TRANSPLANTED DIRECT LINKING HISTORY LOGIC (HYBRID FIX) ---
-                            # This block is taken from Code 2 but adapted to work with Code 1's flow
+                            # --- ROBUST HISTORY LOGGING (The Hardened Fix) ---
                             
                             if final_match_id:
                                 should_log_history = False
                                 
-                                if not existing_match: should_log_history = True # New match
-                                elif is_signal_locked: should_log_history = True # Always track locked
+                                if not existing_match: should_log_history = True
+                                elif is_signal_locked: should_log_history = True
                                 else:
-                                    # Check Delta
                                     old_o1_hist = to_float(existing_match.get('odds1'), 0)
                                     if abs(old_o1_hist - m['odds1']) > 0.001: should_log_history = True
                                 
                                 if should_log_history:
-                                    # Safely get Fair Odds from wherever they might be (Calculated fresh OR from DB)
-                                    current_fair1 = locals().get('fair1') or existing_match.get('ai_fair_odds1') if existing_match else 0
-                                    current_fair2 = locals().get('fair2') or existing_match.get('ai_fair_odds2') if existing_match else 0
+                                    # Scope-Hardening: Ensure we never try to insert NULL fair odds
+                                    use_f1 = fair1 if fair1 > 0 else (existing_match.get('ai_fair_odds1', 0) if existing_match else 0)
+                                    use_f2 = fair2 if fair2 > 0 else (existing_match.get('ai_fair_odds2', 0) if existing_match else 0)
                                     
-                                    # Pick Name Logic
                                     pick_name = None
                                     if is_signal_locked: pick_name = "LOCKED"
-                                    elif 'value_pick_player' in locals() and value_pick_player: pick_name = value_pick_player
+                                    elif is_value_active and value_pick_player: pick_name = value_pick_player
                                     
                                     h_data = {
                                         "match_id": final_match_id, 
                                         "odds1": m['odds1'], 
                                         "odds2": m['odds2'], 
-                                        "fair_odds1": current_fair1, 
-                                        "fair_odds2": current_fair2, 
-                                        "is_hunter_pick": (is_signal_locked or (is_value_active if 'is_value_active' in locals() else False)),
+                                        "fair_odds1": use_f1, 
+                                        "fair_odds2": use_f2, 
+                                        "is_hunter_pick": (is_signal_locked or is_value_active),
                                         "pick_player_name": pick_name,
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
                                     
                                     try:
                                         supabase.table("odds_history").insert(h_data).execute()
+                                        log(f"   📈 HISTORY ENTRY: {n1} vs {n2}")
                                     except Exception as db_err:
                                         log(f"⚠️ History Insert Error: {db_err}")
 
