@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V83.4 - MARKET SANITY EDITION [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V83.5 - HYBRID GOLDEN MASTER [GROQ])...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -170,7 +170,7 @@ def has_active_signal(text: Optional[str]) -> bool:
             return True
     return False
 
-# --- NEW: MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
+# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
     """
     Prüft, ob der Markt mathematisch valide ist.
@@ -1124,7 +1124,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V83.4 MARKET INTEGRITY (GROQ) Starting...")
+    log(f"🚀 Neural Scout V83.5 HYBRID GOLDEN MASTER (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1180,6 +1180,8 @@ async def run_pipeline():
                             db_match_id = None
                             
                             is_signal_locked = False
+                            final_match_id = None
+
                             if existing_match:
                                 db_match_id = existing_match['id']
                                 actual_winner_val = m.get('actual_winner')
@@ -1209,6 +1211,7 @@ async def run_pipeline():
                                      update_data["opening_odds2"] = m['odds2']
 
                                 supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
+                                final_match_id = db_match_id
                                 
                             else:
                                 cached_ai = {}
@@ -1303,7 +1306,6 @@ async def run_pipeline():
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                                 }
                                 
-                                final_match_id = None
                                 if db_match_id:
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                     final_match_id = db_match_id
@@ -1316,40 +1318,36 @@ async def run_pipeline():
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2}")
                             
-                            # --- V83.2: DUAL-TRACKING PERSISTENCE LAYER ---
+                            # --- V85.0: TRANSPLANTED DIRECT LINKING HISTORY LOGIC (HYBRID FIX) ---
+                            # This block is taken from Code 2 but adapted to work with Code 1's flow
                             
                             if final_match_id:
                                 should_log_history = False
-                                movement_type = None
                                 
-                                if existing_match:
-                                    prev_o1 = to_float(existing_match.get('odds1'), 0)
-                                    prev_o2 = to_float(existing_match.get('odds2'), 0)
-                                    
-                                    if abs(prev_o1 - m['odds1']) > 0.001 or abs(prev_o2 - m['odds2']) > 0.001:
-                                        should_log_history = True
-                                        movement_type = "MARKET_MOVE"
+                                if not existing_match: should_log_history = True # New match
+                                elif is_signal_locked: should_log_history = True # Always track locked
                                 else:
-                                    should_log_history = True
-                                    movement_type = "OPENING"
+                                    # Check Delta
+                                    old_o1_hist = to_float(existing_match.get('odds1'), 0)
+                                    if abs(old_o1_hist - m['odds1']) > 0.001: should_log_history = True
                                 
-                                if is_value_active or is_signal_locked:
-                                    should_log_history = True
-                                    movement_type = "VALUE_SIGNAL"
-
                                 if should_log_history:
-                                    f_o1 = existing_match.get('ai_fair_odds1') if is_signal_locked else (locals().get('fair1') or 0)
-                                    f_o2 = existing_match.get('ai_fair_odds2') if is_signal_locked else (locals().get('fair2') or 0)
+                                    # Safely get Fair Odds from wherever they might be (Calculated fresh OR from DB)
+                                    current_fair1 = locals().get('fair1') or existing_match.get('ai_fair_odds1') if existing_match else 0
+                                    current_fair2 = locals().get('fair2') or existing_match.get('ai_fair_odds2') if existing_match else 0
                                     
-                                    pick_name = value_pick_player if is_value_active else ("LOCKED" if is_signal_locked else None)
+                                    # Pick Name Logic
+                                    pick_name = None
+                                    if is_signal_locked: pick_name = "LOCKED"
+                                    elif 'value_pick_player' in locals() and value_pick_player: pick_name = value_pick_player
                                     
                                     h_data = {
                                         "match_id": final_match_id, 
                                         "odds1": m['odds1'], 
                                         "odds2": m['odds2'], 
-                                        "fair_odds1": f_o1, 
-                                        "fair_odds2": f_o2, 
-                                        "is_hunter_pick": (is_value_active or is_signal_locked),
+                                        "fair_odds1": current_fair1, 
+                                        "fair_odds2": current_fair2, 
+                                        "is_hunter_pick": (is_signal_locked or (is_value_active if 'is_value_active' in locals() else False)),
                                         "pick_player_name": pick_name,
                                         "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     }
