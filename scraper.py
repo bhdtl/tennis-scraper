@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V86.1 - ANTI-DUPLICATE & DATE-FIX)...")
+log("🔌 Initialisiere Neural Scout (V85.0 - DIRECT LINKING [GROQ])...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1124,11 +1124,11 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 # =================================================================
-# MAIN PIPELINE (V86.1 - ANTI-DUPLICATE & DATE-FIX)
+# MAIN PIPELINE (THE FIX)
 # =================================================================
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V86.1 Starting (Silicon Valley Edition)...")
+    log(f"🚀 Neural Scout V85.0 DIRECT LINKING (GROQ) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1140,28 +1140,14 @@ async def run_pipeline():
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
-            # --- VETERAN CROSS-DATE LOOKUP ---
-            def find_match_in_db_safe(pa, pb, m_time_iso):
-                """
-                Sucht Match basierend auf alphabetisch sortierten Namen 
-                und einem weiten 24h Fenster, um Rollover-Errors zu fangen.
-                """
-                # Wir suchen nach beiden Namens-Kombinationen, um Swaps zu finden
+            # Helper for strict matching
+            def find_match_in_db(p1_name, p2_name):
+                # Versuche exakten Match
                 res = supabase.table("market_odds").select("*")\
-                    .or_(f"and(player1_name.eq.\"{pa}\",player2_name.eq.\"{pb}\"),and(player1_name.eq.\"{pb}\",player2_name.eq.\"{pa}\")")\
-                    .order("match_time", desc=True)\
-                    .limit(10)\
-                    .execute()
-                
-                if res.data:
-                    scrape_time = datetime.fromisoformat(m_time_iso.replace('Z', '+00:00'))
-                    for match in res.data:
-                        try:
-                            db_time = datetime.fromisoformat(match['match_time'].replace('Z', '+00:00'))
-                            # Wenn das Match innerhalb von 24h existiert, ist es eine Dublette
-                            if abs((db_time - scrape_time).total_seconds()) < 86400:
-                                return match
-                        except: continue
+                    .or_(f"and(player1_name.eq.{p1_name},player2_name.eq.{p2_name}),and(player1_name.eq.{p2_name},player2_name.eq.{p1_name})")\
+                    .is_("actual_winner_name", "null")\
+                    .order("created_at", desc=True).limit(1).execute()
+                if res.data: return res.data[0]
                 return None
 
             for day_offset in range(-1, 11): 
@@ -1176,7 +1162,7 @@ async def run_pipeline():
                 
                 for m in matches:
                     try:
-                        await asyncio.sleep(0.05) # Fast mode
+                        await asyncio.sleep(0.1) # Fast mode
                         
                         # 1. Identifikation
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
@@ -1192,8 +1178,7 @@ async def run_pipeline():
                             continue 
 
                         # 3. Finde das Match in der DB (oder erstelle es)
-                        m_time_iso = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
-                        existing_match = find_match_in_db_safe(n1, n2, m_time_iso)
+                        existing_match = find_match_in_db(n1, n2)
                         
                         # Anti-Spike Check (nur wenn Match existiert)
                         if existing_match:
@@ -1209,8 +1194,6 @@ async def run_pipeline():
                         # --- HAUPT LOGIK ---
                         if existing_match:
                             db_match_id = existing_match['id']
-                            # VETERAN FIX: Nutze das ursprüngliche Datum aus der DB, um Rollover zu verhindern
-                            actual_match_time = existing_match['match_time']
                             
                             # Check Lock Status
                             if has_active_signal(existing_match.get('ai_analysis_text', '')):
@@ -1237,7 +1220,6 @@ async def run_pipeline():
 
                         else:
                             # CREATE NEW MATCH
-                            actual_match_time = m_time_iso
                             log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
                             f1_data = await fetch_player_form_quantum(browser, n1)
                             f2_data = await fetch_player_form_quantum(browser, n2)
@@ -1258,7 +1240,7 @@ async def run_pipeline():
                             
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                             ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
-                            prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surface, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
+                            prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                             
                             fair1 = round(1/prob, 2) if prob > 0.01 else 99
                             fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
@@ -1288,31 +1270,38 @@ async def run_pipeline():
                                 "ai_analysis_text": ai_text_final,
                                 "games_prediction": sim_result,
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "match_time": actual_match_time
+                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                             }
                             res_insert = supabase.table("market_odds").insert(new_data).execute()
                             if res_insert.data: db_match_id = res_insert.data[0]['id']
                             log(f"💾 Created: {n1} vs {n2}")
 
                         # --- HISTORY LOGGING (DER FIX) ---
+                        # Wir nutzen EXAKT die db_match_id von oben. Kein erneutes Suchen.
+                        # Wir schreiben nur, wenn sich was geändert hat oder es neu ist.
+                        
                         if db_match_id:
                             should_log = False
-                            if not existing_match: should_log = True 
-                            elif is_signal_locked: should_log = True 
+                            if not existing_match: should_log = True # New match
+                            elif is_signal_locked: should_log = True # Always track locked matches
                             else:
+                                # Check Delta
                                 old_o1 = to_float(existing_match.get('odds1'), 0)
                                 if abs(old_o1 - m['odds1']) > 0.001: should_log = True
                             
                             if should_log:
+                                # Hole Fair Odds aus dem gerade geupdateten/existierenden Match Object
+                                # (Oder aus den lokalen Variablen falls neu erstellt)
                                 f1 = existing_match.get('ai_fair_odds1') if existing_match else fair1
                                 f2 = existing_match.get('ai_fair_odds2') if existing_match else fair2
                                 
+                                # Pick Name logic
                                 pick_name = None
                                 if is_signal_locked: pick_name = "LOCKED" 
                                 elif 'value_pick_player' in locals() and value_pick_player: pick_name = value_pick_player
 
                                 h_data = {
-                                    "match_id": db_match_id, 
+                                    "match_id": db_match_id, # DIRECT LINK!
                                     "odds1": m['odds1'],
                                     "odds2": m['odds2'],
                                     "fair_odds1": f1,
