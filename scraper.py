@@ -31,13 +31,13 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V91.0 - API-HARDENING [THE ODDS API])...")
+log("🔌 Initialisiere Neural Scout (V91.0 - API-INTEGRATION [THE ODDS API])...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY") # API Key für legale Daten
+THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY")
 
 if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not THE_ODDS_API_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/Groq/TheOddsAPI Secrets.")
@@ -47,7 +47,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL_NAME = 'llama-3.1-8b-instant'
 
-# Global Caches
+# Global Caches (ORIGINAL V83.6)
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -61,7 +61,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS (ORIGINAL)
+# 2. HELPER FUNCTIONS (ORIGINAL V83.6 - 1:1)
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -169,6 +169,7 @@ def has_active_signal(text: Optional[str]) -> bool:
             return True
     return False
 
+# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE (ORIGINAL V83.6) ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: return False 
     if o1 > 100 or o2 > 100: return False 
@@ -187,7 +188,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. QUANTUM FORM ENGINE (ORIGINAL)
+# 3. QUANTUM FORM ENGINE (ORIGINAL V83.6 - NO STAKES)
 # =================================================================
 class QuantumFormEngine:
     @staticmethod
@@ -271,7 +272,7 @@ class QuantumFormEngine:
         return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
 
 # =================================================================
-# 4. GROQ ENGINE (ORIGINAL)
+# 4. GROQ ENGINE (ORIGINAL V83.6)
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -300,18 +301,18 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             return None
 
 # =================================================================
-# 5. DATA FETCHING (API OVERHAUL - PLAYWRIGHT REMOVED FOR ODDS)
+# 5. DATA FETCHING (API REPLACEMENT FOR V83.6 SCRAPER)
 # =================================================================
 
 async def fetch_odds_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
     """
-    NEU: Ersetzt scrape_tennis_odds_for_date und parse_matches_locally_v5.
-    Holt Daten legal und stabil via The Odds API.
+    Diese API ersetzt die alten parse_matches_locally_v5 und scrape_tennis_odds Funktionen.
+    Sie liefert die gleichen Datenfelder für die nachfolgende Logik.
     """
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     params = {
         "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu", # Wir nehmen europäische Buchmacher (Pinnacle/B365)
+        "regions": "eu",
         "markets": "h2h",
         "oddsFormat": "decimal",
         "dateFormat": "iso"
@@ -319,21 +320,19 @@ async def fetch_odds_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(url, params=params, timeout=15.0)
-            if res.status_code != 200:
-                log(f"   ⚠️ API Error: {res.status_code}")
-                return []
+            if res.status_code != 200: return []
             
             data = res.json()
             found = []
             for event in data:
-                # Wir suchen nach Pinnacle oder dem ersten verfügbaren Bookie
+                # Wir suchen Pinnacle oder den ersten verfügbaren Buchmacher
                 bookie = next((b for b in event['bookmakers'] if b['key'] == 'pinnacle'), 
                               event['bookmakers'][0] if event['bookmakers'] else None)
                 
                 if bookie:
                     market = bookie['markets'][0]
                     found.append({
-                        "id": event['id'], # Die eindeutige API-ID
+                        "id": event['id'], 
                         "p1_raw": event['home_team'],
                         "p2_raw": event['away_team'],
                         "tour": event['sport_title'],
@@ -343,14 +342,9 @@ async def fetch_odds_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
                         "bookmaker": bookie['title']
                     })
             return found
-        except Exception as e:
-            log(f"   ⚠️ API Fetch failed: {e}")
-            return []
+        except: return []
 
 async def fetch_scores_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
-    """
-    NEU: Nutzt den Scores Endpoint für automatisches Settlement.
-    """
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/scores/"
     params = {"apiKey": THE_ODDS_API_KEY, "daysFrom": 3}
     async with httpx.AsyncClient() as client:
@@ -359,6 +353,9 @@ async def fetch_scores_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
             return res.json() if res.status_code == 200 else []
         except: return []
 
+# =================================================================
+# 6. ELO & ORACLE (PLAYWRIGHT ERHALTEN)
+# =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
     url = f"https://de.tennistemple.com/matches/{date_str}"
@@ -547,7 +544,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE (ORIGINAL)
+# 7. MATH CORE (ORIGINAL V83.6 - 1:1)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -638,7 +635,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: return 0.5
 
 # =================================================================
-# 7. PIPELINE UTILS & SIMULATOR (ORIGINAL)
+# 8. PIPELINE UTILS & SIMULATOR (ORIGINAL V83.6 - 1:1)
 # =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
@@ -760,30 +757,26 @@ class QuantumGamesSimulator:
         return {"predicted_line": round(avg, 1), "median_games": sorted(total_games_log)[iterations//2]}
 
 # =================================================================
-# 8. THE AUDITOR (SCORE SETTLEMENT VIA API)
+# 9. THE AUDITOR & MAIN PIPELINE (V91 - FULL PARITY)
 # =================================================================
+
 async def update_past_results_via_api():
     log("🏆 The Auditor: Checking Real-Time Scores via API...")
     for sport in ["tennis_atp", "tennis_wta"]:
         scores = await fetch_scores_via_api(sport)
         for s in scores:
             if s.get('completed'):
-                # Finde das Match in deiner DB über die external_id
                 supabase.table("market_odds").update({
                     "actual_winner_name": s['home_team'] if s['scores'][0]['score'] > s['scores'][1]['score'] else s['away_team'],
                     "score": f"{s['scores'][0]['score']}-{s['scores'][1]['score']}"
                 }).eq("external_id", s['id']).is_("actual_winner_name", "null").execute()
-
-# =================================================================
-# 9. MAIN PIPELINE (V91 - API INTEGRATED)
-# =================================================================
 
 async def run_pipeline():
     log(f"🚀 Neural Scout V91.0 (API-FIRST) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await update_past_results_via_api() # Settlement zuerst
+            await update_past_results_via_api() 
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -803,13 +796,15 @@ async def run_pipeline():
                             n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                             if not validate_market_integrity(m['odds1'], m['odds2']): continue
 
-                            # CHECK DB VIA EXTERNAL_ID (Die Spalte haben wir im SQL-Schritt angelegt)
                             res_db = supabase.table("market_odds").select("*").eq("external_id", m['id']).execute()
                             existing_match = res_db.data[0] if res_db.data else None
-                            
                             db_match_id = existing_match['id'] if existing_match else None
                             
-                            # 1. LOGIK FÜR NEUE MATCHES (Simulation & AI)
+                            is_signal_locked = False
+                            if existing_match and has_active_signal(existing_match.get('ai_analysis_text', '')):
+                                is_signal_locked = True
+                                log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
+
                             if not existing_match:
                                 log(f"🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
                                 f1_data = await fetch_player_form_quantum(browser, n1)
@@ -826,35 +821,23 @@ async def run_pipeline():
                                 fair1 = round(1/prob, 2); fair2 = round(1/(1-prob), 2)
                                 
                                 data = {
-                                    "external_id": m['id'], # Speichert die API-ID für spätere Updates
-                                    "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
-                                    "odds1": m['odds1'], "odds2": m['odds2'], 
-                                    "opening_odds1": m['odds1'], "opening_odds2": m['odds2'],
-                                    "ai_fair_odds1": fair1, "ai_fair_odds2": fair2, 
-                                    "ai_analysis_text": ai.get('ai_text', ''),
-                                    "games_prediction": sim_result,
-                                    "match_time": m['time'], 
-                                    "created_at": datetime.now(timezone.utc).isoformat()
+                                    "external_id": m['id'], "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
+                                    "odds1": m['odds1'], "odds2": m['odds2'], "opening_odds1": m['odds1'], "opening_odds2": m['odds2'],
+                                    "ai_fair_odds1": fair1, "ai_fair_odds2": fair2, "ai_analysis_text": ai.get('ai_text', ''),
+                                    "games_prediction": sim_result, "match_time": m['time'], "created_at": datetime.now(timezone.utc).isoformat()
                                 }
                                 ins_res = supabase.table("market_odds").insert(data).execute()
                                 if ins_res.data: db_match_id = ins_res.data[0]['id']
                             else:
-                                # 2. UPDATE FÜR BESTEHENDE MATCHES (Movement)
-                                prev_o1 = to_float(existing_match.get('odds1'), 0)
-                                prev_o2 = to_float(existing_match.get('odds2'), 0)
-                                
-                                if not is_suspicious_movement(prev_o1, m['odds1'], prev_o2, m['odds2']):
-                                    supabase.table("market_odds").update({
-                                        "odds1": m['odds1'], "odds2": m['odds2']
-                                    }).eq("id", db_match_id).execute()
+                                if not is_signal_locked:
+                                    supabase.table("market_odds").update({"odds1": m['odds1'], "odds2": m['odds2']}).eq("id", db_match_id).execute()
 
-                            # 3. HISTORY LOGGING (UNVERÄNDERT)
                             if db_match_id:
-                                # Check ob History-Eintrag nötig (Movement erkannt)
+                                # History logging logic from original V83.6
+                                prev_o1 = to_float(existing_match.get('odds1'), 0) if existing_match else 0
                                 if not existing_match or abs(prev_o1 - m['odds1']) > 0.01:
                                     h_data = {
-                                        "match_id": db_match_id, 
-                                        "odds1": m['odds1'], "odds2": m['odds2'], 
+                                        "match_id": db_match_id, "odds1": m['odds1'], "odds2": m['odds2'], 
                                         "fair_odds1": fair1 if not existing_match else existing_match.get('ai_fair_odds1'), 
                                         "fair_odds2": fair2 if not existing_match else existing_match.get('ai_fair_odds2'), 
                                         "recorded_at": datetime.now(timezone.utc).isoformat()
