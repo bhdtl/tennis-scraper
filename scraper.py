@@ -31,23 +31,23 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V91.0 - API-INTEGRATION [THE ODDS API])...")
+log("🔌 Initialisiere Neural Scout (V92.0 - HYBRID GOLDEN MASTER [API-FIRST])...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY")
+THE_ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY") # NEU: Essenziell
 
 if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not THE_ODDS_API_KEY:
-    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/Groq/TheOddsAPI Secrets.")
+    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/Environment.")
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL_NAME = 'llama-3.1-8b-instant'
 
-# Global Caches (ORIGINAL V83.6)
+# Global Caches (1:1 V83.5)
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -61,7 +61,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS (ORIGINAL V83.6 - 1:1)
+# 2. HELPER FUNCTIONS (1:1 V83.5 - UNGEKÜRZT)
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -164,31 +164,52 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
 
 def has_active_signal(text: Optional[str]) -> bool:
     if not text: return False
+    # Check for V60+ Bracket format or V44 legacy format OR V81 Value Signals
     if "[" in text and "]" in text:
+        # Legacy Icons + New Value Icons (Fire, Sparkles, Chart, Eyes)
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
     return False
 
-# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE (ORIGINAL V83.6) ---
+# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE (V83.5 1:1) ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
+    """
+    Prüft, ob der Markt mathematisch valide ist.
+    Filtrert Glitches wie 1.03 vs 1.03 oder extreme Arbitrage.
+    """
     if o1 <= 1.01 or o2 <= 1.01: return False 
     if o1 > 100 or o2 > 100: return False 
+
+    # Berechne Overround (Buchmacher Marge)
     implied_prob = (1/o1) + (1/o2)
+    
+    # 1. Reject Massive Arbitrage (Fehlerhafte Daten)
     if implied_prob < 0.92: return False 
+
+    # 2. Reject Massive Juice (Glitch)
     if implied_prob > 1.25: return False
+
     return True
 
 def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
+    """
+    Velocity Check: Blockiert unrealistische Sprünge (Spikes).
+    """
     if old_o1 == 0 or old_o2 == 0: return False 
+
     change_p1 = abs(new_o1 - old_o1) / old_o1
     change_p2 = abs(new_o2 - old_o2) / old_o2
+
+    # REGEL: Wenn sich eine Quote um mehr als 35% ändert in EINEM Tick
     if change_p1 > 0.35 or change_p2 > 0.35:
+        # Ausnahme: Extreme Favoriten
         if old_o1 < 1.10 or old_o2 < 1.10: return False
         return True
+    
     return False
 
 # =================================================================
-# 3. QUANTUM FORM ENGINE (ORIGINAL V83.6 - NO STAKES)
+# 3. QUANTUM FORM ENGINE (VEGAS-BEATER - 1:1)
 # =================================================================
 class QuantumFormEngine:
     @staticmethod
@@ -272,7 +293,7 @@ class QuantumFormEngine:
         return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
 
 # =================================================================
-# 4. GROQ ENGINE (ORIGINAL V83.6)
+# 4. GROQ ENGINE & DATA FETCHING UTILS
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -300,63 +321,10 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             log(f"   ⚠️ Groq Connection Failed: {e}")
             return None
 
-# =================================================================
-# 5. DATA FETCHING (API REPLACEMENT FOR V83.6 SCRAPER)
-# =================================================================
+call_gemini = call_groq 
 
-async def fetch_odds_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
-    """
-    Diese API ersetzt die alten parse_matches_locally_v5 und scrape_tennis_odds Funktionen.
-    Sie liefert die gleichen Datenfelder für die nachfolgende Logik.
-    """
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
-    params = {
-        "apiKey": THE_ODDS_API_KEY,
-        "regions": "eu",
-        "markets": "h2h",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso"
-    }
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(url, params=params, timeout=15.0)
-            if res.status_code != 200: return []
-            
-            data = res.json()
-            found = []
-            for event in data:
-                # Wir suchen Pinnacle oder den ersten verfügbaren Buchmacher
-                bookie = next((b for b in event['bookmakers'] if b['key'] == 'pinnacle'), 
-                              event['bookmakers'][0] if event['bookmakers'] else None)
-                
-                if bookie:
-                    market = bookie['markets'][0]
-                    found.append({
-                        "id": event['id'], 
-                        "p1_raw": event['home_team'],
-                        "p2_raw": event['away_team'],
-                        "tour": event['sport_title'],
-                        "time": event['commence_time'],
-                        "odds1": market['outcomes'][0]['price'],
-                        "odds2": market['outcomes'][1]['price'],
-                        "bookmaker": bookie['title']
-                    })
-            return found
-        except: return []
-
-async def fetch_scores_via_api(sport_key: str = "tennis_atp") -> List[Dict]:
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/scores/"
-    params = {"apiKey": THE_ODDS_API_KEY, "daysFrom": 3}
-    async with httpx.AsyncClient() as client:
-        try:
-            res = await client.get(url, params=params)
-            return res.json() if res.status_code == 200 else []
-        except: return []
-
-# =================================================================
-# 6. ELO & ORACLE (PLAYWRIGHT ERHALTEN)
-# =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
+    # BEHALTEN FÜR ELO MATCHING (FALLBACK)
     date_str = target_date.strftime('%Y-%m-%d')
     url = f"https://de.tennistemple.com/matches/{date_str}"
     page = await browser.new_page()
@@ -494,6 +462,11 @@ async def get_advanced_load_analysis(supabase_client: Client, player_name: str) 
         return status
     except Exception: return "Unknown"
 
+async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
+    # Wir behalten diese Funktion für die Kompatibilität, auch wenn die API genutzt wird
+    # Sie kann in V92 als "Deep Dive" aktiviert werden, wenn needed
+    return 0.5
+
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
@@ -544,7 +517,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 7. MATH CORE (ORIGINAL V83.6 - 1:1)
+# 6. MATH CORE (PURE VALUE ENGINE - V83.5 1:1)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -556,17 +529,26 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
 def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0: 
         return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
+    
     market_odds = min(market_odds, 100.0)
+    
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
+
     if edge_percent <= 0.5:
         return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
+
     label = "VALUE"
     if edge_percent >= 15.0: label = "🔥 HIGH VALUE" 
     elif edge_percent >= 8.0: label = "✨ GOOD VALUE" 
     elif edge_percent >= 2.0: label = "📈 THIN VALUE" 
     else: label = "👀 WATCH"
-    return {"type": label, "edge_percent": edge_percent, "is_value": True}
+
+    return {
+        "type": label, 
+        "edge_percent": edge_percent, 
+        "is_value": True
+    }
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     ai_meta = ensure_dict(ai_meta)
@@ -600,7 +582,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     if style_stats_p2 and style_stats_p2['verdict'] == "DOMINANT": style_boost -= 0.08 
     if style_stats_p2 and style_stats_p2['verdict'] == "STRUGGLES": style_boost += 0.06
     weights = [0.20, 0.15, 0.05, 0.50, 0.10];
+    
     model_trust_factor = 0.25 
+    
     total_w = sum(weights); weights = [w/total_w for w in weights]
     prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
     prob_alpha += style_boost
@@ -635,7 +619,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: return 0.5
 
 # =================================================================
-# 8. PIPELINE UTILS & SIMULATOR (ORIGINAL V83.6 - 1:1)
+# 7. PIPELINE UTILS & RESOLVERS (1:1 V83.5)
 # =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
@@ -669,9 +653,16 @@ async def resolve_united_cup_via_country(p1):
     if country in COUNTRY_TO_CITY_MAP: return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
     return None
 
-async def resolve_ambiguous_tournament(p1, p2, tour_name, p1_country, p2_country):
-    if tour_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[tour_name]
-    prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{tour_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
+async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
+    if scraped_name in TOURNAMENT_LOC_CACHE: return TOURNAMENT_LOC_CACHE[scraped_name]
+    p1_meta = METADATA_CACHE.get(normalize_db_name(p1))
+    p2_meta = METADATA_CACHE.get(normalize_db_name(p2))
+    oracle_data = p1_meta or p2_meta
+    if oracle_data:
+          real_name = oracle_data.get('tournament', scraped_name)
+          prompt = f"TASK: Details for tennis tournament '{real_name}'. CONTEXT: {p1} vs {p2}. Date: {datetime.now().strftime('%B %Y')}. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
+    else:
+          prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{scraped_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
     res = await call_groq(prompt)
     if res:
         try: 
@@ -685,22 +676,45 @@ async def resolve_ambiguous_tournament(p1, p2, tour_name, p1_country, p2_country
             elif 'grass' in surface_type.lower(): est_bsi = 8.0
             elif 'indoor' in surface_type.lower(): est_bsi = 7.5
             city = data.get('city', 'Unknown')
+            if "plantation" in city.lower() and p1_country == "USA": city = "Winston-Salem"; surface_type = "Hard Indoor"; est_bsi = 7.5
             simulated_db_entry = {"city": city, "surface_guessed": surface_type, "bsi_estimate": est_bsi, "note": f"AI/Oracle: {city}"}
-            TOURNAMENT_LOC_CACHE[tour_name] = simulated_db_entry
+            TOURNAMENT_LOC_CACHE[scraped_name] = simulated_db_entry
             return simulated_db_entry
         except: pass
     return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
     s_low = clean_tournament_name(tour).lower().strip()
+    if "united cup" in s_low:
+        arena_target = await resolve_united_cup_via_country(p1)
+        if arena_target:
+            for t in db_tours:
+                if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
+        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
+
+    if match_date:
+        month = match_date.month
+        s_clean = s_low.lower()
+        if "oeiras" in s_clean:
+             if month in [1, 2, 3, 10, 11, 12]: s_low = "oeiras indoor"
+             elif month in [4, 5, 6, 7, 8, 9]: s_low = "oeiras red clay"
+        elif "nottingham" in s_clean:
+             if month in [6, 7]: s_low = "nottingham grass"
+             else: s_low = "nottingham" 
+
     best_match = None; best_score = 0
     for t in db_tours:
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
     if best_match and best_score >= 20: return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
-    if ai_loc:
-        return ai_loc['surface_guessed'], ai_loc['bsi_estimate'], ai_loc['note']
+    ai_loc = ensure_dict(ai_loc)
+    if ai_loc and ai_loc.get('city'):
+        surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
+        bsi = ai_loc.get('bsi_estimate', 6.5)
+        note = ai_loc.get('note', 'AI Guess')
+        return surf, bsi, note
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
@@ -708,141 +722,363 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
-    prompt = f"Role: Elite Tennis Analyst. MATCHUP: {p1['last_name']} vs {p2['last_name']}. CONTEXT: {surface} (BSI: {bsi}). BIO-LOAD A: {fatigueA}. BIO-LOAD B: {fatigueB}. Vegas Form A: {f1_txt}. Vegas Form B: {f2_txt}. OUTPUT JSON ONLY: {{ 'p1_tactical_score': 0-10, 'p2_tactical_score': 0-10, 'ai_text': 'insight', 'p1_win_sentiment': 0-1 }}"
-    res = await call_groq(prompt)
-    try:
-        data = json.loads(res.replace("json", "").replace("```", "").strip())
-        data['p1_form_score'] = form1_data['score']
-        data['p2_form_score'] = form2_data['score']
-        return data
-    except: return {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': '', 'p1_win_sentiment': 0.5}
+    styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
+    styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
+    
+    prompt = f"""
+    Role: Elite Tennis Analyst.
+    MATCHUP: {p1['last_name']} vs {p2['last_name']}
+    CONTEXT: {surface} (BSI: {bsi}/10) | {notes}
+    
+    PLAYER A: {p1['last_name']}
+    - Style: {p1.get('play_style', 'Unknown')}
+    - FORM (Vegas): {f1_txt}
+    - BIO-LOAD: {fatigueA}
+    - Matchup History: {styleA_vs_B['verdict'] if styleA_vs_B else "No data"}
+    
+    PLAYER B: {p2['last_name']}
+    - Style: {p2.get('play_style', 'Unknown')}
+    - FORM (Vegas): {f2_txt}
+    - BIO-LOAD: {fatigueB}
+    - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No data"}
 
+    RULES:
+    1. FATIGUE: Reduce win% if "Heavy Legs"/"Critical Fatigue" (esp. vs Grinders or high BSI).
+    2. STYLE: Server vs Returner: Adv. Returner on Slow/Clay; Adv. Server on Fast/Grass.
+    3. SURFACE: High BSI favors Aggressors; Low BSI favors Defenders.
+
+    OUTPUT JSON ONLY:
+    {{ 
+        "p1_tactical_score": [0-10], 
+        "p2_tactical_score": [0-10], 
+        "p1_form_score": {form1_data['score']}, 
+        "p2_form_score": {form2_data['score']}, 
+        "ai_text": "Insight (fatigue/style/surface, max 25 words).", 
+        "p1_win_sentiment": [0.0-1.0] 
+    }}
+    """
+    res = await call_groq(prompt)
+    data = ensure_dict(safe_get_ai_data(res))
+    data['p1_form_score'] = form1_data['score']
+    data['p2_form_score'] = form2_data['score']
+    return data
+
+def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
+    default = {'p1_tactical_score': 5, 'p2_tactical_score': 5, 'p1_form_score': 5, 'p2_form_score': 5, 'ai_text': '', 'p1_win_sentiment': 0.5}
+    if not res_text: return default
+    try:
+        cleaned = res_text.replace("json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        return ensure_dict(data)
+    except: return default
+
+# =================================================================
+# 8. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
+# =================================================================
 class QuantumGamesSimulator:
+    """
+    SOTA Monte Carlo Engine for Tennis Totals.
+    """
+    
     @staticmethod
-    def derive_hold_probability(server_skills, returner_skills, bsi, surface):
+    def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
         p_hold = 67.0 
-        srv = server_skills.get('serve', 50); pwr = server_skills.get('power', 50)
-        p_hold += (srv - 50) * 0.35 + (pwr - 50) * 0.10
-        ret_speed = returner_skills.get('speed', 50); ret_mental = returner_skills.get('mental', 50)
-        p_hold -= (ret_speed - 50) * 0.15 + (ret_mental - 50) * 0.08
-        p_hold += (bsi - 6.0) * 1.4
+        
+        srv = server_skills.get('serve', 50)
+        pwr = server_skills.get('power', 50)
+        
+        p_hold += (srv - 50) * 0.35
+        p_hold += (pwr - 50) * 0.10
+
+        ret_speed = returner_skills.get('speed', 50)
+        ret_mental = returner_skills.get('mental', 50)
+        
+        p_hold -= (ret_speed - 50) * 0.15
+        p_hold -= (ret_mental - 50) * 0.08
+
+        bsi_delta = (bsi - 6.0) * 1.4 
+        p_hold += bsi_delta
+
         return max(52.0, min(94.0, p_hold)) / 100.0
 
     @staticmethod
-    def simulate_set(p1_prob, p2_prob):
+    def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
         g1, g2 = 0, 0
         while True:
             if random.random() < p1_prob: g1 += 1
             else: g2 += 1 
+            
             if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
             if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
             if g1 == 6 and g2 == 6:
                 tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
-                return (1, 13) if random.random() < tb_prob_p1 else (2, 13)
+                if random.random() < tb_prob_p1: return (1, 13)
+                else: return (2, 13)
+            
+            if random.random() < p2_prob: g2 += 1
+            else: g1 += 1 
+            
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
+            if g1 == 6 and g2 == 6:
+                tb_prob_p1 = 0.5 + (p1_prob - p2_prob)
+                if random.random() < tb_prob_p1: return (1, 13)
+                else: return (2, 13)
 
     @staticmethod
-    def run_simulation(p1_skills, p2_skills, bsi, surface, iterations = 1000):
-        p1_h = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
-        p2_h = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
+        p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
+        p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
+        
         total_games_log = []
+        
         for _ in range(iterations):
-            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_h, p2_h)
-            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_h + (0.02 if winner_s1 == 1 else -0.01), p2_h + (0.02 if winner_s1 == 2 else -0.01))
+            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            
+            p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
+            p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
+            
+            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
+            
             total = games_s1 + games_s2
+            
             if winner_s1 != winner_s2:
-                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_h, p2_h)
+                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
                 total += games_s3
+                
             total_games_log.append(total)
-        avg = sum(total_games_log) / iterations
-        return {"predicted_line": round(avg, 1), "median_games": sorted(total_games_log)[iterations//2]}
+            
+        total_games_log.sort()
+        median_games = total_games_log[len(total_games_log)//2]
+        avg_games = sum(total_games_log) / len(total_games_log)
+        
+        probs = {
+            "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
+            "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
+            "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
+            "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
+        }
+        
+        return {
+            "predicted_line": round(avg_games, 1),
+            "median_games": median_games,
+            "probabilities": probs,
+            "sim_details": {
+                "p1_est_hold_pct": round(p1_hold_prob * 100, 1),
+                "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
+            }
+        }
 
 # =================================================================
-# 9. THE AUDITOR & MAIN PIPELINE (V91 - FULL PARITY)
+# 9. NEW: THE ODDS API MASTER HANDLER (V92 AUTO-DISCOVERY)
 # =================================================================
+class TheOddsAPIHandler:
+    BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
-async def update_past_results_via_api():
-    log("🏆 The Auditor: Checking Real-Time Scores via API...")
-    for sport in ["tennis_atp", "tennis_wta"]:
-        scores = await fetch_scores_via_api(sport)
-        for s in scores:
-            if s.get('completed'):
-                supabase.table("market_odds").update({
-                    "actual_winner_name": s['home_team'] if s['scores'][0]['score'] > s['scores'][1]['score'] else s['away_team'],
-                    "score": f"{s['scores'][0]['score']}-{s['scores'][1]['score']}"
-                }).eq("external_id", s['id']).is_("actual_winner_name", "null").execute()
+    @classmethod
+    async def get_active_tennis_keys(cls) -> List[str]:
+        """
+        Dynamisch alle verfügbaren Tennis-Events finden (ATP, WTA, Challenger, ITF).
+        Dies löst das 404 Problem, indem wir nur Keys anfragen, die wirklich existieren.
+        """
+        url = f"{cls.BASE_URL}/?apiKey={THE_ODDS_API_KEY}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url)
+                if res.status_code == 200:
+                    all_sports = res.json()
+                    # Filtert alles, was mit 'tennis_' beginnt (ATP, WTA, Challenger, ITF)
+                    active = [s['key'] for s in all_sports if s['key'].startswith('tennis_')]
+                    return active
+                log(f"⚠️ Key Discovery Error: {res.status_code}")
+                return []
+            except Exception as e:
+                log(f"⚠️ Discovery Exception: {e}")
+                return []
 
+    @classmethod
+    async def fetch_odds(cls, sport_key: str) -> List[Dict]:
+        url = f"{cls.BASE_URL}/{sport_key}/odds/"
+        params = {
+            "apiKey": THE_ODDS_API_KEY, 
+            "regions": "eu", # Europa (Pinnacle/B365)
+            "markets": "h2h", 
+            "oddsFormat": "decimal", 
+            "dateFormat": "iso"
+        }
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, params=params, timeout=15.0)
+                if res.status_code == 200:
+                    data = res.json()
+                    found = []
+                    for event in data:
+                        bookie = next((b for b in event['bookmakers'] if b['key'] == 'pinnacle'), 
+                                      next((b for b in event['bookmakers'] if b['key'] == 'bet365'), 
+                                           event['bookmakers'][0] if event['bookmakers'] else None))
+                        
+                        if bookie:
+                            market = bookie['markets'][0]
+                            found.append({
+                                "id": event['id'], 
+                                "p1_raw": event['home_team'],
+                                "p2_raw": event['away_team'],
+                                "tour": event['sport_title'],
+                                "time": event['commence_time'],
+                                "odds1": market['outcomes'][0]['price'],
+                                "odds2": market['outcomes'][1]['price'],
+                                "bookmaker": bookie['title']
+                            })
+                    return found
+                log(f"⚠️ Odds 404 for {sport_key}")
+                return []
+            except Exception as e:
+                log(f"⚠️ Odds Fetch Exception: {e}")
+                return []
+
+    @classmethod
+    async def fetch_scores(cls, sport_key: str) -> List[Dict]:
+        url = f"{cls.BASE_URL}/{sport_key}/scores/?apiKey={THE_ODDS_API_KEY}&daysFrom=3"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url)
+                return res.json() if res.status_code == 200 else []
+            except: return []
+
+# --- SMART FREEZE HELPER (ORIGINAL V83.5) ---
+def is_valid_opening_odd(o1: float, o2: float) -> bool:
+    if o1 < 1.06 and o2 < 1.06: return False 
+    if o1 <= 1.01 or o2 <= 1.01: return False 
+    return True
+
+# =================================================================
+# 10. MAIN PIPELINE (THE HYBRID MONSTER - V92)
+# =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V91.0 (API-FIRST) Starting...")
+    log(f"🚀 Neural Scout V92.0 (HYBRID GOLDEN MASTER + API) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await update_past_results_via_api() 
+            # 1. Enrichment: Elo Ratings (Playwright erforderlich, da keine API)
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
+            
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
-            for sport_key in ["tennis_atp", "tennis_wta"]:
-                matches = await fetch_odds_via_api(sport_key)
-                log(f"🔍 API lieferte {len(matches)} Matches für {sport_key}")
+            # 2. Dynamic Discovery: Alle Tennis-Events abgreifen
+            active_keys = await TheOddsAPIHandler.get_active_tennis_keys()
+            log(f"📡 {len(active_keys)} aktive Tennis-Märkte gefunden (ATP/WTA/ITF/Challenger).")
+
+            for sport_key in active_keys:
+                log(f"🎾 Scanning {sport_key}...")
+                
+                # A. Automatic Settlement
+                scores = await TheOddsAPIHandler.fetch_scores(sport_key)
+                for s in scores:
+                    if s.get('completed') and s.get('scores'):
+                        # API Score Parsing
+                        try:
+                            score_str = f"{s['scores'][0]['score']}-{s['scores'][1]['score']}"
+                            winner = s['home_team'] if int(s['scores'][0]['score']) > int(s['scores'][1]['score']) else s['away_team']
+                            
+                            supabase.table("market_odds").update({
+                                "actual_winner_name": winner, "score": score_str
+                            }).eq("external_id", s['id']).is_("actual_winner_name", "null").execute()
+                        except: pass
+
+                # B. Odds & Analysis
+                matches = await TheOddsAPIHandler.fetch_odds(sport_key)
+                log(f"   -> {len(matches)} Matches in {sport_key}")
 
                 for m in matches:
                     try:
                         p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                         p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
-                        
+
                         if p1_obj and p2_obj:
                             n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
+                            if n1 == n2: continue
+                            
+                            # Market Integrity Check
                             if not validate_market_integrity(m['odds1'], m['odds2']): continue
 
                             res_db = supabase.table("market_odds").select("*").eq("external_id", m['id']).execute()
-                            existing_match = res_db.data[0] if res_db.data else None
-                            db_match_id = existing_match['id'] if existing_match else None
-                            
+                            existing = res_db.data[0] if res_db.data else None
+                            db_match_id = existing['id'] if existing else None
+
+                            # --- DIAMOND LOCK CHECK ---
                             is_signal_locked = False
-                            if existing_match and has_active_signal(existing_match.get('ai_analysis_text', '')):
+                            if existing and has_active_signal(existing.get('ai_analysis_text', '')):
                                 is_signal_locked = True
                                 log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
 
-                            if not existing_match:
-                                log(f"🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
+                            # --- LOGIK: FRESH ANALYSIS ---
+                            if not existing:
+                                log(f"🧠 Deep Analysis: {n1} vs {n2}")
                                 f1_data = await fetch_player_form_quantum(browser, n1)
                                 f2_data = await fetch_player_form_quantum(browser, n2)
-                                surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2)
+                                
+                                c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
+                                surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2)
                                 
                                 s1_skills = all_skills.get(p1_obj['id'], {})
                                 s2_skills = all_skills.get(p2_obj['id'], {})
+                                
+                                r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
+                                
+                                style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
+                                style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
+                                
+                                # Full Quantum Simulation
                                 sim_result = QuantumGamesSimulator.run_simulation(s1_skills, s2_skills, bsi, surf)
                                 
-                                ai = await analyze_match_with_ai(p1_obj, p2_obj, s1_skills, s2_skills, {}, {}, surf, bsi, notes, 1500, 1500, f1_data, f2_data)
-                                prob = calculate_physics_fair_odds(n1, n2, s1_skills, s2_skills, bsi, surf, ai, m['odds1'], m['odds2'], 0.5, 0.5, False, None, None)
+                                # AI Analysis
+                                ai = await analyze_match_with_ai(p1_obj, p2_obj, s1_skills, s2_skills, r1, {}, surf, bsi, notes, 1500, 1500, f1_data, f2_data)
                                 
+                                # Physics Fair Odds
+                                prob = calculate_physics_fair_odds(n1, n2, s1_skills, s2_skills, bsi, surf, ai, m['odds1'], m['odds2'], 0.5, 0.5, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                 fair1 = round(1/prob, 2); fair2 = round(1/(1-prob), 2)
                                 
+                                # Value Metrics
+                                val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
+                                val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                                
+                                value_tag = ""
+                                if val_p1["is_value"]: value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                                elif val_p2["is_value"]: value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                                
+                                games_tag = f" [🎲 SIM: {sim_result['predicted_line']} Games]"
+                                ai_text_final = f"{ai.get('ai_text', '').replace('json', '').strip()} {value_tag} {games_tag}"
+
                                 data = {
                                     "external_id": m['id'], "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
-                                    "odds1": m['odds1'], "odds2": m['odds2'], "opening_odds1": m['odds1'], "opening_odds2": m['odds2'],
-                                    "ai_fair_odds1": fair1, "ai_fair_odds2": fair2, "ai_analysis_text": ai.get('ai_text', ''),
+                                    "odds1": m['odds1'], "odds2": m['odds2'], 
+                                    "opening_odds1": m['odds1'], "opening_odds2": m['odds2'],
+                                    "ai_fair_odds1": fair1, "ai_fair_odds2": fair2, "ai_analysis_text": ai_text_final,
                                     "games_prediction": sim_result, "match_time": m['time'], "created_at": datetime.now(timezone.utc).isoformat()
                                 }
-                                ins_res = supabase.table("market_odds").insert(data).execute()
-                                if ins_res.data: db_match_id = ins_res.data[0]['id']
+                                ins = supabase.table("market_odds").insert(data).execute()
+                                if ins.data: db_match_id = ins.data[0]['id']
                             else:
-                                if not is_signal_locked:
+                                # Update & Movement Check (Anti-Spike)
+                                prev_o1 = to_float(existing.get('odds1'), 0)
+                                prev_o2 = to_float(existing.get('odds2'), 0)
+                                if not is_suspicious_movement(prev_o1, m['odds1'], prev_o2, m['odds2']) and not is_signal_locked:
                                     supabase.table("market_odds").update({"odds1": m['odds1'], "odds2": m['odds2']}).eq("id", db_match_id).execute()
 
+                            # --- History Logging ---
                             if db_match_id:
-                                # History logging logic from original V83.6
-                                prev_o1 = to_float(existing_match.get('odds1'), 0) if existing_match else 0
-                                if not existing_match or abs(prev_o1 - m['odds1']) > 0.01:
-                                    h_data = {
+                                # Smart Logging: Only if movement > 1%
+                                prev_o1 = to_float(existing.get('odds1'), 0) if existing else 0
+                                if not existing or abs(prev_o1 - m['odds1']) > 0.01:
+                                    supabase.table("odds_history").insert({
                                         "match_id": db_match_id, "odds1": m['odds1'], "odds2": m['odds2'], 
-                                        "fair_odds1": fair1 if not existing_match else existing_match.get('ai_fair_odds1'), 
-                                        "fair_odds2": fair2 if not existing_match else existing_match.get('ai_fair_odds2'), 
                                         "recorded_at": datetime.now(timezone.utc).isoformat()
-                                    }
-                                    supabase.table("odds_history").insert(h_data).execute()
+                                    }).execute()
 
                     except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
