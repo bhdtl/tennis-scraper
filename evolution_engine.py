@@ -41,7 +41,9 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 # Clients
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-ddgs = AsyncDDGS()
+
+# FIX: DDGS nicht hier global initialisieren! Es braucht einen aktiven Event Loop.
+# Wir initialisieren es später in der Main-Funktion.
 
 # MODEL STRATEGY: 
 # We stick with 'llama-3.3-70b-versatile'. 
@@ -65,7 +67,7 @@ TRUSTED_ANALYSTS = [
 # 2. INTELLIGENCE GATHERING (MEDIA MINING)
 # =================================================================
 
-async def get_youtube_transcripts(player_name: str, limit: int = 2) -> str:
+async def get_youtube_transcripts(player_name: str, ddgs_client: AsyncDDGS, limit: int = 2) -> str:
     """
     Sucht gezielt nach Video-Analysen der Top-Experten, extrahiert die ID 
     und zieht das Transkript. Das ist "Listening to the experts".
@@ -85,7 +87,8 @@ async def get_youtube_transcripts(player_name: str, limit: int = 2) -> str:
     try:
         # 1. Find Video Links via DuckDuckGo
         for q in search_queries:
-            results = await ddgs.text(q, max_results=2)
+            # FIX: Wir nutzen den übergebenen Client
+            results = await ddgs_client.text(q, max_results=2)
             if results:
                 for r in results:
                     href = r.get('href', '')
@@ -123,7 +126,7 @@ async def get_youtube_transcripts(player_name: str, limit: int = 2) -> str:
 
     return combined_transcripts
 
-async def get_expert_articles(player_name: str) -> str:
+async def get_expert_articles(player_name: str, ddgs_client: AsyncDDGS) -> str:
     """
     Sucht nach geschriebenen Artikeln auf High-Quality Seiten.
     """
@@ -138,7 +141,8 @@ async def get_expert_articles(player_name: str) -> str:
     snippets = []
     try:
         for q in queries:
-            results = await ddgs.text(q, max_results=2)
+            # FIX: Wir nutzen den übergebenen Client
+            results = await ddgs_client.text(q, max_results=2)
             if results:
                 for r in results:
                     # Filter: Nur wenn der Spieler auch im Title/Body vorkommt
@@ -370,34 +374,43 @@ async def run_neural_scout_evolution():
     
     targets = await get_active_targets(limit=3) # Small batch for high quality deep dive
     
-    for t in targets:
-        p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
-        log(f"\n🔎 SCOUTING: {p_name}")
-        
-        # Phase 1: Media Mining
-        yt_data = await get_youtube_transcripts(p_name)
-        web_data = await get_expert_articles(p_name)
-        
-        intel = yt_data + "\n" + web_data
-        
-        if len(intel) < 100:
-            log(f"      ⚠️ No analyst content found for {p_name}. Skipping to preserve DB integrity.")
-            continue
+    # FIX: AsyncDDGS wird HIER initialisiert, innerhalb des Loops.
+    # Wir nutzen 'async with', damit die Connection sauber geschlossen wird.
+    async with AsyncDDGS() as ddgs_instance:
+    
+        for t in targets:
+            p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
+            log(f"\n🔎 SCOUTING: {p_name}")
             
-        # Phase 2: Analysis
-        analysis_result = await analyze_and_evolve(t, intel)
-        
-        # Phase 3: Execution
-        if analysis_result:
-            if analysis_result.get('changes_detected'):
-                log(f"      💡 INSIGHT: {analysis_result.get('reasoning')}")
-                await apply_updates(t, analysis_result)
-            else:
-                log(f"      ✅ Verified: Ratings align with current expert consensus.")
-        
-        await asyncio.sleep(2) # Respect APIs
+            # Phase 1: Media Mining (Client übergeben)
+            yt_data = await get_youtube_transcripts(p_name, ddgs_instance)
+            web_data = await get_expert_articles(p_name, ddgs_instance)
+            
+            intel = yt_data + "\n" + web_data
+            
+            if len(intel) < 100:
+                log(f"      ⚠️ No analyst content found for {p_name}. Skipping to preserve DB integrity.")
+                continue
+                
+            # Phase 2: Analysis
+            analysis_result = await analyze_and_evolve(t, intel)
+            
+            # Phase 3: Execution
+            if analysis_result:
+                if analysis_result.get('changes_detected'):
+                    log(f"      💡 INSIGHT: {analysis_result.get('reasoning')}")
+                    await apply_updates(t, analysis_result)
+                else:
+                    log(f"      ✅ Verified: Ratings align with current expert consensus.")
+            
+            await asyncio.sleep(2) # Respect APIs
         
     log("\n🏁 Evolution Cycle Finished.")
+
+if __name__ == "__main__":
+    asyncio.run(run_neural_scout_evolution())
+        
+    log("\n🏁 Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_neural_scout_evolution())
