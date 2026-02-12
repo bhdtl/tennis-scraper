@@ -21,12 +21,6 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Wir pinnen duckduckgo-search auf 6.4.2, da hier AsyncDDGS stabil ist.
-          pip install supabase groq "duckduckgo-search==6.4.2" httpx pandas youtube-transcript-api
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
           # WICHTIG: feedparser muss hier stehen!
           pip install supabase groq "duckduckgo-search==6.4.2" httpx pandas youtube-transcript-api feedparser
 
