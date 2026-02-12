@@ -8,7 +8,4 @@ pandas
 openpyxl
 requests
 groq
-Youtube-python
-beautifulsoup4
-youtube-transcript-api
-feedparser
+
