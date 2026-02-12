@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # WICHTIG: feedparser muss hier stehen!
-          pip install supabase groq "duckduckgo-search==6.4.2" httpx pandas youtube-transcript-api feedparser
+          pip install supabase groq httpx pandas youtube-transcript-api feedparser youtube-search-python
 
       - name: Run Evolution Engine
         env:
