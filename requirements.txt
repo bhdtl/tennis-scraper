@@ -11,3 +11,4 @@ groq
 duckduckgo-search
 beautifulsoup4
 youtube-transcript-api
+feedparser
