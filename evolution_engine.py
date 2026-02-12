@@ -6,7 +6,8 @@ import os
 import logging
 import sys
 import re
-import random 
+import random
+import feedparser
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
 
@@ -18,19 +19,19 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 
 # =================================================================
-# 1. CONFIGURATION & LOGGING (SILICON VALLEY STANDARD)
+# 1. CONFIGURATION & LOGGING (MILITARY GRADE)
 # =================================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] 🧬 EVO-V3: %(message)s',
+    format='[%(asctime)s] 🧬 LEVIATHAN-V4: %(message)s',
     datefmt='%H:%M:%S'
 )
-logger = logging.getLogger("NeuralScout_Evolution_V3")
+logger = logging.getLogger("NeuralScout_Leviathan")
 
 def log(msg: str):
     logger.info(msg)
 
-# Load Secrets
+# Secrets Loading
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -43,164 +44,189 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
+# MODEL: 70b für Deep Reasoning
 MODEL_NAME = 'llama-3.3-70b-versatile'
 
-# TARGET CHANNELS (High Value Intelligence)
-# Wir suchen gezielt nach den neuesten Uploads dieser Kanäle
-VIP_CHANNELS = [
+# --- LAYER 1 SOURCES (RSS - Passive & Fast) ---
+# Echte Channel IDs verwenden! (Hier Beispiele)
+RSS_SOURCES = [
+    {"name": "Tennis TV", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC4yxY8f7l_h-w-h-w-h-w"},
+    {"name": "ATP Tour", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC..."},
+    {"name": "WTA", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC..."}
+]
+
+# --- LAYER 2 SOURCES (Analyst Watchlist - Active Scan) ---
+# Diese Kanäle werden proaktiv gescannt, auch wenn kein RSS Alarm kommt.
+VIP_ANALYST_CHANNELS = [
     "Gil Gross Tennis",
     "Andy Roddick Served Podcast",
     "Courtside Tennis",
     "The Tennis Podcast", 
-    "Monday Match Analysis"
+    "Monday Match Analysis",
+    "Intuitive Tennis"
 ]
 
 # =================================================================
-# 2. GLOBAL INTELLIGENCE (THE WATCHER)
+# 2. UTILITY BELT (Robust Networking)
 # =================================================================
 
-async def safe_search_text(client: AsyncDDGS, query: str, max_retries: int = 2) -> List[Dict]:
+async def safe_search_text(client: AsyncDDGS, query: str, max_retries: int = 3) -> List[Dict]:
     """
-    Führt eine Suche durch, aber fängt Rate Limits ab und wartet.
+    Führt eine Websuche durch mit exponentiellem Backoff bei Rate Limits.
     """
     for attempt in range(max_retries):
         try:
-            # Random Sleep vor jeder Anfrage (Human Jitter)
-            sleep_time = random.uniform(2.0, 5.0)
+            # Human Jitter: Nie sofort feuern
+            sleep_time = random.uniform(2.0, 6.0) + (attempt * 2)
             await asyncio.sleep(sleep_time)
             
-            # Die eigentliche Suche
-            results = await client.text(query, max_results=3)
+            results = await client.text(query, max_results=4)
             return results if results else []
             
         except Exception as e:
-            log(f"      ⚠️ Search Error (Attempt {attempt+1}): {e}")
+            log(f"      ⚠️ Search Warn (Attempt {attempt+1}): {e}")
             if "Ratelimit" in str(e) or "202" in str(e):
-                wait_time = 30 + (attempt * 10)
-                log(f"      🛑 Rate Limit hit. Cooling down for {wait_time}s...")
+                wait_time = 45 + (attempt * 20)
+                log(f"      🛑 Rate Limit Detected. Holding position for {wait_time}s...")
                 await asyncio.sleep(wait_time)
             else:
-                await asyncio.sleep(2)
+                await asyncio.sleep(5)
     return []
 
-async def scan_vip_channels(ddgs_client: AsyncDDGS) -> str:
+async def fetch_youtube_transcript(video_id: str) -> str:
     """
-    NEU: Scannt VORHER die neuesten Videos der Top-Analysten.
-    Das fängt Infos ab wie 'Gil Gross redet über Alcaraz', ohne dass wir speziell nach Alcaraz suchen mussten.
+    Versucht ein Transkript zu laden (Manuell > Auto-Gen > Fail).
     """
-    log("\n📡 PHASE 1: Scanning VIP Analyst Channels (Global Intel)...")
-    global_transcript_buffer = ""
-    
     formatter = TextFormatter()
+    try:
+        # 1. Try Manual English/German
+        t_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'de'])
+        return formatter.format_transcript(t_list)
+    except:
+        try:
+            # 2. Try Auto-Generated
+            t_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            gen_t = t_list.find_generated_transcript(['en'])
+            return formatter.format_transcript(gen_t.fetch())
+        except:
+            return ""
+
+# =================================================================
+# 3. MODULE A: THE WIRETAP (RSS Monitoring)
+# =================================================================
+async def run_rss_wiretap() -> str:
+    """
+    Checkt RSS Feeds auf ganz frische Videos (letzte 24h).
+    """
+    log("📡 [MODULE A] Wiretap: Scanning RSS Feeds...")
+    combined_intel = ""
+    yesterday = datetime.now() - timedelta(hours=24)
     
-    for channel in VIP_CHANNELS:
+    for source in RSS_SOURCES:
+        try:
+            feed = feedparser.parse(source['rss'])
+            for entry in feed.entries[:3]:
+                published = datetime(*entry.published_parsed[:6])
+                if published > yesterday:
+                    vid = entry.yt_videoid
+                    title = entry.title
+                    log(f"      ✨ RSS Alert: {title}")
+                    
+                    text = await fetch_youtube_transcript(vid)
+                    if text:
+                        combined_intel += f"\n--- RSS SOURCE: {source['name']} ({title}) ---\n{text[:10000]}\n"
+        except:
+            continue
+    return combined_intel
+
+# =================================================================
+# 4. MODULE B: THE WATCHER (Global Analyst Scan)
+# =================================================================
+async def run_analyst_watcher(ddgs_client: AsyncDDGS) -> str:
+    """
+    Sucht aktiv nach den neuesten Videos der VIP Analysten (Gil Gross, Roddick etc.).
+    """
+    log("🔭 [MODULE B] Watcher: Scanning VIP Analyst Channels...")
+    combined_intel = ""
+    
+    for channel in VIP_ANALYST_CHANNELS:
         log(f"   📺 Tuning into: {channel}...")
-        # Suche nach dem allerneuesten Video dieses Kanals
-        query = f"site:youtube.com {channel} latest tennis analysis 2026"
         
-        results = await safe_search_text(ddgs_client, query, max_retries=2)
+        # Wir suchen nach den allerneuesten Analysen von 2026
+        query = f"site:youtube.com {channel} tennis analysis 2026"
+        results = await safe_search_text(ddgs_client, query)
         
         for r in results:
             href = r.get('href', '')
             match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
-            
             if match:
                 vid = match.group(1)
-                try:
-                    # Transcript ziehen
-                    transcript_list = YouTubeTranscriptApi.get_transcript(vid, languages=['en', 'de'])
-                    text = formatter.format_transcript(transcript_list)
-                    
-                    # Kontext speichern (Max 4000 Zeichen pro Video um Token zu sparen)
-                    snippet = text.replace("\n", " ")[:4000]
-                    global_transcript_buffer += f"\n--- VIP SOURCE: {channel} (VideoID: {vid}) ---\n{snippet}\n"
-                    log(f"      ✅ Captured Intel from {channel}")
-                    break # Nur das neueste Video pro Kanal reicht oft
-                except:
-                    continue
+                text = await fetch_youtube_transcript(vid)
+                if text:
+                    # Wir nehmen nur die ersten 5000 Zeichen pro Video um Token zu sparen,
+                    # aber genug Kontext für Spielernamen zu haben.
+                    combined_intel += f"\n--- VIP ANALYST: {channel} (ID:{vid}) ---\n{text[:8000]}\n"
+                    log(f"      ✅ Transcribed video from {channel}")
+                    break # Ein Video pro Analyst reicht meist
     
-    log(f"   📝 Global Intelligence gathered: {len(global_transcript_buffer)} chars.\n")
-    return global_transcript_buffer
+    return combined_intel
 
 # =================================================================
-# 3. PLAYER SPECIFIC INTELLIGENCE (THE DEEP DIVE)
+# 5. MODULE C: THE DEEP SCOUT (Targeted Player Search)
 # =================================================================
-
-async def get_player_specific_transcripts(player_name: str, ddgs_client: AsyncDDGS, limit: int = 2) -> str:
+async def run_deep_scout(player_name: str, ddgs_client: AsyncDDGS) -> str:
     """
-    Sucht spezifisch nach dem Spieler, falls er in den VIP Kanälen nicht vorkam.
+    Sucht spezifisch nach EINEM Spieler im Web und auf YouTube.
+    Wird nur für High-Priority Targets ausgeführt.
     """
-    log(f"   🔍 Deep Scan for: {player_name}...")
-    combined_transcripts = ""
+    log(f"   🕵️ [MODULE C] Deep Scout: Hunting intel for {player_name}...")
+    combined_intel = ""
     
-    # Spezifische Suche
-    queries = [
-        f"site:youtube.com {player_name} analysis 2026",
-        f"site:youtube.com {player_name} tennis highlights commentary"
+    # 1. YouTube Specifics
+    yt_queries = [
+        f"site:youtube.com {player_name} interview 2026",
+        f"site:youtube.com {player_name} practice court 2026",
+        f"site:youtube.com {player_name} press conference"
     ]
-
-    video_ids = set()
-    for q in queries:
-        results = await safe_search_text(ddgs_client, q)
-        if results:
-            for r in results:
-                href = r.get('href', '')
-                match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
-                if match: video_ids.add(match.group(1))
-
-    formatter = TextFormatter()
-    found_count = 0
     
-    for vid in list(video_ids)[:limit]:
-        try:
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(vid, languages=['en', 'de'])
-            except:
-                try:
-                    list_transcripts = YouTubeTranscriptApi.list_transcripts(vid)
-                    transcript_list = list_transcripts.find_generated_transcript(['en']).fetch()
-                except:
-                    continue 
-
-            text = formatter.format_transcript(transcript_list)
-            clean_text = text.replace("\n", " ")[:2000] 
-            combined_transcripts += f"\n--- SPECIFIC VIDEO (ID: {vid}) ---\n{clean_text}\n"
-            found_count += 1
-            await asyncio.sleep(1)
-            
-        except Exception:
-            continue
-
-    return combined_transcripts
-
-async def get_expert_articles(player_name: str, ddgs_client: AsyncDDGS) -> str:
-    log(f"   📰 Reading News for: {player_name}...")
-    queries = [
-        f"site:tennisabstract.com {player_name} analysis",
-        f"site:tennis.com {player_name} form 2026",
-        f"{player_name} tennis analysis 2026"
+    for q in yt_queries:
+        results = await safe_search_text(ddgs_client, q)
+        for r in results:
+            href = r.get('href', '')
+            match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
+            if match:
+                vid = match.group(1)
+                text = await fetch_youtube_transcript(vid)
+                if text:
+                    combined_intel += f"\n--- TARGETED VIDEO: {player_name} (ID:{vid}) ---\n{text[:5000]}\n"
+                    break # Ein gutes Video reicht
+    
+    # 2. Article/Web Search
+    web_queries = [
+        f"site:tennis.com {player_name} form analysis",
+        f"site:tennisabstract.com {player_name} stats",
+        f"{player_name} injury update 2026"
     ]
-    snippets = []
-    for q in queries:
-        results = await safe_search_text(ddgs_client, q)
-        if results:
-            for r in results:
-                if player_name.lower() in r['title'].lower() or player_name.lower() in r['body'].lower():
-                    snippets.append(f"- ARTICLE ({r['title']}): {r['body']}")
-    return "\n".join(snippets)
-
-# =================================================================
-# 4. THE REASONING ENGINE (AI AGENT)
-# =================================================================
-
-async def analyze_and_evolve(target: Dict, global_intel: str, specific_intel: str) -> Optional[Dict]:
-    """
-    Kombiniert Globales Wissen (Gil Gross etc.) mit spezifischem Wissen.
-    """
-    full_intel = global_intel + "\n" + specific_intel
     
-    if len(full_intel) < 50:
-        log("      Start Skipping: Not enough data found.")
+    for q in web_queries:
+        results = await safe_search_text(ddgs_client, q)
+        for r in results:
+            if player_name.lower() in r['title'].lower() or player_name.lower() in r['body'].lower():
+                combined_intel += f"\n--- WEB ARTICLE: {r['title']} ---\n{r['body']}\n"
+                
+    return combined_intel
+
+# =================================================================
+# 6. MODULE D: THE BRAIN (Reasoning & Decision)
+# =================================================================
+async def analyze_player_evolution(target: Dict, global_intel: str, specific_intel: str) -> Optional[Dict]:
+    """
+    Führt alle Datenströme zusammen und trifft eine Entscheidung.
+    """
+    full_context = global_intel + "\n" + specific_intel
+    
+    if len(full_context) < 100:
+        log("      ⚠️ Insufficient data for analysis.")
         return None
 
     p = target['player']
@@ -209,53 +235,52 @@ async def analyze_and_evolve(target: Dict, global_intel: str, specific_intel: st
     current_ratings = json.dumps({k: s.get(k, 60) for k in ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]})
     current_report = json.dumps(target['report'])
 
-    # UPGRADE: Prompt instruiert die KI, gezielt im Global Intel nach dem Spielernamen zu suchen.
     prompt = f"""
-    ROLE: Elite Tennis Analyst (Silicon Valley Agent).
-    TASK: Audit Player Ratings using Global Analyst Intel & Specific Search Data.
+    ROLE: Chief Tennis Scout (Silicon Valley AI).
+    TASK: Analyze gathered intelligence to update player ratings.
     
-    TARGET PLAYER: {p['first_name']} {p['last_name']}
+    PLAYER: {p['first_name']} {p['last_name']}
     
-    CURRENT RATINGS: {current_ratings}
-    CURRENT REPORT: {current_report[:500]}...
+    CURRENT DB RATINGS: {current_ratings}
+    CURRENT REPORT EXCERPT: {current_report[:600]}...
     
-    === INTELLIGENCE STREAM ===
-    {full_intel}
-    ===========================
+    === INTELLIGENCE FEED (Global + Specific) ===
+    {full_context[:50000]} 
+    =============================================
     
-    INSTRUCTIONS:
-    1. **SCAN**: Look for {p['last_name']} in the Intelligence Stream.
-       - Did Gil Gross, Roddick, or recent news mention them?
-    2. **EVALUATE**:
-       - If an analyst praises a specific shot (e.g. "Forehand looks faster"), BOOST that stat (+2 to +5).
-       - If an analyst mentions weakness/injury, LOWER relevant stats.
-       - If the player is NOT mentioned or intel is generic, DO NOT CHANGE RATINGS.
-    3. **SCALE**: 60 (Challenger), 75 (Top 100), 85 (Top 20), 95 (Legend).
+    MISSION:
+    1. **SEARCH**: Look specifically for mentions of {p['last_name']} in the text.
+       - Note: "Global Intel" might mention them even if the video wasn't about them (e.g. Gil Gross comparing players).
+    2. **VERIFY**: Use only FACTS from the text. No hallucinations.
+       - If Roddick says "Serve is broken", downgrade Serve.
+       - If News says "New coach, more aggressive", upgrade Power/Mental.
+    3. **DECIDE**:
+       - IF significant info found: Suggest numeric updates (+/- 1 to 5).
+       - IF info is generic/old: Return "changes_detected": false.
     
-    OUTPUT JSON ONLY:
+    OUTPUT JSON:
     {{
-        "analysis_found": true,
         "mentioned_in_intel": true/false,
-        "confidence_score": <0-100>,
         "changes_detected": true/false,
-        "suggested_ratings": {{
+        "confidence": <0-100>,
+        "updates": {{
             "serve": <int>, "forehand": <int>, "backhand": <int>, 
             "volley": <int>, "speed": <int>, "stamina": <int>, 
             "power": <int>, "mental": <int>
         }},
-        "report_updates": {{
-            "strengths": "...",
-            "weaknesses": "...",
-            "tactical_patterns": "..."
+        "report_additions": {{
+            "tactical_update": "New text to append...",
+            "strengths": "Updated list...",
+            "weaknesses": "Updated list..."
         }},
-        "reasoning": "Explain source (e.g. 'Found in Gil Gross video: ...')"
+        "source_citation": "e.g. 'Andy Roddick Podcast (Video ID...)'"
     }}
     """
 
     try:
         completion = await groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "You are a JSON-only API. Precision is key."},
+                {"role": "system", "content": "JSON only. Be conservative with rating changes."},
                 {"role": "user", "content": prompt}
             ],
             model=MODEL_NAME,
@@ -264,161 +289,176 @@ async def analyze_and_evolve(target: Dict, global_intel: str, specific_intel: st
         )
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
-        log(f"   ❌ LLM Reasoning Error: {e}")
+        log(f"   ❌ Brain Error: {e}")
         return None
 
 # =================================================================
-# 5. THE SURGEON (DB OPS)
+# 7. MODULE E: THE SURGEON (Database Commit)
 # =================================================================
-
-async def apply_updates(target: Dict, analysis: Dict):
-    if not analysis.get('changes_detected') or analysis.get('confidence_score', 0) < 75: # High Confidence needed
-        log(f"      ✋ No update needed (Confidence: {analysis.get('confidence_score')}%).")
+async def commit_to_database(target: Dict, analysis: Dict):
+    if not analysis.get('changes_detected') or analysis.get('confidence', 0) < 70:
+        log(f"      ✋ No action taken (Confidence: {analysis.get('confidence')}%).")
         return
 
-    player_id = target['player']['id']
-    new_stats = analysis.get('suggested_ratings', {})
-    current_stats = target['skills']
+    pid = target['player']['id']
+    new_vals = analysis.get('updates', {})
+    curr_vals = target['skills']
     
-    final_stats = {}
-    valid_keys = ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]
-    changes_log = []
+    final = {}
+    changes_txt = []
     
-    for k in valid_keys:
-        old_val = current_stats.get(k, 60)
-        new_val = new_stats.get(k, old_val)
-        new_val = max(40, min(99, int(new_val))) 
+    # 1. Skill Update Logic
+    for k in ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]:
+        old = curr_vals.get(k, 60)
+        proposed = new_vals.get(k, old)
         
-        if abs(new_val - old_val) >= 2:
-            changes_log.append(f"{k.upper()}: {old_val}->{new_val}")
-            
-        final_stats[k] = new_val
+        # Sanity Check: Max change +/- 5 per run
+        diff = proposed - old
+        if abs(diff) > 5: proposed = old + (5 if diff > 0 else -5)
+        
+        final[k] = max(40, min(99, int(proposed)))
+        
+        if abs(final[k] - old) >= 1:
+            changes_txt.append(f"{k}: {old}->{final[k]}")
 
-    final_stats['updated_at'] = datetime.now(timezone.utc).isoformat()
-    final_stats['overall_rating'] = int(sum(final_stats.values()) / len(final_stats))
+    final['updated_at'] = datetime.now(timezone.utc).isoformat()
+    final['overall_rating'] = int(sum(final.values()) / len(final))
 
-    if changes_log:
-        log(f"      ⚡ UPDATING RATINGS: {', '.join(changes_log)}")
+    if changes_txt:
+        log(f"      ⚡ COMMITTING UPDATES: {', '.join(changes_txt)}")
         try:
-            res = supabase.table("player_skills").select("id").eq("player_id", player_id).execute()
-            if res.data:
-                supabase.table("player_skills").update(final_stats).eq("player_id", player_id).execute()
+            # Upsert Pattern
+            c = supabase.table("player_skills").select("id").eq("player_id", pid).execute()
+            if c.data:
+                supabase.table("player_skills").update(final).eq("player_id", pid).execute()
             else:
-                final_stats['player_id'] = player_id
-                supabase.table("player_skills").insert(final_stats).execute()
+                final['player_id'] = pid
+                supabase.table("player_skills").insert(final).execute()
         except Exception as e:
-            log(f"      ❌ DB Error (Skills): {e}")
+            log(f"      ❌ DB Skill Error: {e}")
 
-    if analysis.get('report_updates'):
-        upd = analysis['report_updates']
-        if len(upd.get('strengths', '')) > 10:
-            try:
-                rep_payload = {
-                    "strengths": upd['strengths'],
-                    "weaknesses": upd['weaknesses'],
-                    "tactical_patterns": upd['tactical_patterns'],
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                    "author_id": "NEURAL_SCOUT_EVO_V3"
-                }
-                
-                res_rep = supabase.table("scouting_reports").select("id").eq("player_id", player_id).execute()
-                if res_rep.data:
-                    supabase.table("scouting_reports").update(rep_payload).eq("player_id", player_id).execute()
-                else:
-                    rep_payload['player_id'] = player_id
-                    supabase.table("scouting_reports").insert(rep_payload).execute()
-                log("      📝 Scouting Report rewritten.")
-            except Exception as e:
-                log(f"      ❌ DB Error (Report): {e}")
+    # 2. Report Update Logic
+    if analysis.get('report_additions'):
+        adds = analysis['report_additions']
+        citation = analysis.get('source_citation', 'AI Scout')
+        
+        try:
+            rep = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
+            
+            payload = {
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "author_id": "LEVIATHAN_V4"
+            }
+            
+            if adds.get('strengths'): payload['strengths'] = adds['strengths']
+            if adds.get('weaknesses'): payload['weaknesses'] = adds['weaknesses']
+            
+            # Append Tactical Update carefully
+            if adds.get('tactical_update') and len(adds['tactical_update']) > 10:
+                old_tac = rep.data[0].get('tactical_patterns', '') if rep.data else ""
+                new_entry = f"\n[UPDATE {datetime.now().strftime('%Y-%m-%d')} via {citation}]: {adds['tactical_update']}"
+                payload['tactical_patterns'] = (new_entry + "\n" + old_tac)[:5000]
+
+            if rep.data:
+                supabase.table("scouting_reports").update(payload).eq("player_id", pid).execute()
+            else:
+                payload['player_id'] = pid
+                supabase.table("scouting_reports").insert(payload).execute()
+            
+            log("      📝 Report successfully enhanced.")
+            
+        except Exception as e:
+            log(f"      ❌ DB Report Error: {e}")
 
 # =================================================================
-# 6. WORKFLOW CONTROLLER
+# 8. MAIN CONTROL LOOP
 # =================================================================
-
-async def get_active_targets(limit: int = 15): 
+async def get_high_priority_targets(limit: int = 8):
     """
-    Holt Spieler mit kürzlichen Matches.
-    Bei 600 Spielern: Da wir market_odds sortieren, erwischen wir immer die, die gerade spielen (am wichtigsten).
+    Holt Spieler, die in den market_odds (aktive Matches) stehen.
     """
-    log("🔍 Selecting high-priority targets from active matches...")
+    log("🎯 Identifying High-Priority Targets (Active Matches)...")
     try:
-        matches = supabase.table("market_odds")\
-            .select("player1_name, player2_name")\
-            .order("created_at", desc=True)\
-            .limit(80).execute() 
-            
-        active_names = set()
+        # Wir schauen uns die letzten 60 Matches an, um die relevantesten Spieler zu finden
+        matches = supabase.table("market_odds").select("player1_name, player2_name").order("created_at", desc=True).limit(60).execute()
+        
+        active = set()
         for m in matches.data:
-            active_names.add(m['player1_name'])
-            active_names.add(m['player2_name'])
+            active.add(m['player1_name'])
+            active.add(m['player2_name'])
             
-        target_list = list(active_names)[:limit]
+        names = list(active)[:limit]
         
-        if not target_list: return []
+        if not names: return []
         
-        players_res = supabase.table("players").select("*").in_("last_name", target_list).execute()
+        # Batch Fetch Details
+        p_res = supabase.table("players").select("*").in_("last_name", names).execute()
         
         full_targets = []
-        for p in players_res.data:
+        for p in p_res.data:
             pid = p['id']
-            s_res = supabase.table("player_skills").select("*").eq("player_id", pid).execute()
-            r_res = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
-            
-            skills = s_res.data[0] if s_res.data else {} 
-            report = r_res.data[0] if r_res.data else {} 
+            # Fetch relational data individually to be safe
+            s = supabase.table("player_skills").select("*").eq("player_id", pid).execute()
+            r = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
             
             full_targets.append({
                 "player": p,
-                "skills": skills,
-                "report": report
+                "skills": s.data[0] if s.data else {},
+                "report": r.data[0] if r.data else {}
             })
             
         return full_targets
-        
     except Exception as e:
-        log(f"❌ Error fetching targets: {e}")
+        log(f"❌ Target Fetch Error: {e}")
         return []
 
-async def run_neural_scout_evolution():
-    log("🚀 NEURAL SCOUT EVOLUTION V3 (Silicon Valley Edition) Started")
+async def run_leviathan_engine():
+    log("🚀 SYSTEM ONLINE: Neural Scout Leviathan V4")
     
-    # 1. Start Search Engine Context
-    async with AsyncDDGS() as ddgs_instance:
-    
-        # 2. GATHER GLOBAL INTEL (Gil Gross, Roddick, etc.) - Nur 1x pro Run!
-        # Das spart API Calls und fängt alle Infos auf einmal.
-        global_intel = await scan_vip_channels(ddgs_instance)
+    # 1. INITIALIZE SEARCH ENGINE (Context Manager)
+    async with AsyncDDGS() as ddgs:
         
-        # 3. Process Active Players
-        targets = await get_active_targets(limit=12) # 12 wichtigste Spieler
-        log(f"\n🎯 Processing {len(targets)} active players...")
+        # ---------------------------------------------------------
+        # PHASE 1: THE GLOBAL SWEEP (One time per run)
+        # ---------------------------------------------------------
+        # Sammelt alle Infos von RSS und Analysten VORAB.
+        # Das ist das "Weltwissen" für diesen Run.
+        
+        rss_intel = await run_rss_wiretap()
+        analyst_intel = await run_analyst_watcher(ddgs)
+        
+        global_knowledge_base = rss_intel + "\n" + analyst_intel
+        log(f"🧠 Global Knowledge Base constructed ({len(global_knowledge_base)} chars).")
+        
+        # ---------------------------------------------------------
+        # PHASE 2: TARGETED OPERATIONS (Per Player)
+        # ---------------------------------------------------------
+        targets = await get_high_priority_targets(limit=8) # Bearbeite die 8 wichtigsten
         
         for t in targets:
             p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
-            log(f"\n🔎 ANALYZING: {p_name}")
+            log(f"\n🔬 PROCESSING TARGET: {p_name}")
             
-            # Phase A: Get Specific Data
-            specific_intel = await get_player_specific_transcripts(p_name, ddgs_instance)
-            news_intel = await get_expert_articles(p_name, ddgs_instance)
+            # A. Deep Scout (Spezifische Suche für diesen Spieler)
+            # Wir suchen nur tief, wenn das Global Knowledge nichts hergab,
+            # oder um Details zu verifizieren.
+            specific_intel = await run_deep_scout(p_name, ddgs)
             
-            # Phase B: Combine (Global + Specific) -> AI Brain
-            # Hier geben wir der AI das Wissen von Gil Gross (Global) + Spezifische News
-            combined_specific = specific_intel + "\n" + news_intel
+            # B. Synthesis & Reasoning
+            analysis = await analyze_player_evolution(t, global_knowledge_base, specific_intel)
             
-            analysis_result = await analyze_and_evolve(t, global_intel, combined_specific)
+            # C. Execution
+            if analysis:
+                if analysis.get('mentioned_in_intel'):
+                    log(f"      💡 FOUND INTEL: {analysis.get('source_citation')}")
+                await commit_to_database(t, analysis)
             
-            # Phase C: Execution
-            if analysis_result:
-                if analysis_result.get('changes_detected'):
-                    log(f"      💡 INSIGHT: {analysis_result.get('reasoning')}")
-                    await apply_updates(t, analysis_result)
-                else:
-                    log(f"      ✅ Verified: Stable.")
+            # D. Evasion Protocol (Wait to look human)
+            wait = random.uniform(5.0, 12.0)
+            log(f"      ⏳ Cooling down ({round(wait,1)}s)...")
+            await asyncio.sleep(wait)
             
-            wait_time = random.uniform(3.0, 8.0)
-            await asyncio.sleep(wait_time)
-        
-    log("\n🏁 Evolution Cycle Finished.")
+    log("🏁 LEVIATHAN CYCLE COMPLETE.")
 
 if __name__ == "__main__":
-    asyncio.run(run_neural_scout_evolution())
+    asyncio.run(run_leviathan_engine())
