@@ -6,6 +6,7 @@ import os
 import logging
 import sys
 import re
+import random # NEU: Für zufällige Wartezeiten (Human Behavior)
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
 
@@ -42,14 +43,9 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
 
-# FIX: DDGS nicht hier global initialisieren! Es braucht einen aktiven Event Loop.
-# Wir initialisieren es später in der Main-Funktion.
-
 # MODEL STRATEGY: 
 # We stick with 'llama-3.3-70b-versatile'. 
-# Cost: ~$0.70 per 1M tokens via Groq. This is negligible for the quality increase over 8b.
-# We need the 70b parameter count to understand the nuance between "Player is in a slump" (Temporary Form) 
-# and "Player has changed their swing mechanics" (Permanent Skill Change).
+# Cost: ~$0.70 per 1M tokens via Groq.
 MODEL_NAME = 'llama-3.3-70b-versatile'
 
 # TARGET SOURCES (The "Truth" List)
@@ -67,90 +63,134 @@ TRUSTED_ANALYSTS = [
 # 2. INTELLIGENCE GATHERING (MEDIA MINING)
 # =================================================================
 
+# NEU: Helper Funktion für sicheres Suchen mit Retry-Logik
+async def safe_search_text(client: AsyncDDGS, query: str, max_retries: int = 2) -> List[Dict]:
+    """
+    Führt eine Suche durch, aber fängt Rate Limits ab und wartet.
+    """
+    for attempt in range(max_retries):
+        try:
+            # Random Sleep vor jeder Anfrage (Human Jitter)
+            sleep_time = random.uniform(3.0, 7.0)
+            await asyncio.sleep(sleep_time)
+            
+            # Die eigentliche Suche
+            results = await client.text(query, max_results=3)
+            return results if results else []
+            
+        except Exception as e:
+            log(f"      ⚠️ Search Error (Attempt {attempt+1}/{max_retries}): {e}")
+            if "Ratelimit" in str(e) or "202" in str(e):
+                wait_time = 30 + (attempt * 10)
+                log(f"      🛑 Rate Limit hit. Cooling down for {wait_time}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                await asyncio.sleep(2)
+    return []
+
 async def get_youtube_transcripts(player_name: str, ddgs_client: AsyncDDGS, limit: int = 2) -> str:
     """
     Sucht gezielt nach Video-Analysen der Top-Experten, extrahiert die ID 
-    und zieht das Transkript. Das ist "Listening to the experts".
+    und zieht das Transkript.
     """
     log(f"   📺 Scanning YouTube Analysts for: {player_name}...")
     combined_transcripts = ""
     
-    # Wir suchen spezifisch nach Kombinationen aus Spieler + Experte
-    search_queries = [
+    # 1. Primary Queries (High Quality)
+    primary_queries = [
         f"site:youtube.com {player_name} analysis Gil Gross",
         f"site:youtube.com {player_name} Andy Roddick podcast",
         f"site:youtube.com {player_name} technique analysis"
     ]
+    
+    # 2. Fallback Queries (Falls der Spieler unbekannt ist)
+    fallback_queries = [
+        f"site:youtube.com {player_name} tennis highlights commentary",
+        f"site:youtube.com {player_name} interview 2026"
+    ]
 
     video_ids = set()
 
-    try:
-        # 1. Find Video Links via DuckDuckGo
-        for q in search_queries:
-            # FIX: Wir nutzen den übergebenen Client
-            results = await ddgs_client.text(q, max_results=2)
+    # Search Execution
+    found_any = False
+    
+    # Versuche erst die Experten
+    for q in primary_queries:
+        results = await safe_search_text(ddgs_client, q)
+        if results:
+            found_any = True
+            for r in results:
+                href = r.get('href', '')
+                match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
+                if match: video_ids.add(match.group(1))
+
+    # Wenn keine Experten-Videos gefunden, nutze Fallback
+    if not found_any or len(video_ids) == 0:
+        log("      ℹ️ No expert videos found. Trying fallback sources...")
+        for q in fallback_queries:
+            results = await safe_search_text(ddgs_client, q)
             if results:
                 for r in results:
                     href = r.get('href', '')
-                    # Extrahiere Video ID (v=XXXXX)
                     match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
-                    if match:
-                        video_ids.add(match.group(1))
-            await asyncio.sleep(0.5) # Rate Limit protection
+                    if match: video_ids.add(match.group(1))
 
-        # 2. Extract Transcripts
-        formatter = TextFormatter()
-        
-        found_count = 0
-        for vid in list(video_ids)[:limit]:
+    # Extract Transcripts
+    formatter = TextFormatter()
+    found_count = 0
+    
+    for vid in list(video_ids)[:limit]:
+        try:
+            # Versuche Transcript zu laden (Englisch oder Generiert)
             try:
-                # Versuche Transcript zu laden
                 transcript_list = YouTubeTranscriptApi.get_transcript(vid, languages=['en', 'de'])
-                text = formatter.format_transcript(transcript_list)
-                
-                # Cleanup (Zeitstempel entfernen, wir brauchen nur den Text-Flow)
-                clean_text = text.replace("\n", " ")[:3000] # Limit context window per video
-                combined_transcripts += f"\n--- VIDEO TRANSCRIPT (ID: {vid}) ---\n{clean_text}\n"
-                found_count += 1
-                log(f"      ✅ Ingested Transcript from Video {vid}")
-            except Exception:
-                # Oft haben Videos keine CC, das ist okay. Ignore.
-                continue
-                
-        if found_count == 0:
-            return ""
+            except:
+                # Fallback auf automatisch generierte Untertitel
+                try:
+                    list_transcripts = YouTubeTranscriptApi.list_transcripts(vid)
+                    transcript_list = list_transcripts.find_generated_transcript(['en']).fetch()
+                except:
+                    continue # Kein Transcript verfügbar
 
-    except Exception as e:
-        log(f"   ⚠️ YouTube Mining Warning: {e}")
+            text = formatter.format_transcript(transcript_list)
+            
+            clean_text = text.replace("\n", " ")[:3000] 
+            combined_transcripts += f"\n--- VIDEO TRANSCRIPT (ID: {vid}) ---\n{clean_text}\n"
+            found_count += 1
+            log(f"      ✅ Ingested Transcript from Video {vid}")
+            
+            # Kurze Pause nach erfolgreichem Download
+            await asyncio.sleep(1)
+            
+        except Exception:
+            continue
+            
+    if found_count == 0:
         return ""
 
     return combined_transcripts
 
 async def get_expert_articles(player_name: str, ddgs_client: AsyncDDGS) -> str:
     """
-    Sucht nach geschriebenen Artikeln auf High-Quality Seiten.
+    Sucht nach geschriebenen Artikeln.
     """
     log(f"   📰 Reading Expert Articles for: {player_name}...")
+    
     queries = [
         f"site:tennisabstract.com {player_name} analysis",
-        f"site:tennis.com {player_name} gear technique",
-        f"site:lossglare.com {player_name}", # Sehr guter Stats Blog
-        f"{player_name} tennis form analysis 2026"
+        f"site:tennis.com {player_name} form 2026",
+        f"{player_name} tennis match analysis 2026"
     ]
     
     snippets = []
-    try:
-        for q in queries:
-            # FIX: Wir nutzen den übergebenen Client
-            results = await ddgs_client.text(q, max_results=2)
-            if results:
-                for r in results:
-                    # Filter: Nur wenn der Spieler auch im Title/Body vorkommt
-                    if player_name.lower() in r['title'].lower() or player_name.lower() in r['body'].lower():
-                        snippets.append(f"- ARTICLE ({r['title']}): {r['body']}")
-            await asyncio.sleep(0.5)
-    except Exception as e:
-        log(f"   ⚠️ Article Mining Warning: {e}")
+    
+    for q in queries:
+        results = await safe_search_text(ddgs_client, q)
+        if results:
+            for r in results:
+                # Verbesserter Filter: Prüfe ob Name im Titel ODER Body ist
+                if player_name.lower() in r['title'].lower() or player_name.lower() in r['body'].lower():
+                    snippets.append(f"- ARTICLE ({r['title']}): {r['body']}")
     
     return "\n".join(snippets)
 
@@ -161,7 +201,6 @@ async def get_expert_articles(player_name: str, ddgs_client: AsyncDDGS) -> str:
 async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[Dict]:
     """
     Hier passiert die Magie. Wir geben dem LLM die DB-Werte UND die Experten-Meinung.
-    Es muss entscheiden: Liegt die DB falsch?
     """
     if not intelligence_data or len(intelligence_data) < 50:
         log("      Start Skipping: Not enough intelligence data found.")
@@ -170,7 +209,6 @@ async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[D
     p = target['player']
     s = target['skills']
     
-    # Current DB Snapshot
     current_ratings = json.dumps({k: s.get(k, 60) for k in ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]})
     current_report = json.dumps(target['report'])
 
@@ -186,22 +224,17 @@ async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[D
     {intelligence_data}
     
     ---------------------------------------------------
-    CRITICAL INSTRUCTIONS (The "Silicon Valley" Standard):
+    CRITICAL INSTRUCTIONS:
     1. **COMPARE**: Does the intelligence contradict the current ratings? 
-       - Example: Database says Backhand=75, but Gil Gross says "Her backhand is top 5 on tour". -> ACTION: Boost Backhand significantly (e.g., to 88-90).
-       - Example: Database says Mental=80, but Andy Roddick says "He chokes in big moments recently". -> ACTION: Lower Mental.
-    2. **IGNORE NOISE**: If the intelligence is generic (e.g. "Good match"), DO NOT change ratings. Only change on specific technical/tactical insights.
-    3. **SCALE**: 
-       - 60-70: Challenger Level
-       - 71-79: Top 100 Solid
-       - 80-88: Top 20 / Elite Weapon
-       - 89-99: Grand Slam Champion Level / Historic Weapon (e.g. Isner Serve, Graf Forehand)
-    4. **REPORT UPDATE**: Rewrite the 'strengths' and 'weaknesses' ONLY if you have new info.
+       - If DB says Backhand=75, but text says "Her backhand is elite", Boost to 85+.
+       - If DB says Mental=80, but text says "Choking matches", Lower to 70s.
+    2. **IGNORE NOISE**: If text is generic, make NO changes.
+    3. **SCALE**: 60-70 (Challenger), 71-79 (Pro), 80-88 (Elite), 89-99 (Legendary).
     
     OUTPUT JSON ONLY:
     {{
         "analysis_found": true,
-        "confidence_score": <0-100, how sure are you based on text?>,
+        "confidence_score": <0-100>,
         "changes_detected": true/false,
         "suggested_ratings": {{
             "serve": <int>, "forehand": <int>, "backhand": <int>, 
@@ -213,7 +246,7 @@ async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[D
             "weaknesses": "...",
             "tactical_patterns": "..."
         }},
-        "reasoning": "Citing specific sources (e.g. 'Roddick mentioned...'), explain why you changed values."
+        "reasoning": "Explain why you changed values."
     }}
     """
 
@@ -224,7 +257,7 @@ async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[D
                 {"role": "user", "content": prompt}
             ],
             model=MODEL_NAME,
-            temperature=0.2, # Low temp = High precision
+            temperature=0.2, 
             response_format={"type": "json_object"}
         )
         
@@ -239,35 +272,25 @@ async def analyze_and_evolve(target: Dict, intelligence_data: str) -> Optional[D
 
 async def apply_updates(target: Dict, analysis: Dict):
     """
-    Führt die Updates nur durch, wenn Confidence hoch genug ist.
+    Führt die Updates durch.
     """
     if not analysis.get('changes_detected') or analysis.get('confidence_score', 0) < 70:
-        log(f"      ✋ No significant changes or low confidence ({analysis.get('confidence_score')}%). Skipping DB write.")
+        log(f"      ✋ Low confidence/No changes ({analysis.get('confidence_score')}%). Skipping DB write.")
         return
 
     player_id = target['player']['id']
     new_stats = analysis.get('suggested_ratings', {})
-    
-    # 1. Update Skills
-    # Wir laden die alten Stats um sicherzugehen, dass wir nichts überschreiben was fehlt
     current_stats = target['skills']
     
-    # Merge Logic: Nur Werte, die im JSON sind, werden geupdated.
     final_stats = {}
-    
-    # Mapping der Keys sicherstellen
     valid_keys = ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]
-    
     changes_log = []
     
     for k in valid_keys:
-        old_val = current_stats.get(k, 60) # Default DB fallback
+        old_val = current_stats.get(k, 60)
         new_val = new_stats.get(k, old_val)
+        new_val = max(40, min(99, int(new_val))) # Clamp
         
-        # Safety Clamp: Prevent AI hallucinations (e.g. 150 rating)
-        new_val = max(40, min(99, int(new_val)))
-        
-        # Log significant changes
         if abs(new_val - old_val) >= 2:
             changes_log.append(f"{k.upper()}: {old_val}->{new_val}")
             
@@ -279,7 +302,6 @@ async def apply_updates(target: Dict, analysis: Dict):
     if changes_log:
         log(f"      ⚡ UPDATING RATINGS: {', '.join(changes_log)}")
         try:
-            # Check existance
             res = supabase.table("player_skills").select("id").eq("player_id", player_id).execute()
             if res.data:
                 supabase.table("player_skills").update(final_stats).eq("player_id", player_id).execute()
@@ -291,10 +313,8 @@ async def apply_updates(target: Dict, analysis: Dict):
     else:
         log("      ℹ️ Ratings stable. No update needed.")
 
-    # 2. Update Report if text changed significantly
     if analysis.get('report_updates'):
         upd = analysis['report_updates']
-        # Simple heuristic: if string length > 10, assume valid update
         if len(upd.get('strengths', '')) > 10:
             try:
                 rep_payload = {
@@ -305,14 +325,13 @@ async def apply_updates(target: Dict, analysis: Dict):
                     "author_id": "NEURAL_SCOUT_EVO_V2"
                 }
                 
-                # Check existance
                 res_rep = supabase.table("scouting_reports").select("id").eq("player_id", player_id).execute()
                 if res_rep.data:
                     supabase.table("scouting_reports").update(rep_payload).eq("player_id", player_id).execute()
                 else:
                     rep_payload['player_id'] = player_id
                     supabase.table("scouting_reports").insert(rep_payload).execute()
-                log("      📝 Scouting Report rewritten based on Analyst Intel.")
+                log("      📝 Scouting Report rewritten.")
             except Exception as e:
                 log(f"      ❌ DB Error (Report): {e}")
 
@@ -320,20 +339,16 @@ async def apply_updates(target: Dict, analysis: Dict):
 # 5. WORKFLOW CONTROLLER
 # =================================================================
 
-async def get_active_targets(limit: int = 5):
+async def get_active_targets(limit: int = 10): # UPGRADE: Limit erhöht auf 10
     """
-    Holt Spieler, die:
-    1. In der DB existieren (wir erstellen keine neuen hier)
-    2. Aktiv sind (Matches in market_odds)
+    Holt Spieler.
     """
     log("🔍 Selecting high-priority targets...")
-    
-    # Hole recent matches
     try:
         matches = supabase.table("market_odds")\
             .select("player1_name, player2_name")\
             .order("created_at", desc=True)\
-            .limit(50).execute()
+            .limit(60).execute() # Scan more matches to find unique players
             
         active_names = set()
         for m in matches.data:
@@ -342,7 +357,6 @@ async def get_active_targets(limit: int = 5):
             
         target_list = list(active_names)[:limit]
         
-        # Batch fetch player data
         if not target_list: return []
         
         players_res = supabase.table("players").select("*").in_("last_name", target_list).execute()
@@ -350,12 +364,11 @@ async def get_active_targets(limit: int = 5):
         full_targets = []
         for p in players_res.data:
             pid = p['id']
-            # Fetch relational data individually to handle missing rows gracefully
             s_res = supabase.table("player_skills").select("*").eq("player_id", pid).execute()
             r_res = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
             
-            skills = s_res.data[0] if s_res.data else {} # Empty dict if no skills yet
-            report = r_res.data[0] if r_res.data else {} # Empty dict if no report yet
+            skills = s_res.data[0] if s_res.data else {} 
+            report = r_res.data[0] if r_res.data else {} 
             
             full_targets.append({
                 "player": p,
@@ -372,26 +385,27 @@ async def get_active_targets(limit: int = 5):
 async def run_neural_scout_evolution():
     log("🚀 NEURAL SCOUT EVOLUTION V2 (The Analyst Edition) Started")
     
-    targets = await get_active_targets(limit=3) # Small batch for high quality deep dive
+    # UPGRADE: Wir bearbeiten jetzt bis zu 10 Spieler pro Run
+    targets = await get_active_targets(limit=10) 
+    log(f"🎯 Loaded {len(targets)} Targets for Analysis")
     
-    # FIX: AsyncDDGS wird HIER initialisiert, innerhalb des Loops.
-    # Wir nutzen 'async with', damit die Connection sauber geschlossen wird.
+    # Init Search Client with Timeout config via environment logic handled by library
     async with AsyncDDGS() as ddgs_instance:
     
         for t in targets:
             p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
             log(f"\n🔎 SCOUTING: {p_name}")
             
-            # Phase 1: Media Mining (Client übergeben)
+            # Phase 1: Media Mining
             yt_data = await get_youtube_transcripts(p_name, ddgs_instance)
             web_data = await get_expert_articles(p_name, ddgs_instance)
             
             intel = yt_data + "\n" + web_data
             
-            if len(intel) < 100:
-                log(f"      ⚠️ No analyst content found for {p_name}. Skipping to preserve DB integrity.")
+            if len(intel) < 50:
+                log(f"      ⚠️ No actionable intel found for {p_name}. Skipping.")
                 continue
-                
+            
             # Phase 2: Analysis
             analysis_result = await analyze_and_evolve(t, intel)
             
@@ -401,16 +415,14 @@ async def run_neural_scout_evolution():
                     log(f"      💡 INSIGHT: {analysis_result.get('reasoning')}")
                     await apply_updates(t, analysis_result)
                 else:
-                    log(f"      ✅ Verified: Ratings align with current expert consensus.")
+                    log(f"      ✅ Verified: Database matches Expert Consensus.")
             
-            await asyncio.sleep(2) # Respect APIs
+            # WICHTIG: Erhöhter Sleep Timer um Bans zu vermeiden
+            wait_time = random.uniform(5.0, 10.0)
+            log(f"      💤 Sleeping {round(wait_time,1)}s to protect API reputation...")
+            await asyncio.sleep(wait_time)
         
     log("\n🏁 Evolution Cycle Finished.")
-
-if __name__ == "__main__":
-    asyncio.run(run_neural_scout_evolution())
-        
-    log("\n🏁 Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_neural_scout_evolution())
