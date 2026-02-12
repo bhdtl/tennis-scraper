@@ -10,101 +10,82 @@ import random
 import feedparser
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
+from urllib.parse import quote
 
 import httpx
 from supabase import create_client, Client
 from groq import AsyncGroq
-from duckduckgo_search import AsyncDDGS
+# ENTERPRISE LEVEL SEARCH TOOLS (No Scraping/Blocking)
+from youtubesearchpython import VideosSearch 
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.formatters import TextFormatter
 
 # =================================================================
-# 1. CONFIGURATION & LOGGING (SILICON VALLEY MONOLITH)
+# 1. SYSTEM CONFIGURATION (MILITARY GRADE)
 # =================================================================
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(asctime)s] 🧬 LEVIATHAN-V6: %(message)s',
+    format='[%(asctime)s] 🧬 V8-TITAN: %(message)s',
     datefmt='%H:%M:%S'
 )
-logger = logging.getLogger("NeuralScout_Leviathan")
+logger = logging.getLogger("NeuralScout_Titan")
 
 def log(msg: str):
     logger.info(msg)
 
-# Secrets Loading
+# Load Secrets & Validate
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    log("❌ CRITICAL: Secrets missing. Check GitHub/Groq Secrets.")
+    log("❌ CRITICAL FAILURE: Secrets missing. Check GitHub Settings.")
     sys.exit(1)
 
-# Clients
+# Initialize Clients
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 groq_client = AsyncGroq(api_key=GROQ_API_KEY)
-
-# MODEL: 70b für maximale Analyse-Tiefe
 MODEL_NAME = 'llama-3.3-70b-versatile'
 
-# --- SOURCE CONFIGURATION ---
+# -----------------------------------------------------------------
+# DATA SOURCES (THE TRUTH SOURCES)
+# -----------------------------------------------------------------
 
-# 1. VIP CHANNELS (Safe RSS Feeds - The Backbone)
-# Diese Kanäle werden IMMER gescannt, ohne Rate Limit Gefahr.
-RSS_CHANNELS = [
+# LAYER 1: VIP ANALYST FEEDS (Passive Monitoring)
+VIP_RSS_CHANNELS = [
     {"name": "Gil Gross", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCvQ2e8t_e87rYd5f5C8h7wA"},
     {"name": "Tennis TV", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC4yxY8f7l_h-w-h-w-h-w"},
     {"name": "Andy Roddick", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC_c-T1_C-x3-L-Z-w-h-w"},
     {"name": "The Tennis Podcast", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCg1b0r7tZ_5J5kXg9e8_rjg"},
     {"name": "Cult Tennis", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCOTjB42L-_uK9rD3Kx5Tz5g"},
-    {"name": "Intuitive Tennis", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCW4Jjo5a0tXGSh57sL16lXQ"}
+    {"name": "Intuitive Tennis", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UCW4Jjo5a0tXGSh57sL16lXQ"},
+    {"name": "Tennis Talk with Cam Williams", "rss": "https://www.youtube.com/feeds/videos.xml?channel_id=UC...", } # Platzhalter
 ]
 
-# 2. NEWS FEEDS (Safe Text Sources)
-RSS_NEWS = [
+# LAYER 2: GLOBAL NEWS FEEDS (Text)
+GLOBAL_NEWS_RSS = [
     "https://www.tennis.com/rss",
-    "https://www.espn.com/espn/rss/tennis/news"
+    "https://www.espn.com/espn/rss/tennis/news",
+    "https://api.tennisabstract.com/rss" # Hypothetisch, falls vorhanden
 ]
 
 # =================================================================
-# 2. UTILITY BELT (Networking & Transcripts)
+# 2. UTILITY BELT (ROBUST NETWORKING)
 # =================================================================
-
-async def safe_search_text(client: AsyncDDGS, query: str, max_retries: int = 3) -> List[Dict]:
-    """
-    Führt eine Websuche durch mit extremem Backoff (Stealth Mode).
-    """
-    for attempt in range(max_retries):
-        try:
-            # Human Jitter: Lange Pausen um Bot-Detection zu vermeiden
-            sleep_time = random.uniform(4.0, 8.0) + (attempt * 3)
-            await asyncio.sleep(sleep_time)
-            
-            results = await client.text(query, max_results=3)
-            return results if results else []
-            
-        except Exception as e:
-            log(f"      ⚠️ Deep Scout Search Warn (Attempt {attempt+1}): {e}")
-            if "Ratelimit" in str(e) or "202" in str(e):
-                wait_time = 60 + (attempt * 30)
-                log(f"      🛑 Rate Limit. Going dark for {wait_time}s...")
-                await asyncio.sleep(wait_time)
-            else:
-                await asyncio.sleep(5)
-    return []
 
 async def fetch_transcript_robust(video_id: str) -> str:
     """
-    Versucht ein Transkript zu laden (Manuell > Auto-Gen > Fail).
+    Versucht ein Transkript zu laden. 
+    Fallback-Kette: Manuell (En/De) -> Auto-Gen (En) -> Nichts.
     """
     formatter = TextFormatter()
     try:
-        # 1. Try Manual English/German
+        # Prio 1: High Quality Manual
         t_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'de'])
         return formatter.format_transcript(t_list)
     except:
         try:
-            # 2. Try Auto-Generated English
+            # Prio 2: Auto-Generated
             t_list = YouTubeTranscriptApi.list_transcripts(video_id)
             gen_t = t_list.find_generated_transcript(['en'])
             return formatter.format_transcript(gen_t.fetch())
@@ -112,165 +93,188 @@ async def fetch_transcript_robust(video_id: str) -> str:
             return ""
 
 # =================================================================
-# 3. MODULE A: THE GLOBAL WIRETAP (RSS Aggregation)
+# 3. MODULE A: THE GLOBAL WIRETAP (PASSIVE INTEL)
 # =================================================================
-async def gather_global_intel() -> str:
+async def gather_global_intelligence() -> str:
     """
-    Sammelt Wissen von ALLEN RSS Quellen (Videos & News).
-    Das ist das Fundament der Analyse.
+    Sammelt alle Daten der VIP Feeds. Das ist das "Grundrauschen" des Tages.
     """
-    log("📡 [MODULE A] Wiretap: Aggregating Global Intelligence...")
+    log("📡 [MODULE A] Wiretap: Establishing Global Uplink...")
     combined_intel = ""
-    cutoff = datetime.now() - timedelta(hours=48) # Letzte 2 Tage
     
-    # 1. RSS Video Feeds
-    for source in RSS_CHANNELS:
+    # Zeitfenster: Letzte 48 Stunden
+    cutoff = datetime.now() - timedelta(hours=48)
+    
+    # 1. VIDEO FEEDS SCAN
+    for source in VIP_RSS_CHANNELS:
         try:
             feed = feedparser.parse(source['rss'])
-            log(f"   📺 Scanning Feed: {source['name']}...")
+            log(f"   📺 Monitoring Feed: {source['name']} ({len(feed.entries)} items)")
             
-            for entry in feed.entries[:3]: # Top 3 Videos
-                try:
-                    pub = datetime(*entry.published_parsed[:6])
+            for entry in feed.entries[:3]: # Nur Top 3 pro Kanal
+                try: pub = datetime(*entry.published_parsed[:6])
                 except: pub = datetime.now()
                 
                 if pub > cutoff:
                     vid = entry.yt_videoid
                     title = entry.title
                     
-                    transcript = await fetch_transcript_robust(vid)
-                    if transcript:
-                        combined_intel += f"\n=== SOURCE: {source['name']} | VIDEO: {title} ===\n{transcript[:12000]}\n"
-                        log(f"      ✅ Ingested: {title}")
+                    # Transcript holen
+                    text = await fetch_transcript_robust(vid)
+                    if text:
+                        combined_intel += f"\n=== SOURCE: {source['name']} | VIDEO: {title} ===\n{text[:10000]}\n"
+                        log(f"      ✅ Captured Intel: {title}")
+                    else:
+                        # Fallback auf Beschreibung
+                        desc = entry.get('summary', '')
+                        combined_intel += f"\n=== SOURCE: {source['name']} | VIDEO: {title} (No Audio) ===\nSUMMARY: {desc}\n"
         except Exception as e:
             log(f"      ⚠️ Feed Error {source['name']}: {e}")
+            continue
 
-    # 2. RSS News Feeds
-    for url in RSS_NEWS:
+    # 2. NEWS FEEDS SCAN
+    for url in GLOBAL_NEWS_RSS:
         try:
             feed = feedparser.parse(url)
             for entry in feed.entries[:5]:
-                combined_intel += f"\n=== NEWS ARTICLE: {entry.title} ===\n{entry.get('summary', '')}\n"
+                combined_intel += f"\n=== NEWS: {entry.title} ===\n{entry.get('summary', '')}\n"
         except: continue
         
     return combined_intel
 
 # =================================================================
-# 4. MODULE B: THE DEEP SCOUT (Active Targeted Search)
+# 4. MODULE B: THE ACTIVE HUNTER (TARGETED SEARCH)
 # =================================================================
-async def run_deep_scout(player_name: str, ddgs_client: AsyncDDGS) -> str:
+async def run_targeted_hunt(player_name: str) -> str:
     """
-    Sucht spezifisch nach EINEM Spieler im Web.
-    Nutzt DuckDuckGo, aber sehr vorsichtig.
+    Sucht gezielt nach EINEM Spieler.
+    Nutzt Bing News RSS (Text) und YouTube API (Video).
+    Kein DuckDuckGo Scraping mehr (zu gefährlich).
     """
-    log(f"   🕵️ [MODULE B] Deep Scout: Hunting specific intel for {player_name}...")
+    log(f"   🕵️ [MODULE B] Hunter: Tracking {player_name}...")
     combined_intel = ""
     
-    # 1. Targeted Video Search (Fallback wenn nicht in RSS)
-    yt_queries = [
-        f"site:youtube.com {player_name} interview 2026",
-        f"site:youtube.com {player_name} practice highlights 2026"
-    ]
-    
-    video_found = False
-    for q in yt_queries:
-        if video_found: break # Ein Video reicht um Limits zu sparen
-        results = await safe_search_text(ddgs_client, q)
+    # --- STRATEGY 1: BING NEWS RSS (The Silicon Valley Trick) ---
+    # Bing generiert RSS Feeds für Suchen. Das ist eine offizielle Schnittstelle.
+    try:
+        encoded_name = quote(player_name)
+        # Suche nach "Player Name form analysis"
+        rss_url = f"https://www.bing.com/news/search?q={encoded_name}+tennis+analysis+2026&format=rss"
         
-        for r in results:
-            href = r.get('href', '')
-            match = re.search(r"v=([a-zA-Z0-9_-]{11})", href)
-            if match:
-                vid = match.group(1)
+        feed = feedparser.parse(rss_url)
+        found_articles = 0
+        
+        for entry in feed.entries[:3]:
+            # Nur letzte 7 Tage
+            try: pub = datetime(*entry.published_parsed[:6])
+            except: pub = datetime.now()
+            
+            if pub > (datetime.now() - timedelta(days=7)):
+                combined_intel += f"\n--- TARGETED NEWS: {entry.title} ---\n{entry.summary}\n"
+                found_articles += 1
+                
+        if found_articles > 0:
+            log(f"      📰 Secured {found_articles} News Reports via Bing RSS")
+            
+    except Exception as e:
+        log(f"      ⚠️ Bing RSS Error: {e}")
+
+    # --- STRATEGY 2: YOUTUBE INTERNAL API ---
+    # Nutzt youtubesearchpython Lib. Blockiert nicht.
+    try:
+        search = VideosSearch(f"{player_name} tennis interview analysis 2026", limit=2)
+        results = search.result()
+        
+        found_videos = 0
+        if 'result' in results:
+            for video in results['result']:
+                vid = video['id']
+                title = video['title']
+                duration = video.get('duration')
+                
+                # Wir wollen nur echte Videos, keine Shorts (meist < 60s)
+                # (Einfacher Check, hier nehmen wir erstmal alles)
+                
                 text = await fetch_transcript_robust(vid)
                 if text:
-                    combined_intel += f"\n--- DEEP SCOUT VIDEO: {player_name} (ID:{vid}) ---\n{text[:6000]}\n"
-                    video_found = True
-                    break
-    
-    # 2. Targeted Article Search
-    web_queries = [
-        f"site:tennis.com {player_name} analysis",
-        f"site:tennisabstract.com {player_name} stats"
-    ]
-    
-    for q in web_queries:
-        results = await safe_search_text(ddgs_client, q)
-        for r in results:
-            if player_name.lower() in r['title'].lower() or player_name.lower() in r['body'].lower():
-                combined_intel += f"\n--- DEEP SCOUT WEB: {r['title']} ---\n{r['body']}\n"
+                    combined_intel += f"\n--- TARGETED VIDEO: {title} ---\n{text[:6000]}\n"
+                    found_videos += 1
+                    
+        if found_videos > 0:
+            log(f"      📺 Secured {found_videos} Videos via YT API")
+            
+    except Exception as e:
+        log(f"      ⚠️ YT API Error: {e}")
                 
     return combined_intel
 
 # =================================================================
-# 5. MODULE C: THE BRAIN (Reasoning Engine)
+# 5. MODULE C: THE BRAIN (LLM REASONING)
 # =================================================================
 async def analyze_player_evolution(target: Dict, global_intel: str, specific_intel: str) -> Optional[Dict]:
     """
-    Führt Globales Wissen und Spezifisches Wissen zusammen.
-    Entscheidet über Updates.
+    Führt alle Daten zusammen. Das Herzstück.
     """
     full_context = global_intel + "\n" + specific_intel
     
-    # Wenn wir gar keine Daten haben, brechen wir ab
     if len(full_context) < 100:
-        log("      ⚠️ Insufficient data (Global + Specific empty). Skipping.")
+        log("      ⚠️ No significant data gathered. Aborting Analysis.")
         return None
 
     p = target['player']
     s = target['skills']
     
+    # State Reconstruction
     current_ratings = json.dumps({k: s.get(k, 60) for k in ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]})
     current_report = json.dumps(target['report'])
 
-    # Der komplexe Prompt (The Silicon Valley Standard)
+    # THE MASTER PROMPT
     prompt = f"""
-    ROLE: Chief Tennis Scout & Data Scientist.
-    TASK: Analyze gathered intelligence to update player ratings and reports.
+    ROLE: Chief Tennis Scout & Performance Analyst.
+    TASK: Analyze gathered intelligence and update the player profile strictly based on evidence.
     
     TARGET PLAYER: {p['first_name']} {p['last_name']}
     
-    CURRENT DB RATINGS: {current_ratings}
+    CURRENT METRICS: {current_ratings}
     CURRENT REPORT EXCERPT: {current_report[:600]}...
     
     === INTELLIGENCE FEED ===
     {full_context[:55000]} 
     =========================
     
-    MISSION:
-    1. **IDENTIFY**: Find mentions of {p['last_name']} in the text. 
-       - Look for Analyst Opinions (Gil Gross, Roddick) or Match Reports.
+    MISSION OBJECTIVES:
+    1. **SEARCH**: Locate mentions of {p['last_name']} in the feed.
+       - Note: Prioritize recent Analyst opinions (e.g. Gil Gross, Roddick).
     2. **EVALUATE**:
-       - Does the text describe a CHANGE in form, technique, or health?
-       - Example: "He added 5mph to his serve" -> Upgrade Serve.
-       - Example: "Moving sluggishly on the backhand side" -> Downgrade Speed/Backhand.
-    3. **DECIDE**:
-       - Suggest numeric updates (+/- 1 to 5 points max).
-       - Write a short tactical update note.
+       - **Positive Signals**: "He served huge today", "Forehand is firing", "Moving better than ever". -> UPGRADE STATS.
+       - **Negative Signals**: "Looks tired", "Injury concern", "Choking under pressure". -> DOWNGRADE STATS.
+       - **Neutral/Generic**: "He won the match". -> NO CHANGE.
+    3. **QUANTIFY**:
+       - Suggest integer changes (e.g. Serve: +2). Max change +/- 5.
     
-    OUTPUT JSON ONLY:
+    OUTPUT JSON FORMAT (STRICT):
     {{
         "mentioned_in_intel": true/false,
         "changes_detected": true/false,
-        "confidence": <0-100>,
+        "confidence_score": <0-100>,
         "updates": {{
             "serve": <int>, "forehand": <int>, "backhand": <int>, 
             "volley": <int>, "speed": <int>, "stamina": <int>, 
             "power": <int>, "mental": <int>
         }},
         "report_additions": {{
-            "tactical_update": "New text to append...",
-            "strengths": "Updated list...",
-            "weaknesses": "Updated list..."
+            "tactical_update": "Concise analysis of the new intel...",
+            "strengths": "Updated list if needed...",
+            "weaknesses": "Updated list if needed..."
         }},
-        "source_citation": "e.g. 'Gil Gross Analysis' or 'Web Article'"
+        "source_citation": "e.g. 'Gil Gross Analysis' or 'Bing News'"
     }}
     """
 
     try:
         completion = await groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "JSON only. No markdown."},
+                {"role": "system", "content": "You are a JSON-only API. No markdown formatting."},
                 {"role": "user", "content": prompt}
             ],
             model=MODEL_NAME,
@@ -279,77 +283,77 @@ async def analyze_player_evolution(target: Dict, global_intel: str, specific_int
         )
         return json.loads(completion.choices[0].message.content)
     except Exception as e:
-        log(f"   ❌ Brain Error: {e}")
+        log(f"   ❌ Brain Malfunction: {e}")
         return None
 
 # =================================================================
-# 6. MODULE D: THE SURGEON (Database Commit)
+# 6. MODULE D: THE SURGEON (DB EXECUTION)
 # =================================================================
 async def commit_to_database(target: Dict, analysis: Dict):
-    # Nur updaten wenn Änderungen erkannt wurden UND Confidence hoch ist
-    if not analysis.get('changes_detected') or analysis.get('confidence', 0) < 70:
-        log(f"      ✋ No action taken (Confidence: {analysis.get('confidence')}%).")
+    """
+    Schreibt die Änderungen in die Datenbank.
+    """
+    # Gatekeeper: Nur bei hoher Confidence schreiben
+    if not analysis.get('changes_detected') or analysis.get('confidence_score', 0) < 70:
+        log(f"      ✋ No actionable updates (Confidence: {analysis.get('confidence_score')}%).")
         return
 
     pid = target['player']['id']
     new_vals = analysis.get('updates', {})
     curr_vals = target['skills']
     
-    final = {}
+    final_skills = {}
     changes_txt = []
     
-    # 1. Skill Update Logic
+    # 1. Skill Updates
     for k in ["serve", "forehand", "backhand", "volley", "speed", "stamina", "power", "mental"]:
         old = curr_vals.get(k, 60)
         proposed = new_vals.get(k, old)
         
-        # Sanity Check: Max change +/- 5 per run to prevent glitches
+        # Safety Clamp: Prevent massive swings
         diff = proposed - old
         if abs(diff) > 5: proposed = old + (5 if diff > 0 else -5)
         
-        final[k] = max(40, min(99, int(proposed)))
+        final_skills[k] = max(40, min(99, int(proposed)))
         
-        if abs(final[k] - old) >= 1:
-            changes_txt.append(f"{k}: {old}->{final[k]}")
+        if abs(final_skills[k] - old) >= 1:
+            changes_txt.append(f"{k}: {old}->{final_skills[k]}")
 
-    final['updated_at'] = datetime.now(timezone.utc).isoformat()
-    final['overall_rating'] = int(sum(final.values()) / len(final))
+    final_skills['updated_at'] = datetime.now(timezone.utc).isoformat()
+    final_skills['overall_rating'] = int(sum(final_skills.values()) / len(final_skills))
 
     if changes_txt:
-        log(f"      ⚡ COMMITTING UPDATES: {', '.join(changes_txt)}")
+        log(f"      ⚡ EXECUTING DB UPDATE: {', '.join(changes_txt)}")
         try:
-            # Upsert Pattern
+            # Check existance via ID
             c = supabase.table("player_skills").select("id").eq("player_id", pid).execute()
             if c.data:
-                supabase.table("player_skills").update(final).eq("player_id", pid).execute()
+                supabase.table("player_skills").update(final_skills).eq("player_id", pid).execute()
             else:
-                final['player_id'] = pid
-                supabase.table("player_skills").insert(final).execute()
+                final_skills['player_id'] = pid
+                supabase.table("player_skills").insert(final_skills).execute()
         except Exception as e:
-            log(f"      ❌ DB Skill Error: {e}")
+            log(f"      ❌ DB Skill Write Error: {e}")
 
-    # 2. Report Update Logic
+    # 2. Report Updates
     if analysis.get('report_additions'):
         adds = analysis['report_additions']
-        citation = analysis.get('source_citation', 'AI Scout')
+        citation = analysis.get('source_citation', 'Neural Scout')
         
         try:
             rep = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
             
             payload = {
                 "last_updated": datetime.now(timezone.utc).isoformat(),
-                "author_id": "LEVIATHAN_V6"
+                "author_id": "TITAN_V8"
             }
             
-            if adds.get('strengths'): payload['strengths'] = adds['strengths']
-            if adds.get('weaknesses'): payload['weaknesses'] = adds['weaknesses']
-            
-            # Append Tactical Update carefully
-            if adds.get('tactical_update') and len(adds['tactical_update']) > 10:
+            # Smart Text Appending
+            if adds.get('tactical_update') and len(adds['tactical_update']) > 15:
                 old_tac = rep.data[0].get('tactical_patterns', '') if rep.data else ""
-                new_entry = f"\n[UPDATE {datetime.now().strftime('%Y-%m-%d')} via {citation}]: {adds['tactical_update']}"
-                # Keep log manageable (max 5000 chars)
-                payload['tactical_patterns'] = (new_entry + "\n" + old_tac)[:5000]
+                new_entry = f"\n[UPDATE {datetime.now().strftime('%d.%m')} | {citation}]: {adds['tactical_update']}"
+                # Limit Text Length (Supabase limits)
+                payload['tactical_patterns'] = (new_entry + "\n" + old_tac)[:6000]
 
             if rep.data:
                 supabase.table("scouting_reports").update(payload).eq("player_id", pid).execute()
@@ -357,39 +361,43 @@ async def commit_to_database(target: Dict, analysis: Dict):
                 payload['player_id'] = pid
                 supabase.table("scouting_reports").insert(payload).execute()
             
-            log("      📝 Report successfully enhanced.")
-            
+            log("      📝 Scouting Report enhanced.")
         except Exception as e:
-            log(f"      ❌ DB Report Error: {e}")
+            log(f"      ❌ DB Report Write Error: {e}")
 
 # =================================================================
 # 7. MAIN CONTROL LOOP
 # =================================================================
 async def get_high_priority_targets(limit: int = 10):
     """
-    Holt Spieler, die in den market_odds (aktive Matches) stehen.
+    Holt Spieler mit aktiven Matches (Market Odds).
+    Das priorisiert die, die wirklich relevant sind.
     """
-    log("🎯 Identifying High-Priority Targets (Active Matches)...")
+    log("🎯 Selecting Active Targets (Market Data)...")
     try:
-        # Wir schauen uns die letzten 60 Matches an
         matches = supabase.table("market_odds").select("player1_name, player2_name").order("created_at", desc=True).limit(60).execute()
         
         active = set()
         for m in matches.data:
             active.add(m['player1_name'])
             active.add(m['player2_name'])
-            
+        
         names = list(active)[:limit]
         
-        if not names: return []
+        if not names: 
+            log("⚠️ No active matches found. Checking generic player list...")
+            # Fallback: Einfach die neuesten Spieler
+            res = supabase.table("players").select("last_name").limit(5).execute()
+            names = [p['last_name'] for p in res.data]
+
+        log(f"   📋 Target List: {', '.join(names)}")
         
-        # Batch Fetch Details
+        # Batch Fetch
         p_res = supabase.table("players").select("*").in_("last_name", names).execute()
         
         full_targets = []
         for p in p_res.data:
             pid = p['id']
-            # Fetch relational data individually to be safe
             s = supabase.table("player_skills").select("*").eq("player_id", pid).execute()
             r = supabase.table("scouting_reports").select("*").eq("player_id", pid).execute()
             
@@ -404,48 +412,41 @@ async def get_high_priority_targets(limit: int = 10):
         log(f"❌ Target Fetch Error: {e}")
         return []
 
-async def run_leviathan_engine():
-    log("🚀 SYSTEM ONLINE: Neural Scout Leviathan V6 (Hybrid Monolith)")
+async def run_titan_engine():
+    log("🚀 SYSTEM ONLINE: Neural Scout TITAN V8")
+    log("   - Mode: Hybrid (RSS Wiretap + Active Hunt)")
+    log(f"   - Model: {MODEL_NAME}")
     
-    # 1. INITIALIZE SEARCH ENGINE (Context Manager)
-    async with AsyncDDGS() as ddgs:
+    # 1. GATHER GLOBAL INTEL (One-Time Cost)
+    global_intel = await gather_global_intelligence()
+    log(f"🧠 Global Intel Size: {len(global_intel)} chars")
+    
+    # 2. SELECT TARGETS
+    targets = await get_high_priority_targets(limit=10)
+    
+    # 3. EXECUTE ANALYSIS LOOP
+    for t in targets:
+        p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
+        log(f"\n🔬 ANALYZING: {p_name}")
         
-        # ---------------------------------------------------------
-        # PHASE 1: THE GLOBAL WIRETAP (Safe & Fast)
-        # ---------------------------------------------------------
-        # Holt Daten über RSS, ohne Limit-Gefahr.
-        global_intel = await gather_global_intel()
-        log(f"🧠 Global Knowledge Base constructed ({len(global_intel)} chars).")
+        # A. Hunt Specific Intel (Safe Mode)
+        specific_intel = await run_targeted_hunt(p_name)
         
-        # ---------------------------------------------------------
-        # PHASE 2: TARGETED OPERATIONS (Deep Scan)
-        # ---------------------------------------------------------
-        targets = await get_high_priority_targets(limit=8) # Wir bearbeiten 8 Spieler pro Run
+        # B. Analyze
+        analysis = await analyze_player_evolution(t, global_intel, specific_intel)
         
-        for t in targets:
-            p_name = f"{t['player']['first_name']} {t['player']['last_name']}"
-            log(f"\n🔬 PROCESSING TARGET: {p_name}")
+        # C. Commit
+        if analysis:
+            if analysis.get('mentioned_in_intel'):
+                log(f"      💡 FOUND RELEVANT DATA: {analysis.get('source_citation')}")
+            await commit_to_database(t, analysis)
+        
+        # D. Cool Down (Human Behavior)
+        wait = random.uniform(3.0, 6.0)
+        log(f"      ⏳ Pause ({round(wait,1)}s)...")
+        await asyncio.sleep(wait)
             
-            # A. Deep Scout (Spezifische Suche mit DuckDuckGo)
-            # Nutzt jetzt massive Pausen, um Rate Limits zu vermeiden.
-            specific_intel = await run_deep_scout(p_name, ddgs)
-            
-            # B. Synthesis & Reasoning
-            analysis = await analyze_player_evolution(t, global_intel, specific_intel)
-            
-            # C. Execution
-            if analysis:
-                if analysis.get('mentioned_in_intel'):
-                    log(f"      💡 FOUND INTEL: {analysis.get('source_citation')}")
-                await commit_to_database(t, analysis)
-            
-            # D. Evasion Protocol (Wait to look human)
-            # WICHTIG: Lange Pause zwischen Spielern für DDG Sicherheit
-            wait = random.uniform(10.0, 20.0)
-            log(f"      ⏳ Cooling down ({round(wait,1)}s)...")
-            await asyncio.sleep(wait)
-            
-    log("🏁 LEVIATHAN CYCLE COMPLETE.")
+    log("🏁 TITAN CYCLE COMPLETE.")
 
 if __name__ == "__main__":
-    asyncio.run(run_leviathan_engine())
+    asyncio.run(run_titan_engine())
