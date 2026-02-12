@@ -7,3 +7,6 @@ google-generativeai
 pandas
 openpyxl
 requests
+groq
+duckduckgo-search
+beautifulsoup4
