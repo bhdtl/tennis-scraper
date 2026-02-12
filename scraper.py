@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V86.2 - STRICT FUSION [GROQ])...")
+log("🔌 Initialisiere Neural Scout (V90.0 - DEEP TACTICAL BRAIN)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,6 +44,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -51,6 +52,7 @@ ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
+WEATHER_CACHE: Dict[str, Any] = {} # NEU: Caching für Wetterdaten
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -170,6 +172,65 @@ def has_active_signal(text: Optional[str]) -> bool:
             return True
     return False
 
+# --- NEW: SOTA WEATHER SERVICE ---
+async def fetch_weather_data(location_name: str) -> Optional[Dict]:
+    """
+    Holt echte Wetterdaten via Open-Meteo. Implementiert Caching.
+    Das ist entscheidend für die 'Deep Thinking' Fähigkeit (Bälle fliegen anders).
+    """
+    if not location_name or location_name == "Unknown": return None
+    
+    # Simple Cache Key (Tag genau)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    cache_key = f"{location_name}_{today_str}"
+    
+    if cache_key in WEATHER_CACHE:
+        return WEATHER_CACHE[cache_key]
+
+    try:
+        # 1. Geocoding
+        async with httpx.AsyncClient() as client:
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=en&format=json"
+            geo_res = await client.get(geo_url)
+            geo_data = geo_res.json()
+
+            if not geo_data.get('results'): 
+                WEATHER_CACHE[cache_key] = None
+                return None
+
+            loc = geo_data['results'][0]
+            lat, lon = loc['latitude'], loc['longitude']
+
+            # 2. Weather
+            w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
+            w_res = await client.get(w_url)
+            w_data = w_res.json()
+            
+            curr = w_data.get('current', {})
+            if not curr: return None
+
+            # Interpretation (Analog zur TypeScript Edge Function)
+            impact = "Neutral conditions."
+            temp = curr.get('temperature_2m', 20)
+            hum = curr.get('relative_humidity_2m', 50)
+            wind = curr.get('wind_speed_10m', 10)
+
+            if temp > 30: impact = "EXTREME HEAT: Ball flies fast, physically draining."
+            elif temp < 12: impact = "COLD: Low bounce, heavy conditions."
+            
+            if hum > 70: impact += " HIGH HUMIDITY: Air is heavy, ball travels slower."
+            if wind > 20: impact += " WINDY: Serve toss difficult, high variance."
+
+            result = {
+                "summary": f"{temp}°C, {hum}% Hum, Wind: {wind} km/h",
+                "impact_note": impact
+            }
+            WEATHER_CACHE[cache_key] = result
+            return result
+    except Exception as e:
+        log(f"⚠️ Weather Fetch Error ({location_name}): {e}")
+        return None
+
 # --- NEW: MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
     """
@@ -208,91 +269,171 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. QUANTUM FORM ENGINE (VEGAS-BEATER)
+# 3. MOMENTUM V2 ENGINE (REPLACED QUANTUM FORM)
 # =================================================================
-class QuantumFormEngine:
+# UPGRADE: Wir nutzen jetzt exakt die Logik aus der TypeScript Edge Function.
+# Echte Peaks, echte Valleys, exponentielle Gewichtung.
+class MomentumV2Engine:
     @staticmethod
-    def get_rating_visuals(score: float) -> Dict[str, str]:
-        s = round(score, 1)
-        if s >= 10.0: return {"color": "RAINBOW_SHINY", "hex": "#FF00FF", "desc": "🦄 MYTHICAL"}
-        if s >= 9.5: return {"color": "LIGHT_PINK_PURPLE", "hex": "#E066FF", "desc": "🔮 TRANSCENDENT"}
-        if s >= 9.0: return {"color": "PURPLE", "hex": "#800080", "desc": "👿 GODLIKE"}
-        if s >= 8.5: return {"color": "DARK_BLUE", "hex": "#00008B", "desc": "🌊 ELITE"}
-        if s >= 8.0: return {"color": "BLUE", "hex": "#0000FF", "desc": "🧊 COLD BLOODED"}
-        if s >= 7.5: return {"color": "DARK_GREEN", "hex": "#006400", "desc": "🌲 PEAK"}
-        if s >= 7.0: return {"color": "GREEN", "hex": "#008000", "desc": "🌿 SOLID"}
-        if s >= 6.5: return {"color": "YELLOW", "hex": "#FFFF00", "desc": "⚠️ AVERAGE"}
-        if s >= 6.0: return {"color": "LIGHT_RED", "hex": "#FF6666", "desc": "🔥 WARMING UP"}
-        if s >= 5.5: return {"color": "RED", "hex": "#FF0000", "desc": "🚩 STRUGGLING"}
-        return {"color": "DARK_RED", "hex": "#8B0000", "desc": "🛑 DISASTER"}
+    def calculate_rating(matches: List[Dict], player_name: str) -> Dict[str, Any]:
+        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history": ""}
 
-    @staticmethod
-    def parse_score_details(score_str: str, player_won: bool) -> Dict[str, float]:
-        if not score_str or "ret" in score_str.lower() or "wo" in score_str.lower():
-            return {"dominance": 0.5}
-        matches = re.findall(r'(\d+)-(\d+)', score_str)
-        if not matches: return {"dominance": 0.5}
-        games_won = 0; games_lost = 0; sets_won = 0; sets_lost = 0
-        for s in matches:
-            l = int(s[0]); r = int(s[1])
-            p_games = l if player_won else r
-            o_games = r if player_won else l
-            games_won += p_games; games_lost += o_games
-            if p_games > o_games: sets_won += 1
-            elif o_games > p_games: sets_lost += 1
-        total_games = games_won + games_lost
-        if total_games == 0: return {"dominance": 0.5}
-        dominance = games_won / total_games
-        if player_won and sets_lost == 0: dominance += 0.1
-        if not player_won and sets_won > 0: dominance += 0.15
-        return {"dominance": min(max(dominance, 0.0), 1.0)}
+        # 1. Sortieren & Slicing (15 Matches, Neueste zuerst für Slice, dann Reverse für Chronologie)
+        recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:15]
+        chrono_matches = recent_matches[::-1] # Alt -> Neu
 
-    @staticmethod
-    def calculate_match_performance(odds: float, won: bool, score_str: str) -> float:
-        if odds <= 1.0: odds = 1.01
-        details = QuantumFormEngine.parse_score_details(score_str, won)
-        dominance = details.get("dominance", 0.5)
-        delta = 0.0
-        if won:
-            if odds < 1.20: delta = 0.1 + (dominance * 0.1) 
-            elif 1.20 <= odds <= 2.00: delta = 0.3 + (dominance * 0.2)
-            elif 2.00 < odds <= 3.00: delta = 0.8 + (dominance * 0.3)
-            elif odds > 3.00: log_boost = math.log(odds, 2); delta = 1.0 + (log_boost * 0.3)
-        else:
-            if odds < 1.20: delta = -1.5 - (1.0 - dominance) 
-            elif 1.20 <= odds <= 2.00: delta = -0.6 - (0.5 - dominance)
-            elif 2.00 < odds <= 3.00:
-                if dominance > 0.45: delta = +0.1 
-                else: delta = -0.2
-            elif odds > 3.00:
-                if dominance > 0.4: delta = +0.2 
-                else: delta = 0.0
-        return delta
-
-    @classmethod
-    def calculate_player_form(cls, matches: List[Dict], player_name: str) -> Dict[str, Any]:
-        current_rating = 6.5 
+        rating = 5.5 # Start Baseline
+        momentum = 0.0
+        
         history_log = []
-        sorted_matches = sorted(matches, key=lambda x: x.get('created_at', ''))
-        for i, m in enumerate(sorted_matches):
-            is_p1 = player_name.lower() in m['player1_name'].lower()
+
+        for idx, m in enumerate(chrono_matches):
+            p_name_lower = player_name.lower()
+            is_p1 = p_name_lower in m['player1_name'].lower()
+            winner = m.get('actual_winner_name', "") or ""
+            won = p_name_lower in winner.lower()
+
             odds = m['odds1'] if is_p1 else m['odds2']
-            winner_name = m.get('actual_winner_name', '')
-            won = False
-            if winner_name: won = player_name.lower() in winner_name.lower()
-            score_str = m.get('score', '')
-            match_delta = cls.calculate_match_performance(odds, won, score_str)
-            weight = 0.5 + (i * 0.2) 
-            weighted_delta = match_delta * weight
-            current_rating += weighted_delta
-            icon = '✅' if won else '❌'
-            history_log.append(f"{icon}(@{odds})")
-        final_rating = max(0.0, min(10.0, current_rating))
-        visuals = cls.get_rating_visuals(final_rating)
-        return {"score": round(final_rating, 2), "color_data": visuals, "text": f"{visuals['desc']} ({visuals['color']})", "history_summary": " ".join(history_log[-5:])}
+            if not odds or odds <= 1.0: odds = 1.50
+
+            # Weighting: Letzte 5 Matches zählen doppelt (Exponential Recency)
+            is_recent = idx >= (len(chrono_matches) - 5)
+            weight = 1.5 if is_recent else 0.8
+            
+            impact = 0.0
+
+            if won:
+                # Sieg Logic (Analog TS)
+                if odds < 1.30: impact = 0.3      # Pflichtsieg
+                elif odds <= 2.00: impact = 0.8   # Solider Sieg
+                else: impact = 1.8                # Upset Sieg (Breakout)
+                
+                # Dominanz Bonus
+                score = str(m.get('score', ''))
+                if score and "2-1" not in score and "1-2" not in score:
+                    impact += 0.3
+                
+                momentum += 0.2 # Winning Streak Bonus
+                history_log.append("W")
+            else:
+                # Niederlage Logic (Analog TS)
+                if odds < 1.40: impact = -1.5     # Upset Loss (Collapse risk)
+                elif odds <= 2.20: impact = -0.6  # Standard Loss
+                else: impact = -0.2               # Expected Loss
+                
+                momentum = 0 # Streak gebrochen
+                history_log.append("L")
+            
+            rating += (impact * weight)
+
+        # Add Momentum & Clamp
+        rating += momentum
+        final_rating = max(1.0, min(10.0, rating))
+        
+        # Visual Text
+        desc = "Average"
+        if final_rating > 8.5: desc = "🔥 ELITE FORM"
+        elif final_rating > 7.0: desc = "📈 Strong"
+        elif final_rating < 4.0: desc = "❄️ Cold / Slump"
+        elif final_rating < 5.5: desc = "⚠️ Struggling"
+        
+        # Color Logic für Frontend
+        color = "YELLOW"
+        if final_rating >= 8.0: color = "GREEN"
+        elif final_rating <= 5.0: color = "RED"
+
+        return {
+            "score": round(final_rating, 2),
+            "text": desc,
+            "color_desc": color, # Helper für AI Context
+            "history_summary": "".join(history_log[-5:])
+        }
 
 # =================================================================
-# 4. GROQ ENGINE
+# 4. TACTICAL COMPUTER (THE NEW BRAIN)
+# =================================================================
+# HIER PASSIERT DAS "DENKEN". 
+# Wir replizieren die TypeScript Logic in Python, um Halluzinationen zu vermeiden.
+class TacticalComputer:
+    """
+    Übernimmt das 'Denken' der AI in Python.
+    Berechnet Scores deterministisch basierend auf Skill, Form, Fatigue und Surface.
+    """
+    @staticmethod
+    def calculate_matchup_math(
+        s1: Dict, s2: Dict, 
+        f1_score: float, f2_score: float, 
+        fatigue1_txt: str, fatigue2_txt: str,
+        bsi: float, surface: str
+    ) -> Dict[str, Any]:
+        
+        # 1. BASELINE
+        score = 5.5 # Neutral Start
+        log_reasons = []
+
+        # 2. SKILL GAP (Pure Math)
+        # Wir nehmen an, 50 ist average. 
+        skill1_avg = sum(s1.values()) / len(s1) if s1 else 50
+        skill2_avg = sum(s2.values()) / len(s2) if s2 else 50
+        
+        diff = skill1_avg - skill2_avg
+        # +0.1 für jede 2 Punkte Unterschied (TS Logic)
+        skill_impact = (diff / 2) * 0.1
+        score += skill_impact
+        if abs(skill_impact) > 0.3:
+            log_reasons.append(f"Skill Gap: {'P1' if skill_impact > 0 else 'P2'} superior (+{abs(diff):.1f})")
+
+        # 3. FORM DELTA (Vegas Style)
+        form_diff = f1_score - f2_score
+        # +0.2 für jeden Punkt Form-Unterschied (TS Logic)
+        form_impact = form_diff * 0.2
+        score += form_impact
+        if abs(form_impact) > 0.4:
+            log_reasons.append(f"Form: {'P1' if form_impact > 0 else 'P2'} hotter")
+
+        # 4. SURFACE & BSI FIT (Python Logic statt AI Guessing)
+        # Beispiel: Hoher BSI (>7) hilft Servern (Power > 70)
+        p1_power = s1.get('power', 50) + s1.get('serve', 50)
+        p2_power = s2.get('power', 50) + s2.get('serve', 50)
+        
+        if bsi >= 7.5: # Fast Court
+            if p1_power > (p2_power + 10):
+                score += 0.5
+                log_reasons.append("P1 Big Serve advantage on fast court")
+            elif p2_power > (p1_power + 10):
+                score -= 0.5
+                log_reasons.append("P2 Big Serve advantage on fast court")
+        elif bsi <= 4.0: # Slow Court (Clay)
+            # Auf Clay gewinnt oft Stamina/Speed
+            p1_grind = s1.get('stamina', 50) + s1.get('speed', 50)
+            p2_grind = s2.get('stamina', 50) + s2.get('speed', 50)
+            if p1_grind > (p2_grind + 10):
+                score += 0.5
+                log_reasons.append("P1 Grinder advantage on slow court")
+            elif p2_grind > (p1_grind + 10):
+                score -= 0.5
+                log_reasons.append("P2 Grinder advantage on slow court")
+
+        # 5. FATIGUE PENALTY
+        # Wir parsen den Text "Heavy Legs" etc.
+        if "Heavy" in fatigue2_txt or "CRITICAL" in fatigue2_txt:
+            score += 0.8
+            log_reasons.append("P2 Fatigued")
+        if "Heavy" in fatigue1_txt or "CRITICAL" in fatigue1_txt:
+            score -= 0.8
+            log_reasons.append("P1 Fatigued")
+
+        # CLAMP
+        final_score = max(1.0, min(10.0, score))
+        
+        return {
+            "calculated_score": round(final_score, 2),
+            "reasons": log_reasons,
+            "skill_diff": round(diff, 1)
+        }
+
+# =================================================================
+# 5. GROQ ENGINE
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -323,7 +464,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 5. DATA FETCHING & ORACLE
+# 6. DATA FETCHING & ORACLE
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -350,19 +491,19 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     return metadata
 
 async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> Dict[str, Any]:
+    # UPGRADE: Wir nutzen jetzt MomentumV2Engine statt QuantumFormEngine
     try:
         res = supabase.table("market_odds")\
             .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
-            .order("created_at", desc=True).limit(8).execute()
+            .order("created_at", desc=True).limit(20).execute() # Wir brauchen 15, laden 20 zur Sicherheit
         matches = res.data
-        if not matches: return {"text": "No Data", "score": 6.5, "history_summary": ""}
-        form_data = QuantumFormEngine.calculate_player_form(matches[:5], player_last_name) 
-        return form_data
+        # Call V2 Engine
+        return MomentumV2Engine.calculate_rating(matches, player_last_name)
     except Exception as e:
         log(f"   ⚠️ Form Calc Error {player_last_name}: {e}")
-        return {"text": "Calc Error", "score": 6.5, "history_summary": ""}
+        return {"text": "Calc Error", "score": 5.0, "history_summary": ""}
 
 def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
     if not player_name or not opponent_style_raw: return None
@@ -555,7 +696,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 6. MATH CORE (PURE VALUE ENGINE - NO STAKES)
+# 7. MATH CORE (PURE VALUE ENGINE - NO STAKES)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -657,7 +798,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: return 0.5
 
 # =================================================================
-# 7. PIPELINE UTILS
+# 8. PIPELINE UTILS
 # =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
@@ -755,50 +896,67 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         return surf, bsi, note
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
-async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data):
-    f1_txt = f"{form1_data['text']} (Rating: {form1_data['score']})"
-    f2_txt = f"{form2_data['text']} (Rating: {form2_data['score']})"
+# --- HELPER FOR CITY Extraction (Simple) ---
+def get_city_from_note(note):
+    # Extrahiert Stadt aus "AI Guess: Paris" oder "United Cup (Sydney)"
+    if not note: return "Unknown"
+    if "AI/Oracle:" in note: return note.split(":")[-1].strip()
+    if "(" in note: return note.split("(")[-1].replace(")", "").strip()
+    return note
+
+async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data):
+    # 1. PYTHON DOES THE MATH (TacticalComputer)
     fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
     fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
-    styleA_vs_B = get_style_matchup_stats_py(supabase, p1['last_name'], p2.get('play_style', ''))
-    styleB_vs_A = get_style_matchup_stats_py(supabase, p2['last_name'], p1.get('play_style', ''))
     
-    prompt = f"""
-    Role: Elite Tennis Analyst.
-    MATCHUP: {p1['last_name']} vs {p2['last_name']}
-    CONTEXT: {surface} (BSI: {bsi}/10) | {notes}
+    # Berechne den taktischen Score DETERMINISTISCH
+    tactical_data = TacticalComputer.calculate_matchup_math(
+        s1, s2, 
+        form1_data['score'], form2_data['score'], 
+        fatigueA, fatigueB, 
+        bsi, surface
+    )
     
-    PLAYER A: {p1['last_name']}
-    - Style: {p1.get('play_style', 'Unknown')}
-    - FORM (Vegas): {f1_txt}
-    - BIO-LOAD: {fatigueA}
-    - Matchup History: {styleA_vs_B['verdict'] if styleA_vs_B else "No data"}
+    score = tactical_data['calculated_score']
+    reasons_bullet_points = "\n- ".join(tactical_data['reasons'])
     
-    PLAYER B: {p2['last_name']}
-    - Style: {p2.get('play_style', 'Unknown')}
-    - FORM (Vegas): {f2_txt}
-    - BIO-LOAD: {fatigueB}
-    - Matchup History: {styleB_vs_A['verdict'] if styleB_vs_A else "No data"}
+    # Wetter Info für Prompt
+    weather_str = "Weather: Unknown"
+    if weather_data:
+        weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}"
 
-    RULES:
-    1. FATIGUE: Reduce win% if "Heavy Legs"/"Critical Fatigue" (esp. vs Grinders or high BSI).
-    2. STYLE: Server vs Returner: Adv. Returner on Slow/Clay; Adv. Server on Fast/Grass.
-    3. SURFACE: High BSI favors Aggressors; Low BSI favors Defenders.
+    # 2. PROMPT FOR TEXT GENERATION (8B Model summarizes the Python Math)
+    prompt = f"""
+    ROLE: Elite Tennis Analyst (Journalist Style).
+    TASK: Write a sharp analysis based on these CALCULATED FACTS.
+    
+    FACTS (TRUST THESE):
+    - Matchup Score: {score}/10 ( >5.5 favors {p1['last_name']}, <5.5 favors {p2['last_name']})
+    - Key Drivers: 
+      - {reasons_bullet_points if reasons_bullet_points else "Balanced stats."}
+    - Player A ({p1['last_name']}): Form {form1_data['text']}, Fatigue: {fatigueA}
+    - Player B ({p2['last_name']}): Form {form2_data['text']}, Fatigue: {fatigueB}
+    - Conditions: {surface} (Speed {bsi}/10). {weather_str}
 
     OUTPUT JSON ONLY:
     {{ 
-        "p1_tactical_score": [0-10], 
-        "p2_tactical_score": [0-10], 
-        "p1_form_score": {form1_data['score']}, 
-        "p2_form_score": {form2_data['score']}, 
-        "ai_text": "Insight (fatigue/style/surface, max 25 words).", 
-        "p1_win_sentiment": [0.0-1.0] 
+        "p1_tactical_score": {score}, 
+        "p2_tactical_score": {10.0 - score}, 
+        "ai_text": "One key sentence summary + 3 bullet points explanations. Mention the weather impact if relevant.", 
+        "p1_win_sentiment": {score / 10.0} 
     }}
     """
     res = await call_groq(prompt)
+    
+    # Fallback Values
+    default = {'p1_tactical_score': score, 'p2_tactical_score': 10.0-score, 'ai_text': 'Analysis unavailable.', 'p1_win_sentiment': 0.5}
+    
     data = ensure_dict(safe_get_ai_data(res))
-    data['p1_form_score'] = form1_data['score']
-    data['p2_form_score'] = form2_data['score']
+    if not data: return default
+    
+    # Enforce Python Logic
+    data['p1_tactical_score'] = score
+    data['p2_tactical_score'] = 10.0 - score
     return data
 
 def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
@@ -1124,7 +1282,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V86.2 STRICT FUSION (GROQ) Starting...")
+    log(f"🚀 Neural Scout V90.0 (TACTICAL BRAIN ACTIVATED) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1181,8 +1339,6 @@ async def run_pipeline():
                             # =================================================================
                             # FUSION HOOK: Initialize History Variables (HOISTED)
                             # =================================================================
-                            # Diese Variablen werden initialisiert, damit sie am Ende für das History Logging
-                            # zur Verfügung stehen, egal welcher Pfad genommen wird.
                             hist_fair1 = 0
                             hist_fair2 = 0
                             hist_is_value = False
@@ -1221,7 +1377,6 @@ async def run_pipeline():
 
                                 supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                                 
-                                # Set history vars for locked match
                                 hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
                                 hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
                                 
@@ -1232,6 +1387,11 @@ async def run_pipeline():
                                 
                                 c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                                 surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                                
+                                # -- WEATHER FETCHING --
+                                city_guess = get_city_from_note(notes)
+                                weather_data = await fetch_weather_data(city_guess)
+
                                 s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                                 r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                                 r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
@@ -1291,7 +1451,9 @@ async def run_pipeline():
                                     
                                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                                     
-                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data)
+                                    # UPGRADE: Weather Data included
+                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, weather_data)
+                                    
                                     prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                     
                                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -1349,8 +1511,6 @@ async def run_pipeline():
                             # =================================================================
                             # FUSION: ODDS HISTORY LOGGING (The Fix from Code 2)
                             # =================================================================
-                            # Wir prüfen db_match_id (das ist die korrekte ID aus dem Insert/Update oben)
-                            
                             if db_match_id:
                                 should_log_history = False
                                 
@@ -1358,7 +1518,6 @@ async def run_pipeline():
                                 elif hist_is_locked: should_log_history = True
                                 elif hist_is_value: should_log_history = True
                                 else:
-                                    # Check movement
                                     try:
                                         old_o1 = to_float(existing_match.get('odds1'), 0)
                                         if abs(old_o1 - m['odds1']) > 0.001: should_log_history = True
