@@ -21,7 +21,8 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install supabase groq duckduckgo-search httpx pandas
+          # Wir pinnen duckduckgo-search auf 6.4.2, da hier AsyncDDGS stabil ist.
+          pip install supabase groq "duckduckgo-search==6.4.2" httpx pandas youtube-transcript-api
 
       - name: Run Evolution Engine
         env:
