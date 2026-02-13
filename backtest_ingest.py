@@ -69,8 +69,6 @@ DATA_URLS = [
     "http://www.tennis-data.co.uk/2024w/2024.xlsx",
     "http://www.tennis-data.co.uk/2025/2025.xlsx",
     "http://www.tennis-data.co.uk/2025w/2024.xlsx"
-    "http://www.tennis-data.co.uk/2026/2026.xlsx",
-    "http://www.tennis-data.co.uk/2026w/2026.xlsx"
 ]
 
 # =================================================================
