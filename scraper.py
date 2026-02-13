@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V92.1 - GLOBAL PROFILER & TELEMETRY)...")
+log("🔌 Initialisiere Neural Scout (V93.1 - SURFACE MASTERY & TELEMETRY)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -182,7 +182,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     
     # URL Safety Check (Verhindert den Crash durch zu lange Strings)
     clean_location = re.sub(r'[^a-zA-Z0-9\s,]', '', location_name).strip()
-    if len(clean_location) > 50: clean_location = clean_location[:50]
+    if len(clean_location) > 50: clean_location = clean_location[:50] # Cutoff
     
     # Simple Cache Key (Tag genau)
     today_str = datetime.now().strftime('%Y-%m-%d')
@@ -359,7 +359,7 @@ class MomentumV2Engine:
 class SurfaceIntelligence:
     """
     NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
-    (ARCHITECT UPGRADE: Semantic Gap Bridge & Telemetry)
+    (ARCHITECT UPGRADE: Mastery, Volume & Specialization Protocol)
     """
     
     @staticmethod
@@ -430,22 +430,96 @@ class SurfaceIntelligence:
 
     @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
-        """Berechnet das komplette Profil für Hard, Clay, Grass"""
+        """Berechnet das komplette Profil für Hard, Clay, Grass (MASTERY & VOLUME ENGINE)"""
         profile = {}
         log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
-        for surf in ["hard", "clay", "grass"]:
-            surf_matches = SurfaceIntelligence.get_matches_by_surface(matches, surf)
-            log(f"   -> {surf.upper()}: {len(surf_matches)} Matches erfolgreich zugeordnet.")
+        # 1. Sammle alle Matches pro Belag
+        hard_m = SurfaceIntelligence.get_matches_by_surface(matches, "hard")
+        clay_m = SurfaceIntelligence.get_matches_by_surface(matches, "clay")
+        grass_m = SurfaceIntelligence.get_matches_by_surface(matches, "grass")
+        
+        total_valid = len(hard_m) + len(clay_m) + len(grass_m)
+        
+        surfaces_data = {
+            "hard": hard_m,
+            "clay": clay_m,
+            "grass": grass_m
+        }
+        
+        for surf, surf_matches in surfaces_data.items():
+            n_surf = len(surf_matches)
             
-            rating_data = MomentumV2Engine.calculate_rating(surf_matches, player_name, max_matches=25)
+            # PENALTY FÜR 0 MATCHES: Kein 5.5 "Neutral" mehr!
+            # Wenn der Spieler den Belag meidet, ist er schlecht darauf (Rating 4.0).
+            if n_surf == 0 or total_valid == 0:
+                profile[surf] = {
+                    "rating": 4.0, 
+                    "color": "#CC0000", # Deep Red
+                    "matches_tracked": 0,
+                    "text": "No Experience"
+                }
+                log(f"   -> {surf.upper()}: 0 Matches (Penalty applied)")
+                continue
+                
+            ratio = n_surf / total_valid
+            
+            # 2. BASE PERFORMANCE (Raw Win Rate)
+            wins = 0
+            for m in surf_matches:
+                winner = m.get('actual_winner_name', "") or ""
+                if player_name.lower() in winner.lower():
+                    wins += 1
+                    
+            win_rate = wins / n_surf
+            # Skalierung: 0% Siege = 3.0 Rating | 100% Siege = 8.0 Rating
+            base_rating = 3.0 + (win_rate * 5.0) 
+            
+            # 3. SPECIALIZATION BONUS (Das "Elmer Moller" Prinzip)
+            # Belohnt Spieler, die einen Belag stark fokussieren
+            spec_bonus = 0.0
+            if ratio >= 0.60: spec_bonus = 1.5      # Echter Spezialist (>60% seiner Matches)
+            elif ratio >= 0.40: spec_bonus = 0.8    # Bevorzugter Belag
+            elif ratio >= 0.20: spec_bonus = 0.0    # Normaler Anteil
+            elif ratio >= 0.05: spec_bonus = -0.8   # Spielt selten darauf
+            else: spec_bonus = -1.5                 # Meidet diesen Belag fast komplett
+            
+            # 4. VOLUME BONUS (Erfahrung & Sample Size)
+            # Bis zu +1.0 Bonus für 25+ gespielte Matches
+            vol_bonus = min(1.0, n_surf / 25.0)
+            
+            # 5. FORM TWEAK (Berücksichtigt Wettquoten & aktuelle Siege vs gute Gegner)
+            v2_data = MomentumV2Engine.calculate_rating(surf_matches, player_name, max_matches=10)
+            v2_delta = (v2_data["score"] - 5.5) * 0.15 # Max +/- 0.67 Einfluss auf das Gesamt-Rating
+            
+            # FINAL CALCULATION
+            final_rating = base_rating + spec_bonus + vol_bonus + v2_delta
+            final_rating = max(1.0, min(10.0, final_rating))
+            
+            # VISUAL TEXT & COLOR (SofaScore Standards)
+            desc = "Average"
+            if final_rating >= 8.5: desc = "🔥 SPECIALIST"
+            elif final_rating >= 7.0: desc = "📈 Strong"
+            elif final_rating >= 5.5: desc = "Solid"
+            elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
+            else: desc = "❄️ Weakness"
+            
+            color_hex = "#F0C808" # Yellow
+            if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
+            elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
+            elif final_rating >= 6.5: color_hex = "#00B25B" # Green
+            elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
+            elif final_rating <= 4.0: color_hex = "#CC0000" # Red
+            elif final_rating < 5.5: color_hex = "#FF9933" # Orange
             
             profile[surf] = {
-                "rating": rating_data["score"],
-                "color": rating_data["color_hex"],
-                "matches_tracked": len(surf_matches),
-                "text": rating_data["text"]
+                "rating": round(final_rating, 2),
+                "color": color_hex,
+                "matches_tracked": n_surf,
+                "text": desc
             }
+            
+            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | SpecRatio: {ratio:.2f} | Final: {final_rating:.2f}")
             
         return profile
 
@@ -979,8 +1053,8 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         if arena_target:
             for t in db_tours:
                 if "united cup" in t['name'].lower() and arena_target.lower() in t.get('location', '').lower():
-                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})"
-        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)"
+                    return t['surface'], t['bsi_rating'], f"United Cup ({arena_target})", arena_target
+        return "Hard Court Outdoor", 8.3, "United Cup (Sydney Default)", "Sydney"
 
     if match_date:
         month = match_date.month
@@ -996,15 +1070,20 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
     for t in db_tours:
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
-    if best_match and best_score >= 20: return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', '')
+    if best_match and best_score >= 20: 
+        # FIX für WEATHER CRASH: Gebe location statt notes zurück für Wetter
+        loc = best_match.get('location', '')
+        city_for_weather = loc.split(',')[0] if loc else best_match['name']
+        return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', ''), city_for_weather
+    
     ai_loc = await resolve_ambiguous_tournament(p1, p2, tour, p1_country, p2_country)
     ai_loc = ensure_dict(ai_loc)
     if ai_loc and ai_loc.get('city'):
         surf = ai_loc.get('surface_guessed', 'Hard Court Outdoor')
         bsi = ai_loc.get('bsi_estimate', 6.5)
-        note = ai_loc.get('note', 'AI Guess')
-        return surf, bsi, note
-    return 'Hard Court Outdoor', 6.5, 'Fallback'
+        city = ai_loc.get('city', 'Unknown')
+        return surf, bsi, "AI Guess", city
+    return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0]
 
 def get_city_from_note(note):
     if not note: return "Unknown"
@@ -1394,7 +1473,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V92.1 (GLOBAL PROFILER & TELEMETRY) Starting...")
+    log(f"🚀 Neural Scout V93.1 (GLOBAL PROFILER & TELEMETRY) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1518,11 +1597,10 @@ async def run_pipeline():
                                     cached_ai = {'ai_text': existing_match.get('ai_analysis_text'), 'ai_fair_odds1': existing_match.get('ai_fair_odds1'), 'old_odds1': existing_match.get('odds1', 0), 'old_odds2': existing_match.get('odds2', 0), 'last_update': existing_match.get('created_at')}
                                 
                                 c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
-                                surf, bsi, notes = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
                                 
-                                # -- WEATHER FETCHING --
-                                city_guess = get_city_from_note(notes)
-                                weather_data = await fetch_weather_data(city_guess)
+                                # FIX FÜR WEATHER CRASH: Die City Funktion nutzt jetzt Location, nicht die 500-Wörter Notes!
+                                surf, bsi, notes, city_for_weather = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                                weather_data = await fetch_weather_data(city_for_weather)
 
                                 s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                                 r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
