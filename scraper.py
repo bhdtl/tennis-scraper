@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V92.0 - TELEMETRY & OBSERVABILITY EDITION)...")
+log("🔌 Initialisiere Neural Scout (V92.1 - GLOBAL PROFILER & TELEMETRY)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -180,9 +180,13 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     """
     if not location_name or location_name == "Unknown": return None
     
+    # URL Safety Check (Verhindert den Crash durch zu lange Strings)
+    clean_location = re.sub(r'[^a-zA-Z0-9\s,]', '', location_name).strip()
+    if len(clean_location) > 50: clean_location = clean_location[:50]
+    
     # Simple Cache Key (Tag genau)
     today_str = datetime.now().strftime('%Y-%m-%d')
-    cache_key = f"{location_name}_{today_str}"
+    cache_key = f"{clean_location}_{today_str}"
     
     if cache_key in WEATHER_CACHE:
         return WEATHER_CACHE[cache_key]
@@ -190,7 +194,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     try:
         # 1. Geocoding
         async with httpx.AsyncClient() as client:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location_name}&count=1&language=en&format=json"
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={clean_location}&count=1&language=en&format=json"
             geo_res = await client.get(geo_url)
             geo_data = geo_res.json()
 
@@ -228,7 +232,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
             WEATHER_CACHE[cache_key] = result
             return result
     except Exception as e:
-        log(f"⚠️ Weather Fetch Error ({location_name}): {e}")
+        log(f"⚠️ Weather Fetch Error ({clean_location}): {e}")
         return None
 
 # --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
@@ -271,7 +275,8 @@ class MomentumV2Engine:
         Berechnet das Rating basierend auf den übergebenen Matches.
         Kann generisch für Gesamtform (max_matches=15) oder Surface (max_matches=30) genutzt werden.
         """
-        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history": ""}
+        # FIX: color_hex zum Fallback hinzugefügt
+        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
         # 1. Sortieren & Slicing
         recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
@@ -586,7 +591,6 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
             .order("created_at", desc=True).limit(limit).execute()
         
         data = res.data or []
-        log(f"📊 [TELEMETRY] DB Fetch für '{player_last_name}': {len(data)} Historische Matches gefunden.")
         return data
     except Exception as e:
         log(f"🚨 [TELEMETRY ERROR] Fetch fehlgeschlagen für '{player_last_name}': {e}")
@@ -1006,6 +1010,7 @@ def get_city_from_note(note):
     if not note: return "Unknown"
     if "AI/Oracle:" in note: return note.split(":")[-1].strip()
     if "(" in note: return note.split("(")[-1].replace(")", "").strip()
+    if len(note) > 50: return "Unknown" # NEUER FIX: Schutz vor API Crash durch lange DB-Texte
     return note
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile):
@@ -1389,7 +1394,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V92.0 (TELEMETRY EDITION) Starting...")
+    log(f"🚀 Neural Scout V92.1 (GLOBAL PROFILER & TELEMETRY) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1400,6 +1405,26 @@ async def run_pipeline():
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             player_names = [p['last_name'] for p in players]
+            
+            # =================================================================
+            # 🌍 NEW: GLOBAL PROFILER (MASS BACKFILL)
+            # =================================================================
+            log("🌍 [GLOBAL PROFILER] Starte Massen-Update für ALLE Spieler-Profile (Keine API-Kosten)...")
+            players_to_update = [p for p in players if not p.get('surface_ratings') or len(p.get('surface_ratings', {})) == 0]
+            log(f"🔄 Führe Backfill für {len(players_to_update)} Spieler ohne Profil durch...")
+            
+            for p_data in players_to_update:
+                p_name = p_data['last_name']
+                p_hist = await fetch_player_history_extended(p_name, limit=80)
+                if p_hist:
+                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                    try:
+                        supabase.table('players').update({'surface_ratings': p_profile}).eq('id', p_data['id']).execute()
+                    except Exception as e:
+                        log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
+                await asyncio.sleep(0.05) # Rate limit protection für Supabase
+            log("✅ [GLOBAL PROFILER] Massen-Update abgeschlossen.")
+            # =================================================================
             
             for day_offset in range(-1, 11): 
                 target_date = datetime.now() + timedelta(days=day_offset)
@@ -1519,15 +1544,13 @@ async def run_pipeline():
                                 # Update Player DB (Self-Healing Profile)
                                 try:
                                     log(f"💾 [TELEMETRY] Speichere Profil für {n1}...")
-                                    res1 = supabase.table('players').update({'surface_ratings': p1_surface_profile}).eq('id', p1_obj['id']).execute()
-                                    log(f"   ✅ Profil gespeichert für {n1}")
+                                    supabase.table('players').update({'surface_ratings': p1_surface_profile}).eq('id', p1_obj['id']).execute()
                                 except Exception as e:
                                     log(f"🚨 [TELEMETRY ERROR] DB Update fehlgeschlagen für {n1}: {e}")
                                     
                                 try:
                                     log(f"💾 [TELEMETRY] Speichere Profil für {n2}...")
-                                    res2 = supabase.table('players').update({'surface_ratings': p2_surface_profile}).eq('id', p2_obj['id']).execute()
-                                    log(f"   ✅ Profil gespeichert für {n2}")
+                                    supabase.table('players').update({'surface_ratings': p2_surface_profile}).eq('id', p2_obj['id']).execute()
                                 except Exception as e:
                                     log(f"🚨 [TELEMETRY ERROR] DB Update fehlgeschlagen für {n2}: {e}")
                                 # -------------------------------------------------------------
