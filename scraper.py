@@ -1282,6 +1282,7 @@ class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
     """
+    
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
         p_hold = 67.0 
