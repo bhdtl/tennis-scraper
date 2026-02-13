@@ -451,7 +451,7 @@ class SurfaceIntelligence:
             n_surf = len(surf_matches)
             
             # PENALTY FÜR 0 MATCHES: Kein 5.5 "Neutral" mehr!
-            # Wenn der Spieler den Belag meidet, ist er schlecht darauf (Rating 4.0).
+            # Wenn der Spieler den Belag meidet, ist er extrem verwundbar darauf (Rating 4.0).
             if n_surf == 0 or total_valid == 0:
                 profile[surf] = {
                     "rating": 4.0, 
@@ -472,28 +472,29 @@ class SurfaceIntelligence:
                     wins += 1
                     
             win_rate = wins / n_surf
-            # Skalierung: 0% Siege = 3.0 Rating | 100% Siege = 8.0 Rating
-            base_rating = 3.0 + (win_rate * 5.0) 
             
-            # 3. SPECIALIZATION BONUS (Das "Elmer Moller" Prinzip)
-            # Belohnt Spieler, die einen Belag stark fokussieren
+            # THE 85/15 PHILOSOPHY: Baseline is 5.0
+            base_rating = 5.0
+            
+            # A) SPECIALIZATION BONUS (Primary Driver: 85% Fokus auf Präferenz)
             spec_bonus = 0.0
-            if ratio >= 0.60: spec_bonus = 1.5      # Echter Spezialist (>60% seiner Matches)
-            elif ratio >= 0.40: spec_bonus = 0.8    # Bevorzugter Belag
-            elif ratio >= 0.20: spec_bonus = 0.0    # Normaler Anteil
-            elif ratio >= 0.05: spec_bonus = -0.8   # Spielt selten darauf
-            else: spec_bonus = -1.5                 # Meidet diesen Belag fast komplett
+            if ratio >= 0.70: spec_bonus = 2.5      # Extreme Specialist (>70% seiner Matches)
+            elif ratio >= 0.50: spec_bonus = 1.5    # High volume
+            elif ratio >= 0.30: spec_bonus = 0.5    # Balanced/Favored
+            elif ratio >= 0.15: spec_bonus = -0.5   # Below average
+            elif ratio >= 0.05: spec_bonus = -1.5   # Rare
+            else: spec_bonus = -2.5                 # Avoids almost entirely
             
-            # 4. VOLUME BONUS (Erfahrung & Sample Size)
-            # Bis zu +1.0 Bonus für 25+ gespielte Matches
-            vol_bonus = min(1.0, n_surf / 25.0)
+            # B) VOLUME BONUS (Experience Driver)
+            # Bis zu +1.0 Bonus für 30+ gespielte Matches auf diesem Belag
+            vol_bonus = min(1.0, n_surf / 30.0)
             
-            # 5. FORM TWEAK (Berücksichtigt Wettquoten & aktuelle Siege vs gute Gegner)
-            v2_data = MomentumV2Engine.calculate_rating(surf_matches, player_name, max_matches=10)
-            v2_delta = (v2_data["score"] - 5.5) * 0.15 # Max +/- 0.67 Einfluss auf das Gesamt-Rating
+            # C) RESULTS BONUS (Tertiary Driver: 15% Tweak)
+            # Skaliert Win-Rate von 0% (-1.5) auf 50% (0.0) bis 100% (+1.5)
+            win_impact = (win_rate - 0.5) * 3.0
             
             # FINAL CALCULATION
-            final_rating = base_rating + spec_bonus + vol_bonus + v2_delta
+            final_rating = base_rating + spec_bonus + vol_bonus + win_impact
             final_rating = max(1.0, min(10.0, final_rating))
             
             # VISUAL TEXT & COLOR (SofaScore Standards)
@@ -1489,6 +1490,7 @@ async def run_pipeline():
             # 🌍 NEW: GLOBAL PROFILER (MASS BACKFILL)
             # =================================================================
             log("🌍 [GLOBAL PROFILER] Starte Massen-Update für ALLE Spieler-Profile (Keine API-Kosten)...")
+            # Finde Spieler, die noch KEIN surface_ratings Profil in der DB haben
             players_to_update = [p for p in players if not p.get('surface_ratings') or len(p.get('surface_ratings', {})) == 0]
             log(f"🔄 Führe Backfill für {len(players_to_update)} Spieler ohne Profil durch...")
             
