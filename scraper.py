@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V93.3 - 70/30 SURFACE MASTERY ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V93.4 - 70/30 SURFACE MASTERY ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,7 +44,6 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -53,7 +52,7 @@ TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
 WEATHER_CACHE: Dict[str, Any] = {} 
-GLOBAL_SURFACE_MAP: Dict[str, str] = {} # New: High-Speed Lookup für Tournament -> Surface
+GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -166,25 +165,18 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
 
 def has_active_signal(text: Optional[str]) -> bool:
     if not text: return False
-    # Check for V60+ Bracket format or V44 legacy format OR V81 Value Signals
     if "[" in text and "]" in text:
-        # Legacy Icons + New Value Icons (Fire, Sparkles, Chart, Eyes)
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]):
             return True
     return False
 
 # --- SOTA WEATHER SERVICE ---
 async def fetch_weather_data(location_name: str) -> Optional[Dict]:
-    """
-    Holt echte Wetterdaten via Open-Meteo. Implementiert Caching.
-    """
     if not location_name or location_name == "Unknown": return None
     
-    # URL Safety Check (Verhindert den Crash durch zu lange Strings)
     clean_location = re.sub(r'[^a-zA-Z0-9\s,]', '', location_name).strip()
-    if len(clean_location) > 50: clean_location = clean_location[:50] # Cutoff
+    if len(clean_location) > 50: clean_location = clean_location[:50] 
     
-    # Simple Cache Key (Tag genau)
     today_str = datetime.now().strftime('%Y-%m-%d')
     cache_key = f"{clean_location}_{today_str}"
     
@@ -192,7 +184,6 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
         return WEATHER_CACHE[cache_key]
 
     try:
-        # 1. Geocoding
         async with httpx.AsyncClient() as client:
             geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={clean_location}&count=1&language=en&format=json"
             geo_res = await client.get(geo_url)
@@ -205,7 +196,6 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
             loc = geo_data['results'][0]
             lat, lon = loc['latitude'], loc['longitude']
 
-            # 2. Weather
             w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
             w_res = await client.get(w_url)
             w_data = w_res.json()
@@ -213,7 +203,6 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
             curr = w_data.get('current', {})
             if not curr: return None
 
-            # Interpretation
             impact = "Neutral conditions."
             temp = curr.get('temperature_2m', 20)
             hum = curr.get('relative_humidity_2m', 50)
@@ -239,51 +228,33 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
 def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: return False 
     if o1 > 100 or o2 > 100: return False 
-
-    # Berechne Overround (Buchmacher Marge)
     implied_prob = (1/o1) + (1/o2)
-    
-    # 1. Reject Massive Arbitrage (Fehlerhafte Daten)
     if implied_prob < 0.92: return False 
-
-    # 2. Reject Massive Juice (Glitch)
     if implied_prob > 1.25: return False
-
     return True
 
 def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
     if old_o1 == 0 or old_o2 == 0: return False 
-
     change_p1 = abs(new_o1 - old_o1) / old_o1
     change_p2 = abs(new_o2 - old_o2) / old_o2
-
-    # REGEL: Wenn sich eine Quote um mehr als 35% ändert in EINEM Tick
     if change_p1 > 0.35 or change_p2 > 0.35:
-        # Ausnahme: Extreme Favoriten
         if old_o1 < 1.10 or old_o2 < 1.10: return False
         return True
-    
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE (REPLACED QUANTUM FORM)
+# 3. MOMENTUM V2 ENGINE
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
-        """
-        Berechnet das Rating basierend auf den übergebenen Matches.
-        Kann generisch für Gesamtform (max_matches=15) genutzt werden.
-        """
         if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
-        # 1. Sortieren & Slicing
         recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
-        chrono_matches = recent_matches[::-1] # Alt -> Neu
+        chrono_matches = recent_matches[::-1]
 
-        rating = 5.5 # Start Baseline
+        rating = 5.5 
         momentum = 0.0
-        
         history_log = []
 
         for idx, m in enumerate(chrono_matches):
@@ -295,55 +266,44 @@ class MomentumV2Engine:
             odds = m['odds1'] if is_p1 else m['odds2']
             if not odds or odds <= 1.0: odds = 1.50
 
-            # Weighting: Letzte 5 Matches zählen doppelt (Exponential Recency)
             is_recent = idx >= (len(chrono_matches) - 5)
             weight = 1.5 if is_recent else 0.8
-            
             impact = 0.0
 
             if won:
-                # Sieg Logic
                 if odds < 1.30: impact = 0.3      
                 elif odds <= 2.00: impact = 0.8   
                 else: impact = 1.8                
-                
-                # Dominanz Bonus
                 score = str(m.get('score', ''))
                 if score and "2-1" not in score and "1-2" not in score:
                     impact += 0.3
-                
-                momentum += 0.2 # Winning Streak Bonus
+                momentum += 0.2 
                 history_log.append("W")
             else:
-                # Niederlage Logic
                 if odds < 1.40: impact = -1.5     
                 elif odds <= 2.20: impact = -0.6  
                 else: impact = -0.2               
-                
-                momentum = 0 # Streak gebrochen
+                momentum = 0 
                 history_log.append("L")
             
             rating += (impact * weight)
 
-        # Add Momentum & Clamp
         rating += momentum
         final_rating = max(1.0, min(10.0, rating))
         
-        # Visual Text
         desc = "Average"
         if final_rating > 8.5: desc = "🔥 ELITE"
         elif final_rating > 7.0: desc = "📈 Strong"
         elif final_rating < 4.0: desc = "❄️ Cold"
         elif final_rating < 5.5: desc = "⚠️ Weak"
         
-        # Color Logic (SofaScore Style)
-        color_hex = "#F0C808" # Default Yellow
-        if final_rating >= 9.0: color_hex = "#FF00FF" # Pink
-        elif final_rating >= 8.0: color_hex = "#3366FF" # Blue
-        elif final_rating >= 7.0: color_hex = "#00B25B" # Green
-        elif final_rating >= 6.0: color_hex = "#99CC33" # Light Green
-        elif final_rating <= 4.0: color_hex = "#CC0000" # Deep Red
-        elif final_rating <= 5.5: color_hex = "#FF9933" # Orange
+        color_hex = "#F0C808" 
+        if final_rating >= 9.0: color_hex = "#FF00FF" 
+        elif final_rating >= 8.0: color_hex = "#3366FF" 
+        elif final_rating >= 7.0: color_hex = "#00B25B" 
+        elif final_rating >= 6.0: color_hex = "#99CC33" 
+        elif final_rating <= 4.0: color_hex = "#CC0000" 
+        elif final_rating <= 5.5: color_hex = "#FF9933" 
 
         return {
             "score": round(final_rating, 2),
@@ -353,17 +313,11 @@ class MomentumV2Engine:
         }
 
 # =================================================================
-# 4. SURFACE INTELLIGENCE ENGINE (NEW COMPONENT)
+# 4. SURFACE INTELLIGENCE ENGINE
 # =================================================================
 class SurfaceIntelligence:
-    """
-    NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
-    (ARCHITECT UPGRADE: 70/30 WinRate vs Volume Protocol)
-    """
-    
     @staticmethod
     def normalize_surface_key(raw_surface: str) -> str:
-        """Standardisiert Datenbank-Strings zu 3 Keys: hard, clay, grass"""
         if not raw_surface: return "unknown"
         s = raw_surface.lower()
         if "grass" in s: return "grass"
@@ -373,9 +327,6 @@ class SurfaceIntelligence:
 
     @staticmethod
     def clean_name_for_matching(name: str) -> str:
-        """
-        Aggressive cleaning for fuzzy matching.
-        """
         if not name: return ""
         n = name.lower()
         n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
@@ -385,36 +336,22 @@ class SurfaceIntelligence:
 
     @staticmethod
     def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
-        """Filtert Matches basierend auf der globalen Tournament-Map UND Backtest-Data (Fuzzy Logic + AI Text)"""
         filtered = []
         target = SurfaceIntelligence.normalize_surface_key(target_surface)
         
         for m in all_matches:
             tour_name = str(m.get('tournament', '')).lower()
             ai_text = str(m.get('ai_analysis_text', '')).lower()
-            
             found_surface = "unknown"
             
-            # --- STRATEGY 1: Extract from Backtest Data (Most Reliable) ---
             match_hist = re.search(r'surface:\s*(hard|clay|grass)', ai_text)
-            if match_hist:
-                found_surface = match_hist.group(1)
-            elif "hard court" in ai_text or "hard surface" in ai_text:
-                found_surface = "hard"
-            elif "red clay" in ai_text or "clay court" in ai_text:
-                found_surface = "clay"
-            elif "grass court" in ai_text:
-                found_surface = "grass"
-            
-            # --- STRATEGY 2: Direct Keyword Inference from Scraped Name ---
-            elif "clay" in tour_name or "roland garros" in tour_name: 
-                found_surface = "clay"
-            elif "grass" in tour_name or "wimbledon" in tour_name: 
-                found_surface = "grass"
-            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: 
-                found_surface = "hard"
-            
-            # --- STRATEGY 3: Global Map Lookup (Fuzzy Name & Location) ---
+            if match_hist: found_surface = match_hist.group(1)
+            elif "hard court" in ai_text or "hard surface" in ai_text: found_surface = "hard"
+            elif "red clay" in ai_text or "clay court" in ai_text: found_surface = "clay"
+            elif "grass court" in ai_text: found_surface = "grass"
+            elif "clay" in tour_name or "roland garros" in tour_name: found_surface = "clay"
+            elif "grass" in tour_name or "wimbledon" in tour_name: found_surface = "grass"
+            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: found_surface = "hard"
             else:
                 for db_key, db_surf in GLOBAL_SURFACE_MAP.items():
                     if db_key in tour_name or tour_name in db_key:
@@ -433,60 +370,70 @@ class SurfaceIntelligence:
         profile = {}
         log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
+        hard_m = SurfaceIntelligence.get_matches_by_surface(matches, "hard")
+        clay_m = SurfaceIntelligence.get_matches_by_surface(matches, "clay")
+        grass_m = SurfaceIntelligence.get_matches_by_surface(matches, "grass")
+        
+        total_valid = len(hard_m) + len(clay_m) + len(grass_m)
+        
         surfaces_data = {
-            "hard": SurfaceIntelligence.get_matches_by_surface(matches, "hard"),
-            "clay": SurfaceIntelligence.get_matches_by_surface(matches, "clay"),
-            "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
+            "hard": hard_m,
+            "clay": clay_m,
+            "grass": grass_m
         }
         
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
-            # THE 70/30 PHILOSOPHY
+            # THE 70/30 PHILOSOPHY (WinRate vs Volume)
             # Base Rating: 3.5 (Max points to gain: 6.5)
             # Volume: 30% of 6.5 = max 1.95 points
             # WinRate: 70% of 6.5 = max 4.55 points
             
-            if n_surf == 0:
-                final_rating = 3.5
-                color_hex = "#808080" # Grey for 'No Data'
-                desc = "No Experience"
-                win_rate = 0.0
-            else:
-                # Calculate Win Rate
-                wins = 0
-                for m in surf_matches:
-                    winner = m.get('actual_winner_name', "") or ""
-                    if player_name.lower() in winner.lower():
-                        wins += 1
-                win_rate = wins / n_surf
+            if n_surf == 0 or total_valid == 0:
+                profile[surf] = {
+                    "rating": 3.5, 
+                    "color": "#808080", # Grey
+                    "matches_tracked": 0,
+                    "text": "No Experience"
+                }
+                log(f"   -> {surf.upper()}: 0 Matches (Base 3.5 applied)")
+                continue
                 
-                # 1. Volume Score (30%) - Caps at 30 Matches
-                vol_score = min(1.0, n_surf / 30.0) * 1.95
-                
-                # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
-                win_score = win_rate * 4.55
-                
-                # FINAL CALCULATION
-                final_rating = 3.5 + vol_score + win_score
-                final_rating = max(1.0, min(10.0, final_rating))
-                
-                # VISUAL TEXT & COLOR (SofaScore Standards)
-                desc = "Average"
-                if final_rating >= 8.5: desc = "🔥 SPECIALIST"
-                elif final_rating >= 7.0: desc = "📈 Strong"
-                elif final_rating >= 5.5: desc = "Solid"
-                elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
-                else: desc = "❄️ Weakness"
-                
-                color_hex = "#F0C808" # Yellow
-                if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
-                elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
-                elif final_rating >= 6.5: color_hex = "#00B25B" # Green
-                elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
-                elif final_rating <= 4.5: color_hex = "#CC0000" # Red
-                elif final_rating < 5.5: color_hex = "#FF9933" # Orange
-
+            wins = 0
+            for m in surf_matches:
+                winner = m.get('actual_winner_name', "") or ""
+                if player_name.lower() in winner.lower():
+                    wins += 1
+                    
+            win_rate = wins / n_surf
+            
+            # 1. Volume Score (30%) - Caps at 30 Matches
+            vol_score = min(1.0, n_surf / 30.0) * 1.95
+            
+            # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
+            win_score = win_rate * 4.55
+            
+            # FINAL CALCULATION
+            final_rating = 3.5 + vol_score + win_score
+            final_rating = max(1.0, min(10.0, final_rating))
+            
+            # VISUAL TEXT & COLOR (SofaScore Standards)
+            desc = "Average"
+            if final_rating >= 8.5: desc = "🔥 SPECIALIST"
+            elif final_rating >= 7.0: desc = "📈 Strong"
+            elif final_rating >= 5.5: desc = "Solid"
+            elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
+            else: desc = "❄️ Weakness"
+            
+            color_hex = "#F0C808" # Yellow
+            if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
+            elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
+            elif final_rating >= 6.5: color_hex = "#00B25B" # Green
+            elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
+            elif final_rating <= 4.5: color_hex = "#CC0000" # Red
+            elif final_rating < 5.5: color_hex = "#FF9933" # Orange
+            
             profile[surf] = {
                 "rating": round(final_rating, 2),
                 "color": color_hex,
@@ -497,17 +444,14 @@ class SurfaceIntelligence:
             log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
             
         # SILLICON VALLEY FIX: MIGRATION FLAG
-        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93.3 berechnet.
+        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93.4 berechnet.
         profile['_v93_mastery_applied'] = True
         return profile
 
 # =================================================================
-# 5. TACTICAL COMPUTER (THE NEW BRAIN)
+# 5. TACTICAL COMPUTER
 # =================================================================
 class TacticalComputer:
-    """
-    Übernimmt das 'Denken' der AI in Python.
-    """
     @staticmethod
     def calculate_matchup_math(
         s1: Dict, s2: Dict, 
@@ -515,40 +459,31 @@ class TacticalComputer:
         fatigue1_txt: str, fatigue2_txt: str,
         bsi: float, surface: str
     ) -> Dict[str, Any]:
-        
-        # 1. BASELINE
-        score = 5.5 # Neutral Start
+        score = 5.5
         log_reasons = []
 
-        # 2. SKILL GAP (Pure Math)
         skill1_avg = sum(s1.values()) / len(s1) if s1 else 50
         skill2_avg = sum(s2.values()) / len(s2) if s2 else 50
-        
         diff = skill1_avg - skill2_avg
         skill_impact = (diff / 2) * 0.1
         score += skill_impact
-        if abs(skill_impact) > 0.3:
-            log_reasons.append(f"Skill Gap: {'P1' if skill_impact > 0 else 'P2'} superior (+{abs(diff):.1f})")
+        if abs(skill_impact) > 0.3: log_reasons.append(f"Skill Gap: {'P1' if skill_impact > 0 else 'P2'} superior (+{abs(diff):.1f})")
 
-        # 3. FORM DELTA (Vegas Style)
         form_diff = f1_score - f2_score
         form_impact = form_diff * 0.2
         score += form_impact
-        if abs(form_impact) > 0.4:
-            log_reasons.append(f"Form: {'P1' if form_impact > 0 else 'P2'} hotter")
+        if abs(form_impact) > 0.4: log_reasons.append(f"Form: {'P1' if form_impact > 0 else 'P2'} hotter")
 
-        # 4. SURFACE & BSI FIT (Python Logic)
         p1_power = s1.get('power', 50) + s1.get('serve', 50)
         p2_power = s2.get('power', 50) + s2.get('serve', 50)
-        
-        if bsi >= 7.5: # Fast Court
+        if bsi >= 7.5: 
             if p1_power > (p2_power + 10):
                 score += 0.5
                 log_reasons.append("P1 Big Serve advantage on fast court")
             elif p2_power > (p1_power + 10):
                 score -= 0.5
                 log_reasons.append("P2 Big Serve advantage on fast court")
-        elif bsi <= 4.0: # Slow Court (Clay)
+        elif bsi <= 4.0: 
             p1_grind = s1.get('stamina', 50) + s1.get('speed', 50)
             p2_grind = s2.get('stamina', 50) + s2.get('speed', 50)
             if p1_grind > (p2_grind + 10):
@@ -558,7 +493,6 @@ class TacticalComputer:
                 score -= 0.5
                 log_reasons.append("P2 Grinder advantage on slow court")
 
-        # 5. FATIGUE PENALTY
         if "Heavy" in fatigue2_txt or "CRITICAL" in fatigue2_txt:
             score += 0.8
             log_reasons.append("P2 Fatigued")
@@ -566,14 +500,8 @@ class TacticalComputer:
             score -= 0.8
             log_reasons.append("P1 Fatigued")
 
-        # CLAMP
         final_score = max(1.0, min(10.0, score))
-        
-        return {
-            "calculated_score": round(final_score, 2),
-            "reasons": log_reasons,
-            "skill_diff": round(diff, 1)
-        }
+        return {"calculated_score": round(final_score, 2), "reasons": log_reasons, "skill_diff": round(diff, 1)}
 
 # =================================================================
 # 6. GROQ ENGINE
@@ -596,13 +524,9 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=30.0)
-            if response.status_code != 200:
-                log(f"   ⚠️ Groq API Error: {response.status_code} - {response.text}")
-                return None
+            if response.status_code != 200: return None
             return response.json()['choices'][0]['message']['content']
-        except Exception as e:
-            log(f"   ⚠️ Groq Connection Failed: {e}")
-            return None
+        except: return None
 
 call_gemini = call_groq 
 
@@ -634,37 +558,29 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     return metadata
 
 async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
-    """Holt eine längere Historie für Surface-Analysen. (MIT TELEMETRY)"""
     try:
         res = supabase.table("market_odds")\
             .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
             .order("created_at", desc=True).limit(limit).execute()
-        
         data = res.data or []
         return data
-    except Exception as e:
-        log(f"🚨 [TELEMETRY ERROR] Fetch fehlgeschlagen für '{player_last_name}': {e}")
-        return []
+    except: return []
 
 async def fetch_player_form_quantum(matches: List[Dict], player_last_name: str) -> Dict[str, Any]:
-    # Wrapper für Form (nutzt die ersten 20 Matches der langen Liste)
     return MomentumV2Engine.calculate_rating(matches[:20], player_last_name)
 
 def get_style_matchup_stats_py(matches: List[Dict], player_name: str, opponent_style_raw: str, supabase_client: Client) -> Optional[Dict]:
     if not player_name or not opponent_style_raw or not matches: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
     if not target_style or target_style == 'Unknown': return None
-    
     try:
-        # Wir müssen Opponent Styles fetchen
         opponent_names_to_fetch = []
         for m in matches:
             if player_name.lower() in m['player1_name'].lower(): opp = get_last_name(m['player2_name']).lower()
             else: opp = get_last_name(m['player1_name']).lower()
             if opp: opponent_names_to_fetch.append(opp)
-        
         if not opponent_names_to_fetch: return None
         unique_opps = list(set(opponent_names_to_fetch))
         opponents_map = {}
@@ -676,7 +592,6 @@ def get_style_matchup_stats_py(matches: List[Dict], player_name: str, opponent_s
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
-        
         relevant_matches = 0; wins = 0
         for m in matches:
             if player_name.lower() in m['player1_name'].lower(): opp_name = get_last_name(m['player2_name']).lower()
@@ -686,14 +601,13 @@ def get_style_matchup_stats_py(matches: List[Dict], player_name: str, opponent_s
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
                 if player_name.lower() in winner: wins += 1
-        
         if relevant_matches < 3: return None
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
         if win_rate > 65: verdict = "Dominant vs this style"
         elif win_rate < 40: verdict = "Struggles significantly vs this style"
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
-    except Exception as e: return None
+    except: return None
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
@@ -707,11 +621,9 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
             lm_time = datetime.fromisoformat(last_match['created_at'].replace('Z', '+00:00')).timestamp()
             hours_since_last = (now_ts - lm_time) / 3600
         except: return "Unknown"
-        
         if hours_since_last < 24: fatigue_score += 50; details.append("Back-to-back match")
         elif hours_since_last < 48: fatigue_score += 25; details.append("Short rest")
         elif hours_since_last > 336: return "Rusty (2+ weeks break)"
-
         if hours_since_last < 72 and last_match.get('score'):
             score_str = str(last_match['score']).lower()
             if 'ret' in score_str or 'wo' in score_str: fatigue_score *= 0.5
@@ -725,9 +637,7 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
                 if sets >= 3: fatigue_score += 20; details.append("Last match 3+ sets")
                 if total_games > 30: fatigue_score += 15; details.append("Marathon match (>30 games)")
                 if tiebreaks > 0: fatigue_score += 5 * tiebreaks; details.append(f"{tiebreaks} Tiebreaks played")
-
-        matches_in_week = 0
-        sets_in_week = 0
+        matches_in_week = 0; sets_in_week = 0
         for m in recent_matches:
             try:
                 mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00')).timestamp()
@@ -737,14 +647,13 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
             except: pass
         if matches_in_week >= 4: fatigue_score += 20; details.append(f"Busy week ({matches_in_week} matches)")
         if sets_in_week > 10: fatigue_score += 15; details.append(f"Heavy leg load ({sets_in_week} sets in 7 days)")
-
         status = "Fresh"
         if fatigue_score > 75: status = "CRITICAL FATIGUE"
         elif fatigue_score > 50: status = "Heavy Legs"
         elif fatigue_score > 30: status = "In Rhythm (Active)"
         if details: return f"{status} [{', '.join(details)}]"
         return status
-    except Exception: return "Unknown"
+    except: return "Unknown"
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
     if not relative_url: return 0.5
@@ -810,7 +719,6 @@ async def fetch_elo_ratings(browser: Browser):
                             'Clay': to_float(cols[4].get_text(strip=True), 1500),
                             'Grass': to_float(cols[5].get_text(strip=True), 1500)
                         }
-                log(f"   ✅ {tour} Elo geladen: {len(ELO_CACHE[tour])}")
         except: pass
         finally: await page.close()
 
@@ -821,25 +729,17 @@ async def get_db_data():
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
         
-        # POPULATE GLOBAL SURFACE MAP (UPGRADE: Name AND Location indexed)
         if tournaments:
             for t in tournaments:
                 t_name = clean_tournament_name(t.get('name', ''))
                 t_loc = t.get('location', '')
                 t_surf = t.get('surface', 'Unknown')
-                
-                if t_name and t_surf:
-                    GLOBAL_SURFACE_MAP[t_name.lower()] = t_surf
-                
-                # Split location to catch cities like "Doha" mapped to "Qatar"
+                if t_name and t_surf: GLOBAL_SURFACE_MAP[t_name.lower()] = t_surf
                 if t_loc and t_surf:
                     for part in t_loc.split(','):
                         part = part.strip().lower()
-                        if part and len(part) > 2:
-                            GLOBAL_SURFACE_MAP[part] = t_surf
+                        if part and len(part) > 2: GLOBAL_SURFACE_MAP[part] = t_surf
                             
-            log(f"📊 [TELEMETRY] GLOBAL_SURFACE_MAP initialisiert mit {len(GLOBAL_SURFACE_MAP)} Keys.")
-        
         clean_skills = {}
         if skills:
             for entry in skills:
@@ -868,16 +768,11 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     return 0.5 * (1 + math.erf(z))
 
 def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
-    if market_odds <= 1.01 or fair_prob <= 0: 
-        return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
-    
+    if market_odds <= 1.01 or fair_prob <= 0: return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
     market_odds = min(market_odds, 100.0)
-    
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
-
-    if edge_percent <= 0.5:
-        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
+    if edge_percent <= 0.5: return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
 
     label = "VALUE"
     if edge_percent >= 15.0: label = "🔥 HIGH VALUE" 
@@ -885,11 +780,7 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     elif edge_percent >= 2.0: label = "📈 THIN VALUE" 
     else: label = "👀 WATCH"
 
-    return {
-        "type": label, 
-        "edge_percent": edge_percent, 
-        "is_value": True
-    }
+    return {"type": label, "edge_percent": edge_percent, "is_value": True}
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2, surf_rate1, surf_rate2, has_scouting_reports: bool, style_stats_p1: Optional[Dict], style_stats_p2: Optional[Dict]):
     ai_meta = ensure_dict(ai_meta)
@@ -1049,7 +940,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         score = calculate_fuzzy_score(s_low, t['name'])
         if score > best_score: best_score = score; best_match = t
     if best_match and best_score >= 20: 
-        # FIX für WEATHER CRASH: Gebe location statt notes zurück für Wetter
         loc = best_match.get('location', '')
         city_for_weather = loc.split(',')[0] if loc else best_match['name']
         return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', ''), city_for_weather
@@ -1067,11 +957,10 @@ def get_city_from_note(note):
     if not note: return "Unknown"
     if "AI/Oracle:" in note: return note.split(":")[-1].strip()
     if "(" in note: return note.split("(")[-1].replace(")", "").strip()
-    if len(note) > 50: return "Unknown" # NEUER FIX: Schutz vor API Crash durch lange DB-Texte
+    if len(note) > 50: return "Unknown" 
     return note
 
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile):
-    # 1. PYTHON DOES THE MATH (TacticalComputer)
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
     
@@ -1089,13 +978,11 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     if weather_data:
         weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}"
 
-    # Surface Specific Context for AI
     current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
     p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
     p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
     surface_context = f"SURFACE SPECIALTIES: P1 Rating {p1_s_rating} on {current_surf_key}. P2 Rating {p2_s_rating} on {current_surf_key}."
 
-    # 2. PROMPT FOR TEXT GENERATION
     prompt = f"""
     ROLE: Elite Tennis Analyst.
     TASK: Write a sharp analysis based on these CALCULATED FACTS.
@@ -1451,7 +1338,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V93.3 (GLOBAL PROFILER & 70/30 TELEMETRY) Starting...")
+    log(f"🚀 Neural Scout V93.4 (70/30 GLOBAL PROFILER) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
