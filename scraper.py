@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V91.0 - SURFACE INTELLIGENCE)...")
+log("🔌 Initialisiere Neural Scout (V91.5 - DEEP SURFACE INTELLIGENCE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -354,6 +354,7 @@ class MomentumV2Engine:
 class SurfaceIntelligence:
     """
     NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
+    (ARCHITECT UPGRADE: Semantic Gap Bridge)
     """
     
     @staticmethod
@@ -363,68 +364,47 @@ class SurfaceIntelligence:
         s = raw_surface.lower()
         if "grass" in s: return "grass"
         if "clay" in s or "sand" in s: return "clay"
-        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard" # Indoor counts as Hard usually
+        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard"
         return "unknown"
 
     @staticmethod
-    def clean_name_for_matching(name: str) -> str:
-        """
-        Aggressive cleaning for fuzzy matching.
-        Removes 'ATP', 'WTA', 'Open', year numbers, etc.
-        """
-        if not name: return ""
-        n = name.lower()
-        # Remove common noise words
-        n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
-        # Remove years
-        n = re.sub(r'\b(202[0-9])\b', '', n)
-        # Remove special chars
-        n = re.sub(r'[^a-z0-9]', '', n)
-        return n.strip()
-
-    @staticmethod
     def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
-        """Filtert Matches basierend auf der globalen Tournament-Map mit Fuzzy Logic"""
+        """Filtert Matches basierend auf der globalen Tournament-Map UND Backtest-Data (Fuzzy Logic + AI Text)"""
         filtered = []
         target = SurfaceIntelligence.normalize_surface_key(target_surface)
         
         for m in all_matches:
-            raw_tour_name = m.get('tournament', '') or ''
-            clean_scraped_name = SurfaceIntelligence.clean_name_for_matching(raw_tour_name)
+            tour_name = str(m.get('tournament', '')).lower()
+            ai_text = str(m.get('ai_analysis_text', '')).lower()
             
             found_surface = "unknown"
             
-            # --- STRATEGY 1: Direct Keyword Inference from Scraped Name (Fastest & Safest) ---
-            # Wenn der Name selbst schon den Belag verrät, nutze das zuerst.
-            raw_lower = raw_tour_name.lower()
-            if "clay" in raw_lower: found_surface = "clay"
-            elif "grass" in raw_lower: found_surface = "grass"
-            elif "hard" in raw_lower: found_surface = "hard"
-            elif "roland garros" in raw_lower: found_surface = "clay"
-            elif "wimbledon" in raw_lower: found_surface = "grass"
-            elif "us open" in raw_lower: found_surface = "hard"
-            elif "australian open" in raw_lower: found_surface = "hard"
+            # --- STRATEGY 1: Extract from Backtest Data (Most Reliable) ---
+            match_hist = re.search(r'surface:\s*(hard|clay|grass)', ai_text)
+            if match_hist:
+                found_surface = match_hist.group(1)
+            elif "hard court" in ai_text or "hard surface" in ai_text:
+                found_surface = "hard"
+            elif "red clay" in ai_text or "clay court" in ai_text:
+                found_surface = "clay"
+            elif "grass court" in ai_text:
+                found_surface = "grass"
+            
+            # --- STRATEGY 2: Direct Keyword Inference from Scraped Name ---
+            elif "clay" in tour_name or "roland garros" in tour_name: 
+                found_surface = "clay"
+            elif "grass" in tour_name or "wimbledon" in tour_name: 
+                found_surface = "grass"
+            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: 
+                found_surface = "hard"
+            
+            # --- STRATEGY 3: Global Map Lookup (Fuzzy Name & Location) ---
             else:
-                # --- STRATEGY 2: Global Map Lookup (Fuzzy) ---
-                # Wir suchen nach dem besten Match in unserer Datenbank
-                best_match_key = None
-                
-                # Check 2A: Ist der gescrapte Name ein Teil von einem DB Key?
-                # Bsp: Scrape="Brisbane", MapKey="Brisbane International" -> Match!
-                for db_tour_name in GLOBAL_SURFACE_MAP:
-                    clean_db_name = SurfaceIntelligence.clean_name_for_matching(db_tour_name)
-                    
-                    if not clean_db_name or not clean_scraped_name: continue
-                    
-                    # Match if one is substring of other
-                    if clean_scraped_name in clean_db_name or clean_db_name in clean_scraped_name:
-                        # Extra check: Länge muss signifikant sein um False Positives wie "a" in "ba" zu vermeiden
-                        if len(clean_scraped_name) > 3:
-                            best_match_key = db_tour_name
+                for db_key, db_surf in GLOBAL_SURFACE_MAP.items():
+                    if db_key in tour_name or tour_name in db_key:
+                        if len(db_key) > 3:
+                            found_surface = db_surf
                             break
-                
-                if best_match_key:
-                    found_surface = GLOBAL_SURFACE_MAP[best_match_key]
             
             if SurfaceIntelligence.normalize_surface_key(found_surface) == target:
                 filtered.append(m)
@@ -585,10 +565,10 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     return metadata
 
 async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
-    """Holt eine längere Historie für Surface-Analysen"""
+    """Holt eine längere Historie für Surface-Analysen. (FIXED: Liest nun ai_analysis_text aus!)"""
     try:
         res = supabase.table("market_odds")\
-            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament")\
+            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
             .order("created_at", desc=True).limit(limit).execute()
@@ -768,13 +748,22 @@ async def get_db_data():
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
         
-        # POPULATE GLOBAL SURFACE MAP
+        # POPULATE GLOBAL SURFACE MAP (UPGRADE: Name AND Location indexed)
         if tournaments:
             for t in tournaments:
                 t_name = clean_tournament_name(t.get('name', ''))
+                t_loc = t.get('location', '')
                 t_surf = t.get('surface', 'Unknown')
+                
                 if t_name and t_surf:
-                    GLOBAL_SURFACE_MAP[t_name] = t_surf
+                    GLOBAL_SURFACE_MAP[t_name.lower()] = t_surf
+                
+                # Split location to catch cities like "Doha" mapped to "Qatar"
+                if t_loc and t_surf:
+                    for part in t_loc.split(','):
+                        part = part.strip().lower()
+                        if part and len(part) > 2:
+                            GLOBAL_SURFACE_MAP[part] = t_surf
         
         clean_skills = {}
         if skills:
@@ -1282,7 +1271,6 @@ class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
     """
-    
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
         p_hold = 67.0 
@@ -1381,7 +1369,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V91.0 (SURFACE INTELLIGENCE) Starting...")
+    log(f"🚀 Neural Scout V91.5 (DEEP SURFACE INTELLIGENCE) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1494,8 +1482,6 @@ async def run_pipeline():
                                 s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                                 r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                                 r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
-                                style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', '')) # Falsche Var hier, aber Logik in func ok
-                                # Fix: we need match lists here first.
                                 
                                 # -------------------------------------------------------------
                                 # NEW: FETCH DEEP HISTORY & CALCULATE SURFACE RATINGS
