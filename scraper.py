@@ -363,35 +363,68 @@ class SurfaceIntelligence:
         s = raw_surface.lower()
         if "grass" in s: return "grass"
         if "clay" in s or "sand" in s: return "clay"
-        if "hard" in s or "carpet" in s or "acrylic" in s: return "hard" # Carpet often plays fast like hard
+        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard" # Indoor counts as Hard usually
         return "unknown"
 
     @staticmethod
+    def clean_name_for_matching(name: str) -> str:
+        """
+        Aggressive cleaning for fuzzy matching.
+        Removes 'ATP', 'WTA', 'Open', year numbers, etc.
+        """
+        if not name: return ""
+        n = name.lower()
+        # Remove common noise words
+        n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
+        # Remove years
+        n = re.sub(r'\b(202[0-9])\b', '', n)
+        # Remove special chars
+        n = re.sub(r'[^a-z0-9]', '', n)
+        return n.strip()
+
+    @staticmethod
     def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
-        """Filtert Matches basierend auf der globalen Tournament-Map"""
+        """Filtert Matches basierend auf der globalen Tournament-Map mit Fuzzy Logic"""
         filtered = []
         target = SurfaceIntelligence.normalize_surface_key(target_surface)
         
         for m in all_matches:
-            t_name = clean_tournament_name(m.get('tournament', ''))
-            # Fuzzy Lookup in Global Map
+            raw_tour_name = m.get('tournament', '') or ''
+            clean_scraped_name = SurfaceIntelligence.clean_name_for_matching(raw_tour_name)
+            
             found_surface = "unknown"
             
-            # 1. Direct Hit
-            if t_name in GLOBAL_SURFACE_MAP:
-                found_surface = GLOBAL_SURFACE_MAP[t_name]
+            # --- STRATEGY 1: Direct Keyword Inference from Scraped Name (Fastest & Safest) ---
+            # Wenn der Name selbst schon den Belag verrät, nutze das zuerst.
+            raw_lower = raw_tour_name.lower()
+            if "clay" in raw_lower: found_surface = "clay"
+            elif "grass" in raw_lower: found_surface = "grass"
+            elif "hard" in raw_lower: found_surface = "hard"
+            elif "roland garros" in raw_lower: found_surface = "clay"
+            elif "wimbledon" in raw_lower: found_surface = "grass"
+            elif "us open" in raw_lower: found_surface = "hard"
+            elif "australian open" in raw_lower: found_surface = "hard"
             else:
-                # 2. Fuzzy Hit
-                best_match = None
-                best_score = 0
-                for known_tour in GLOBAL_SURFACE_MAP:
-                    if known_tour in t_name or t_name in known_tour:
-                        score = len(known_tour)
-                        if score > best_score and score > 4:
-                            best_score = score
-                            best_match = known_tour
-                if best_match:
-                    found_surface = GLOBAL_SURFACE_MAP[best_match]
+                # --- STRATEGY 2: Global Map Lookup (Fuzzy) ---
+                # Wir suchen nach dem besten Match in unserer Datenbank
+                best_match_key = None
+                
+                # Check 2A: Ist der gescrapte Name ein Teil von einem DB Key?
+                # Bsp: Scrape="Brisbane", MapKey="Brisbane International" -> Match!
+                for db_tour_name in GLOBAL_SURFACE_MAP:
+                    clean_db_name = SurfaceIntelligence.clean_name_for_matching(db_tour_name)
+                    
+                    if not clean_db_name or not clean_scraped_name: continue
+                    
+                    # Match if one is substring of other
+                    if clean_scraped_name in clean_db_name or clean_db_name in clean_scraped_name:
+                        # Extra check: Länge muss signifikant sein um False Positives wie "a" in "ba" zu vermeiden
+                        if len(clean_scraped_name) > 3:
+                            best_match_key = db_tour_name
+                            break
+                
+                if best_match_key:
+                    found_surface = GLOBAL_SURFACE_MAP[best_match_key]
             
             if SurfaceIntelligence.normalize_surface_key(found_surface) == target:
                 filtered.append(m)
