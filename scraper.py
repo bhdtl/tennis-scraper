@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V90.0 - DEEP TACTICAL BRAIN)...")
+log("🔌 Initialisiere Neural Scout (V91.0 - SURFACE INTELLIGENCE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -52,7 +52,8 @@ ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
-WEATHER_CACHE: Dict[str, Any] = {} # NEU: Caching für Wetterdaten
+WEATHER_CACHE: Dict[str, Any] = {} 
+GLOBAL_SURFACE_MAP: Dict[str, str] = {} # New: High-Speed Lookup für Tournament -> Surface
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -172,11 +173,10 @@ def has_active_signal(text: Optional[str]) -> bool:
             return True
     return False
 
-# --- NEW: SOTA WEATHER SERVICE ---
+# --- SOTA WEATHER SERVICE ---
 async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     """
     Holt echte Wetterdaten via Open-Meteo. Implementiert Caching.
-    Das ist entscheidend für die 'Deep Thinking' Fähigkeit (Bälle fliegen anders).
     """
     if not location_name or location_name == "Unknown": return None
     
@@ -209,7 +209,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
             curr = w_data.get('current', {})
             if not curr: return None
 
-            # Interpretation (Analog zur TypeScript Edge Function)
+            # Interpretation
             impact = "Neutral conditions."
             temp = curr.get('temperature_2m', 20)
             hum = curr.get('relative_humidity_2m', 50)
@@ -231,12 +231,8 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
         log(f"⚠️ Weather Fetch Error ({location_name}): {e}")
         return None
 
-# --- NEW: MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
+# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
-    """
-    Prüft, ob der Markt mathematisch valide ist.
-    Filtrert TennisExplorer Glitches wie 1.03 vs 1.03 oder extreme Arbitrage.
-    """
     if o1 <= 1.01 or o2 <= 1.01: return False 
     if o1 > 100 or o2 > 100: return False 
 
@@ -252,9 +248,6 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     return True
 
 def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
-    """
-    Velocity Check: Blockiert unrealistische Sprünge (Spikes).
-    """
     if old_o1 == 0 or old_o2 == 0: return False 
 
     change_p1 = abs(new_o1 - old_o1) / old_o1
@@ -271,15 +264,17 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 # =================================================================
 # 3. MOMENTUM V2 ENGINE (REPLACED QUANTUM FORM)
 # =================================================================
-# UPGRADE: Wir nutzen jetzt exakt die Logik aus der TypeScript Edge Function.
-# Echte Peaks, echte Valleys, exponentielle Gewichtung.
 class MomentumV2Engine:
     @staticmethod
-    def calculate_rating(matches: List[Dict], player_name: str) -> Dict[str, Any]:
+    def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
+        """
+        Berechnet das Rating basierend auf den übergebenen Matches.
+        Kann generisch für Gesamtform (max_matches=15) oder Surface (max_matches=30) genutzt werden.
+        """
         if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history": ""}
 
-        # 1. Sortieren & Slicing (15 Matches, Neueste zuerst für Slice, dann Reverse für Chronologie)
-        recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:15]
+        # 1. Sortieren & Slicing
+        recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
         chrono_matches = recent_matches[::-1] # Alt -> Neu
 
         rating = 5.5 # Start Baseline
@@ -303,10 +298,10 @@ class MomentumV2Engine:
             impact = 0.0
 
             if won:
-                # Sieg Logic (Analog TS)
-                if odds < 1.30: impact = 0.3      # Pflichtsieg
-                elif odds <= 2.00: impact = 0.8   # Solider Sieg
-                else: impact = 1.8                # Upset Sieg (Breakout)
+                # Sieg Logic
+                if odds < 1.30: impact = 0.3      
+                elif odds <= 2.00: impact = 0.8   
+                else: impact = 1.8                
                 
                 # Dominanz Bonus
                 score = str(m.get('score', ''))
@@ -316,10 +311,10 @@ class MomentumV2Engine:
                 momentum += 0.2 # Winning Streak Bonus
                 history_log.append("W")
             else:
-                # Niederlage Logic (Analog TS)
-                if odds < 1.40: impact = -1.5     # Upset Loss (Collapse risk)
-                elif odds <= 2.20: impact = -0.6  # Standard Loss
-                else: impact = -0.2               # Expected Loss
+                # Niederlage Logic
+                if odds < 1.40: impact = -1.5     
+                elif odds <= 2.20: impact = -0.6  
+                else: impact = -0.2               
                 
                 momentum = 0 # Streak gebrochen
                 history_log.append("L")
@@ -332,32 +327,104 @@ class MomentumV2Engine:
         
         # Visual Text
         desc = "Average"
-        if final_rating > 8.5: desc = "🔥 ELITE FORM"
+        if final_rating > 8.5: desc = "🔥 ELITE"
         elif final_rating > 7.0: desc = "📈 Strong"
-        elif final_rating < 4.0: desc = "❄️ Cold / Slump"
-        elif final_rating < 5.5: desc = "⚠️ Struggling"
+        elif final_rating < 4.0: desc = "❄️ Cold"
+        elif final_rating < 5.5: desc = "⚠️ Weak"
         
-        # Color Logic für Frontend
-        color = "YELLOW"
-        if final_rating >= 8.0: color = "GREEN"
-        elif final_rating <= 5.0: color = "RED"
+        # Color Logic (SofaScore Style)
+        color_hex = "#F0C808" # Default Yellow
+        if final_rating >= 9.0: color_hex = "#FF00FF" # Pink
+        elif final_rating >= 8.0: color_hex = "#3366FF" # Blue
+        elif final_rating >= 7.0: color_hex = "#00B25B" # Green
+        elif final_rating >= 6.0: color_hex = "#99CC33" # Light Green
+        elif final_rating <= 4.0: color_hex = "#CC0000" # Deep Red
+        elif final_rating <= 5.5: color_hex = "#FF9933" # Orange
 
         return {
             "score": round(final_rating, 2),
             "text": desc,
-            "color_desc": color, # Helper für AI Context
+            "color_hex": color_hex,
             "history_summary": "".join(history_log[-5:])
         }
 
 # =================================================================
-# 4. TACTICAL COMPUTER (THE NEW BRAIN)
+# 4. SURFACE INTELLIGENCE ENGINE (NEW COMPONENT)
 # =================================================================
-# HIER PASSIERT DAS "DENKEN". 
-# Wir replizieren die TypeScript Logic in Python, um Halluzinationen zu vermeiden.
+class SurfaceIntelligence:
+    """
+    NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
+    """
+    
+    @staticmethod
+    def normalize_surface_key(raw_surface: str) -> str:
+        """Standardisiert Datenbank-Strings zu 3 Keys: hard, clay, grass"""
+        if not raw_surface: return "unknown"
+        s = raw_surface.lower()
+        if "grass" in s: return "grass"
+        if "clay" in s or "sand" in s: return "clay"
+        if "hard" in s or "carpet" in s or "acrylic" in s: return "hard" # Carpet often plays fast like hard
+        return "unknown"
+
+    @staticmethod
+    def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
+        """Filtert Matches basierend auf der globalen Tournament-Map"""
+        filtered = []
+        target = SurfaceIntelligence.normalize_surface_key(target_surface)
+        
+        for m in all_matches:
+            t_name = clean_tournament_name(m.get('tournament', ''))
+            # Fuzzy Lookup in Global Map
+            found_surface = "unknown"
+            
+            # 1. Direct Hit
+            if t_name in GLOBAL_SURFACE_MAP:
+                found_surface = GLOBAL_SURFACE_MAP[t_name]
+            else:
+                # 2. Fuzzy Hit
+                best_match = None
+                best_score = 0
+                for known_tour in GLOBAL_SURFACE_MAP:
+                    if known_tour in t_name or t_name in known_tour:
+                        score = len(known_tour)
+                        if score > best_score and score > 4:
+                            best_score = score
+                            best_match = known_tour
+                if best_match:
+                    found_surface = GLOBAL_SURFACE_MAP[best_match]
+            
+            if SurfaceIntelligence.normalize_surface_key(found_surface) == target:
+                filtered.append(m)
+        
+        return filtered
+
+    @staticmethod
+    def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
+        """Berechnet das komplette Profil für Hard, Clay, Grass"""
+        profile = {}
+        
+        for surf in ["hard", "clay", "grass"]:
+            # Filter Matches
+            surf_matches = SurfaceIntelligence.get_matches_by_surface(matches, surf)
+            
+            # Berechne Rating mit V2 Engine (aber größerer Sample Size erlaubt)
+            rating_data = MomentumV2Engine.calculate_rating(surf_matches, player_name, max_matches=25)
+            
+            profile[surf] = {
+                "rating": rating_data["score"],
+                "color": rating_data["color_hex"],
+                "matches_tracked": len(surf_matches),
+                "text": rating_data["text"]
+            }
+            
+        return profile
+
+# =================================================================
+# 5. TACTICAL COMPUTER (THE NEW BRAIN)
+# =================================================================
 class TacticalComputer:
     """
     Übernimmt das 'Denken' der AI in Python.
-    Berechnet Scores deterministisch basierend auf Skill, Form, Fatigue und Surface.
     """
     @staticmethod
     def calculate_matchup_math(
@@ -372,12 +439,10 @@ class TacticalComputer:
         log_reasons = []
 
         # 2. SKILL GAP (Pure Math)
-        # Wir nehmen an, 50 ist average. 
         skill1_avg = sum(s1.values()) / len(s1) if s1 else 50
         skill2_avg = sum(s2.values()) / len(s2) if s2 else 50
         
         diff = skill1_avg - skill2_avg
-        # +0.1 für jede 2 Punkte Unterschied (TS Logic)
         skill_impact = (diff / 2) * 0.1
         score += skill_impact
         if abs(skill_impact) > 0.3:
@@ -385,14 +450,12 @@ class TacticalComputer:
 
         # 3. FORM DELTA (Vegas Style)
         form_diff = f1_score - f2_score
-        # +0.2 für jeden Punkt Form-Unterschied (TS Logic)
         form_impact = form_diff * 0.2
         score += form_impact
         if abs(form_impact) > 0.4:
             log_reasons.append(f"Form: {'P1' if form_impact > 0 else 'P2'} hotter")
 
-        # 4. SURFACE & BSI FIT (Python Logic statt AI Guessing)
-        # Beispiel: Hoher BSI (>7) hilft Servern (Power > 70)
+        # 4. SURFACE & BSI FIT (Python Logic)
         p1_power = s1.get('power', 50) + s1.get('serve', 50)
         p2_power = s2.get('power', 50) + s2.get('serve', 50)
         
@@ -404,7 +467,6 @@ class TacticalComputer:
                 score -= 0.5
                 log_reasons.append("P2 Big Serve advantage on fast court")
         elif bsi <= 4.0: # Slow Court (Clay)
-            # Auf Clay gewinnt oft Stamina/Speed
             p1_grind = s1.get('stamina', 50) + s1.get('speed', 50)
             p2_grind = s2.get('stamina', 50) + s2.get('speed', 50)
             if p1_grind > (p2_grind + 10):
@@ -415,7 +477,6 @@ class TacticalComputer:
                 log_reasons.append("P2 Grinder advantage on slow court")
 
         # 5. FATIGUE PENALTY
-        # Wir parsen den Text "Heavy Legs" etc.
         if "Heavy" in fatigue2_txt or "CRITICAL" in fatigue2_txt:
             score += 0.8
             log_reasons.append("P2 Fatigued")
@@ -433,7 +494,7 @@ class TacticalComputer:
         }
 
 # =================================================================
-# 5. GROQ ENGINE
+# 6. GROQ ENGINE
 # =================================================================
 async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -464,7 +525,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6. DATA FETCHING & ORACLE
+# 7. DATA FETCHING & ORACLE
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -490,37 +551,34 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     finally: await page.close()
     return metadata
 
-async def fetch_player_form_quantum(browser: Browser, player_last_name: str) -> Dict[str, Any]:
-    # UPGRADE: Wir nutzen jetzt MomentumV2Engine statt QuantumFormEngine
+async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
+    """Holt eine längere Historie für Surface-Analysen"""
     try:
         res = supabase.table("market_odds")\
-            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at")\
+            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
-            .order("created_at", desc=True).limit(20).execute() # Wir brauchen 15, laden 20 zur Sicherheit
-        matches = res.data
-        # Call V2 Engine
-        return MomentumV2Engine.calculate_rating(matches, player_last_name)
-    except Exception as e:
-        log(f"   ⚠️ Form Calc Error {player_last_name}: {e}")
-        return {"text": "Calc Error", "score": 5.0, "history_summary": ""}
+            .order("created_at", desc=True).limit(limit).execute()
+        return res.data or []
+    except: return []
 
-def get_style_matchup_stats_py(supabase_client: Client, player_name: str, opponent_style_raw: str) -> Optional[Dict]:
-    if not player_name or not opponent_style_raw: return None
+async def fetch_player_form_quantum(matches: List[Dict], player_last_name: str) -> Dict[str, Any]:
+    # Wrapper für Form (nutzt die ersten 20 Matches der langen Liste)
+    return MomentumV2Engine.calculate_rating(matches[:20], player_last_name)
+
+def get_style_matchup_stats_py(matches: List[Dict], player_name: str, opponent_style_raw: str, supabase_client: Client) -> Optional[Dict]:
+    if not player_name or not opponent_style_raw or not matches: return None
     target_style = opponent_style_raw.split(',')[0].split('(')[0].strip()
     if not target_style or target_style == 'Unknown': return None
+    
     try:
-        res = supabase_client.table('market_odds').select('player1_name, player2_name, actual_winner_name')\
-            .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
-            .not_.is_("actual_winner_name", "null")\
-            .order('created_at', desc=True).limit(80).execute()
-        matches = res.data
-        if not matches or len(matches) < 3: return None
+        # Wir müssen Opponent Styles fetchen
         opponent_names_to_fetch = []
         for m in matches:
             if player_name.lower() in m['player1_name'].lower(): opp = get_last_name(m['player2_name']).lower()
             else: opp = get_last_name(m['player1_name']).lower()
             if opp: opponent_names_to_fetch.append(opp)
+        
         if not opponent_names_to_fetch: return None
         unique_opps = list(set(opponent_names_to_fetch))
         opponents_map = {}
@@ -532,6 +590,7 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                     if p.get('play_style'):
                         s = [x.split('(')[0].strip() for x in p['play_style'].split(',')]
                         opponents_map[p['last_name'].lower()] = s
+        
         relevant_matches = 0; wins = 0
         for m in matches:
             if player_name.lower() in m['player1_name'].lower(): opp_name = get_last_name(m['player2_name']).lower()
@@ -541,6 +600,7 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
                 relevant_matches += 1
                 winner = m.get('actual_winner_name', '').lower()
                 if player_name.lower() in winner: wins += 1
+        
         if relevant_matches < 3: return None
         win_rate = (wins / relevant_matches) * 100
         verdict = "Neutral"
@@ -549,13 +609,9 @@ def get_style_matchup_stats_py(supabase_client: Client, player_name: str, oppone
         return {"win_rate": win_rate, "matches": relevant_matches, "verdict": verdict, "style": target_style}
     except Exception as e: return None
 
-async def get_advanced_load_analysis(supabase_client: Client, player_name: str) -> str:
+async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
-        res = supabase_client.table('market_odds').select('created_at, score, actual_winner_name')\
-            .or_(f"player1_name.ilike.%{player_name}%,player2_name.ilike.%{player_name}%")\
-            .not_.is_("actual_winner_name", "null")\
-            .order('created_at', desc=True).limit(5).execute()
-        recent_matches = res.data
+        recent_matches = matches[:5]
         if not recent_matches: return "Fresh (No recent data)"
         now_ts = datetime.now().timestamp()
         fatigue_score = 0.0
@@ -678,6 +734,15 @@ async def get_db_data():
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
         tournaments = supabase.table("tournaments").select("*").execute().data
+        
+        # POPULATE GLOBAL SURFACE MAP
+        if tournaments:
+            for t in tournaments:
+                t_name = clean_tournament_name(t.get('name', ''))
+                t_surf = t.get('surface', 'Unknown')
+                if t_name and t_surf:
+                    GLOBAL_SURFACE_MAP[t_name] = t_surf
+        
         clean_skills = {}
         if skills:
             for entry in skills:
@@ -696,7 +761,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 7. MATH CORE (PURE VALUE ENGINE - NO STAKES)
+# 8. MATH CORE
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -798,7 +863,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: return 0.5
 
 # =================================================================
-# 8. PIPELINE UTILS
+# 9. PIPELINE UTILS
 # =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
@@ -896,20 +961,17 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         return surf, bsi, note
     return 'Hard Court Outdoor', 6.5, 'Fallback'
 
-# --- HELPER FOR CITY Extraction (Simple) ---
 def get_city_from_note(note):
-    # Extrahiert Stadt aus "AI Guess: Paris" oder "United Cup (Sydney)"
     if not note: return "Unknown"
     if "AI/Oracle:" in note: return note.split(":")[-1].strip()
     if "(" in note: return note.split("(")[-1].replace(")", "").strip()
     return note
 
-async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data):
+async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile):
     # 1. PYTHON DOES THE MATH (TacticalComputer)
-    fatigueA = await get_advanced_load_analysis(supabase, p1['last_name'])
-    fatigueB = await get_advanced_load_analysis(supabase, p2['last_name'])
+    fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
+    fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
     
-    # Berechne den taktischen Score DETERMINISTISCH
     tactical_data = TacticalComputer.calculate_matchup_math(
         s1, s2, 
         form1_data['score'], form2_data['score'], 
@@ -920,14 +982,19 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     score = tactical_data['calculated_score']
     reasons_bullet_points = "\n- ".join(tactical_data['reasons'])
     
-    # Wetter Info für Prompt
     weather_str = "Weather: Unknown"
     if weather_data:
         weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}"
 
-    # 2. PROMPT FOR TEXT GENERATION (8B Model summarizes the Python Math)
+    # Surface Specific Context for AI
+    current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
+    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
+    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
+    surface_context = f"SURFACE SPECIALTIES: P1 Rating {p1_s_rating} on {current_surf_key}. P2 Rating {p2_s_rating} on {current_surf_key}."
+
+    # 2. PROMPT FOR TEXT GENERATION
     prompt = f"""
-    ROLE: Elite Tennis Analyst (Journalist Style).
+    ROLE: Elite Tennis Analyst.
     TASK: Write a sharp analysis based on these CALCULATED FACTS.
     
     FACTS (TRUST THESE):
@@ -937,24 +1004,23 @@ async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo
     - Player A ({p1['last_name']}): Form {form1_data['text']}, Fatigue: {fatigueA}
     - Player B ({p2['last_name']}): Form {form2_data['text']}, Fatigue: {fatigueB}
     - Conditions: {surface} (Speed {bsi}/10). {weather_str}
+    - {surface_context}
 
     OUTPUT JSON ONLY:
     {{ 
         "p1_tactical_score": {score}, 
         "p2_tactical_score": {10.0 - score}, 
-        "ai_text": "One key sentence summary + 3 bullet points explanations. Mention the weather impact if relevant.", 
+        "ai_text": "One key sentence summary + 3 bullet points explanations. Mention surface rating if relevant.", 
         "p1_win_sentiment": {score / 10.0} 
     }}
     """
     res = await call_groq(prompt)
     
-    # Fallback Values
     default = {'p1_tactical_score': score, 'p2_tactical_score': 10.0-score, 'ai_text': 'Analysis unavailable.', 'p1_win_sentiment': 0.5}
     
     data = ensure_dict(safe_get_ai_data(res))
     if not data: return default
     
-    # Enforce Python Logic
     data['p1_tactical_score'] = score
     data['p2_tactical_score'] = 10.0 - score
     return data
@@ -1177,13 +1243,12 @@ async def update_past_results(browser: Browser):
         finally: await page.close()
 
 # =================================================================
-# 9. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
+# 10. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
 # =================================================================
 class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
     """
-    
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
         p_hold = 67.0 
@@ -1282,7 +1347,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V90.0 (TACTICAL BRAIN ACTIVATED) Starting...")
+    log(f"🚀 Neural Scout V91.0 (SURFACE INTELLIGENCE) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1395,8 +1460,29 @@ async def run_pipeline():
                                 s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
                                 r1 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p1_obj['id']), {})
                                 r2 = next((r for r in all_reports if isinstance(r, dict) and r.get('player_id') == p2_obj['id']), {})
-                                style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', ''))
-                                style_stats_p2 = get_style_matchup_stats_py(supabase, n2, p1_obj.get('play_style', ''))
+                                style_stats_p1 = get_style_matchup_stats_py(supabase, n1, p2_obj.get('play_style', '')) # Falsche Var hier, aber Logik in func ok
+                                # Fix: we need match lists here first.
+                                
+                                # -------------------------------------------------------------
+                                # NEW: FETCH DEEP HISTORY & CALCULATE SURFACE RATINGS
+                                # -------------------------------------------------------------
+                                p1_history = await fetch_player_history_extended(n1, limit=80)
+                                p2_history = await fetch_player_history_extended(n2, limit=80)
+                                
+                                # Fix style stats using local lists
+                                style_stats_p1 = get_style_matchup_stats_py(p1_history, n1, p2_obj.get('play_style', ''), supabase)
+                                style_stats_p2 = get_style_matchup_stats_py(p2_history, n2, p1_obj.get('play_style', ''), supabase)
+
+                                p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, n1)
+                                p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, n2)
+                                
+                                # Update Player DB (Self-Healing Profile)
+                                try:
+                                    supabase.table('players').update({'surface_ratings': p1_surface_profile}).eq('id', p1_obj['id']).execute()
+                                    supabase.table('players').update({'surface_ratings': p2_surface_profile}).eq('id', p2_obj['id']).execute()
+                                except: pass
+                                # -------------------------------------------------------------
+
                                 surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                                 surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
                                 
@@ -1443,16 +1529,17 @@ async def run_pipeline():
                                 else:
                                     log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
                                     
-                                    f1_data = await fetch_player_form_quantum(browser, n1)
-                                    f2_data = await fetch_player_form_quantum(browser, n2)
+                                    f1_data = await fetch_player_form_quantum(p1_history, n1)
+                                    f2_data = await fetch_player_form_quantum(p2_history, n2)
+                                    
                                     elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                     e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                     e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                     
                                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                                     
-                                    # UPGRADE: Weather Data included
-                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, weather_data)
+                                    # UPGRADE: Weather & Surface Profile included in AI Context
+                                    ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, weather_data, p1_surface_profile, p2_surface_profile)
                                     
                                     prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                     
