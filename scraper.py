@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V93.4 - 70/30 SURFACE MASTERY ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V94.0 - CACHE INVALIDATION & 70/30 ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,6 +44,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -370,27 +371,16 @@ class SurfaceIntelligence:
         profile = {}
         log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
-        hard_m = SurfaceIntelligence.get_matches_by_surface(matches, "hard")
-        clay_m = SurfaceIntelligence.get_matches_by_surface(matches, "clay")
-        grass_m = SurfaceIntelligence.get_matches_by_surface(matches, "grass")
-        
-        total_valid = len(hard_m) + len(clay_m) + len(grass_m)
-        
         surfaces_data = {
-            "hard": hard_m,
-            "clay": clay_m,
-            "grass": grass_m
+            "hard": SurfaceIntelligence.get_matches_by_surface(matches, "hard"),
+            "clay": SurfaceIntelligence.get_matches_by_surface(matches, "clay"),
+            "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
-            # THE 70/30 PHILOSOPHY (WinRate vs Volume)
-            # Base Rating: 3.5 (Max points to gain: 6.5)
-            # Volume: 30% of 6.5 = max 1.95 points
-            # WinRate: 70% of 6.5 = max 4.55 points
-            
-            if n_surf == 0 or total_valid == 0:
+            if n_surf == 0:
                 profile[surf] = {
                     "rating": 3.5, 
                     "color": "#808080", # Grey
@@ -405,7 +395,6 @@ class SurfaceIntelligence:
                 winner = m.get('actual_winner_name', "") or ""
                 if player_name.lower() in winner.lower():
                     wins += 1
-                    
             win_rate = wins / n_surf
             
             # 1. Volume Score (30%) - Caps at 30 Matches
@@ -418,7 +407,6 @@ class SurfaceIntelligence:
             final_rating = 3.5 + vol_score + win_score
             final_rating = max(1.0, min(10.0, final_rating))
             
-            # VISUAL TEXT & COLOR (SofaScore Standards)
             desc = "Average"
             if final_rating >= 8.5: desc = "🔥 SPECIALIST"
             elif final_rating >= 7.0: desc = "📈 Strong"
@@ -426,14 +414,14 @@ class SurfaceIntelligence:
             elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
             else: desc = "❄️ Weakness"
             
-            color_hex = "#F0C808" # Yellow
-            if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
-            elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
-            elif final_rating >= 6.5: color_hex = "#00B25B" # Green
-            elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
-            elif final_rating <= 4.5: color_hex = "#CC0000" # Red
-            elif final_rating < 5.5: color_hex = "#FF9933" # Orange
-            
+            color_hex = "#F0C808" 
+            if final_rating >= 8.5: color_hex = "#FF00FF" 
+            elif final_rating >= 7.5: color_hex = "#3366FF" 
+            elif final_rating >= 6.5: color_hex = "#00B25B" 
+            elif final_rating >= 5.5: color_hex = "#99CC33" 
+            elif final_rating <= 4.5: color_hex = "#CC0000" 
+            elif final_rating < 5.5: color_hex = "#FF9933" 
+
             profile[surf] = {
                 "rating": round(final_rating, 2),
                 "color": color_hex,
@@ -444,8 +432,8 @@ class SurfaceIntelligence:
             log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
             
         # SILLICON VALLEY FIX: MIGRATION FLAG
-        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93.4 berechnet.
-        profile['_v93_mastery_applied'] = True
+        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V94.0 berechnet.
+        profile['_v94_mastery_applied'] = True
         return profile
 
 # =================================================================
@@ -1338,7 +1326,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V93.4 (70/30 GLOBAL PROFILER) Starting...")
+    log(f"🚀 Neural Scout V94.0 (CACHE INVALIDATION & 70/30 ENGINE) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1357,9 +1345,20 @@ async def run_pipeline():
             
             def needs_surface_update(p_data):
                 sr = p_data.get('surface_ratings')
-                if not sr or not isinstance(sr, dict) or len(sr) == 0: return True
-                # THE FIX: Updatet jeden, der das neue Profil-Format noch nicht hat!
-                if not sr.get('_v93_mastery_applied'): return True
+                if not sr: return True
+                
+                # Sicherheitsnetz: Manchmal liefert Supabase JSONB als String zurück
+                if isinstance(sr, str):
+                    try:
+                        sr = json.loads(sr)
+                    except:
+                        return True
+                
+                if not isinstance(sr, dict) or len(sr) == 0: return True
+                
+                # THE FIX: Updatet jeden, der das NEUE 70/30 Profil-Format (V94) noch nicht hat!
+                # Dies hebelt den Cache aus und zwingt das System, ALLE Spieler heute 1x neu zu berechnen.
+                if not sr.get('_v94_mastery_applied'): return True
                 return False
 
             players_to_update = [p for p in players if needs_surface_update(p)]
@@ -1368,13 +1367,18 @@ async def run_pipeline():
             for p_data in players_to_update:
                 p_name = p_data['last_name']
                 p_hist = await fetch_player_history_extended(p_name, limit=80)
-                # Berechne Profil (setzt automatisch _v93_mastery_applied = True)
+                
+                # BUG FIX: Auch wenn p_hist leer ist, MUSS das Profil berechnet werden, 
+                # sonst hängt der Spieler in einem Infinite Retry Loop!
                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                
                 try:
                     supabase.table('players').update({'surface_ratings': p_profile}).eq('id', p_data['id']).execute()
                 except Exception as e:
                     log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
+                
                 await asyncio.sleep(0.05) # Rate limit protection für Supabase
+                
             log("✅ [GLOBAL PROFILER] Massen-Update abgeschlossen.")
             # =================================================================
             
