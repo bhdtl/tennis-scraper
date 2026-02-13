@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V93.2 - MIGRATION FLAG & SMART BACKFILL)...")
+log("🔌 Initialisiere Neural Scout (V93.3 - 70/30 SURFACE MASTERY ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -273,9 +273,8 @@ class MomentumV2Engine:
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
         """
         Berechnet das Rating basierend auf den übergebenen Matches.
-        Kann generisch für Gesamtform (max_matches=15) oder Surface (max_matches=30) genutzt werden.
+        Kann generisch für Gesamtform (max_matches=15) genutzt werden.
         """
-        # FIX: color_hex zum Fallback hinzugefügt
         if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
         # 1. Sortieren & Slicing
@@ -359,7 +358,7 @@ class MomentumV2Engine:
 class SurfaceIntelligence:
     """
     NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
-    (ARCHITECT UPGRADE: Mastery, Volume & Specialization Protocol)
+    (ARCHITECT UPGRADE: 70/30 WinRate vs Volume Protocol)
     """
     
     @staticmethod
@@ -430,89 +429,64 @@ class SurfaceIntelligence:
 
     @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
-        """Berechnet das komplette Profil für Hard, Clay, Grass (MASTERY & VOLUME ENGINE)"""
+        """Berechnet das komplette Profil für Hard, Clay, Grass (70% WinRate / 30% Volume Engine)"""
         profile = {}
         log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
-        # 1. Sammle alle Matches pro Belag
-        hard_m = SurfaceIntelligence.get_matches_by_surface(matches, "hard")
-        clay_m = SurfaceIntelligence.get_matches_by_surface(matches, "clay")
-        grass_m = SurfaceIntelligence.get_matches_by_surface(matches, "grass")
-        
-        total_valid = len(hard_m) + len(clay_m) + len(grass_m)
-        
         surfaces_data = {
-            "hard": hard_m,
-            "clay": clay_m,
-            "grass": grass_m
+            "hard": SurfaceIntelligence.get_matches_by_surface(matches, "hard"),
+            "clay": SurfaceIntelligence.get_matches_by_surface(matches, "clay"),
+            "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
-            # PENALTY FÜR 0 MATCHES: Kein 5.5 "Neutral" mehr!
-            # Wenn der Spieler den Belag meidet, ist er extrem verwundbar darauf (Rating 4.0).
-            if n_surf == 0 or total_valid == 0:
-                profile[surf] = {
-                    "rating": 4.0, 
-                    "color": "#CC0000", # Deep Red
-                    "matches_tracked": 0,
-                    "text": "No Experience"
-                }
-                log(f"   -> {surf.upper()}: 0 Matches (Penalty applied)")
-                continue
+            # THE 70/30 PHILOSOPHY
+            # Base Rating: 3.5 (Max points to gain: 6.5)
+            # Volume: 30% of 6.5 = max 1.95 points
+            # WinRate: 70% of 6.5 = max 4.55 points
+            
+            if n_surf == 0:
+                final_rating = 3.5
+                color_hex = "#808080" # Grey for 'No Data'
+                desc = "No Experience"
+                win_rate = 0.0
+            else:
+                # Calculate Win Rate
+                wins = 0
+                for m in surf_matches:
+                    winner = m.get('actual_winner_name', "") or ""
+                    if player_name.lower() in winner.lower():
+                        wins += 1
+                win_rate = wins / n_surf
                 
-            ratio = n_surf / total_valid
-            
-            # 2. BASE PERFORMANCE (Raw Win Rate)
-            wins = 0
-            for m in surf_matches:
-                winner = m.get('actual_winner_name', "") or ""
-                if player_name.lower() in winner.lower():
-                    wins += 1
-                    
-            win_rate = wins / n_surf
-            
-            # THE 85/15 PHILOSOPHY: Baseline is 5.0
-            base_rating = 5.0
-            
-            # A) SPECIALIZATION BONUS (Primary Driver: 85% Fokus auf Präferenz)
-            spec_bonus = 0.0
-            if ratio >= 0.70: spec_bonus = 2.5      # Extreme Specialist (>70% seiner Matches)
-            elif ratio >= 0.50: spec_bonus = 1.5    # High volume
-            elif ratio >= 0.30: spec_bonus = 0.5    # Balanced/Favored
-            elif ratio >= 0.15: spec_bonus = -0.5   # Below average
-            elif ratio >= 0.05: spec_bonus = -1.5   # Rare
-            else: spec_bonus = -2.5                 # Avoids almost entirely
-            
-            # B) VOLUME BONUS (Experience Driver)
-            # Bis zu +1.0 Bonus für 30+ gespielte Matches auf diesem Belag
-            vol_bonus = min(1.0, n_surf / 30.0)
-            
-            # C) RESULTS BONUS (Tertiary Driver: 15% Tweak)
-            # Skaliert Win-Rate von 0% (-1.5) auf 50% (0.0) bis 100% (+1.5)
-            win_impact = (win_rate - 0.5) * 3.0
-            
-            # FINAL CALCULATION
-            final_rating = base_rating + spec_bonus + vol_bonus + win_impact
-            final_rating = max(1.0, min(10.0, final_rating))
-            
-            # VISUAL TEXT & COLOR (SofaScore Standards)
-            desc = "Average"
-            if final_rating >= 8.5: desc = "🔥 SPECIALIST"
-            elif final_rating >= 7.0: desc = "📈 Strong"
-            elif final_rating >= 5.5: desc = "Solid"
-            elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
-            else: desc = "❄️ Weakness"
-            
-            color_hex = "#F0C808" # Yellow
-            if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
-            elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
-            elif final_rating >= 6.5: color_hex = "#00B25B" # Green
-            elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
-            elif final_rating <= 4.0: color_hex = "#CC0000" # Red
-            elif final_rating < 5.5: color_hex = "#FF9933" # Orange
-            
+                # 1. Volume Score (30%) - Caps at 30 Matches
+                vol_score = min(1.0, n_surf / 30.0) * 1.95
+                
+                # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
+                win_score = win_rate * 4.55
+                
+                # FINAL CALCULATION
+                final_rating = 3.5 + vol_score + win_score
+                final_rating = max(1.0, min(10.0, final_rating))
+                
+                # VISUAL TEXT & COLOR (SofaScore Standards)
+                desc = "Average"
+                if final_rating >= 8.5: desc = "🔥 SPECIALIST"
+                elif final_rating >= 7.0: desc = "📈 Strong"
+                elif final_rating >= 5.5: desc = "Solid"
+                elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
+                else: desc = "❄️ Weakness"
+                
+                color_hex = "#F0C808" # Yellow
+                if final_rating >= 8.5: color_hex = "#FF00FF" # Pink
+                elif final_rating >= 7.5: color_hex = "#3366FF" # Blue
+                elif final_rating >= 6.5: color_hex = "#00B25B" # Green
+                elif final_rating >= 5.5: color_hex = "#99CC33" # Light Green
+                elif final_rating <= 4.5: color_hex = "#CC0000" # Red
+                elif final_rating < 5.5: color_hex = "#FF9933" # Orange
+
             profile[surf] = {
                 "rating": round(final_rating, 2),
                 "color": color_hex,
@@ -520,10 +494,10 @@ class SurfaceIntelligence:
                 "text": desc
             }
             
-            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | SpecRatio: {ratio:.2f} | Final: {final_rating:.2f}")
+            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
             
         # SILLICON VALLEY FIX: MIGRATION FLAG
-        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93 berechnet.
+        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93.3 berechnet.
         profile['_v93_mastery_applied'] = True
         return profile
 
@@ -1477,7 +1451,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V93.2 (MIGRATION FLAG & SMART BACKFILL) Starting...")
+    log(f"🚀 Neural Scout V93.3 (GLOBAL PROFILER & 70/30 TELEMETRY) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
