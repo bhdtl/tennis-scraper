@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V91.5 - DEEP SURFACE INTELLIGENCE)...")
+log("🔌 Initialisiere Neural Scout (V92.0 - TELEMETRY & OBSERVABILITY EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -354,7 +354,7 @@ class MomentumV2Engine:
 class SurfaceIntelligence:
     """
     NEU: Berechnet spezifische Ratings für Hard, Clay und Grass.
-    (ARCHITECT UPGRADE: Semantic Gap Bridge)
+    (ARCHITECT UPGRADE: Semantic Gap Bridge & Telemetry)
     """
     
     @staticmethod
@@ -366,6 +366,18 @@ class SurfaceIntelligence:
         if "clay" in s or "sand" in s: return "clay"
         if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard"
         return "unknown"
+
+    @staticmethod
+    def clean_name_for_matching(name: str) -> str:
+        """
+        Aggressive cleaning for fuzzy matching.
+        """
+        if not name: return ""
+        n = name.lower()
+        n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
+        n = re.sub(r'\b(202[0-9])\b', '', n)
+        n = re.sub(r'[^a-z0-9]', '', n)
+        return n.strip()
 
     @staticmethod
     def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
@@ -415,12 +427,12 @@ class SurfaceIntelligence:
     def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
         """Berechnet das komplette Profil für Hard, Clay, Grass"""
         profile = {}
+        log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
         for surf in ["hard", "clay", "grass"]:
-            # Filter Matches
             surf_matches = SurfaceIntelligence.get_matches_by_surface(matches, surf)
+            log(f"   -> {surf.upper()}: {len(surf_matches)} Matches erfolgreich zugeordnet.")
             
-            # Berechne Rating mit V2 Engine (aber größerer Sample Size erlaubt)
             rating_data = MomentumV2Engine.calculate_rating(surf_matches, player_name, max_matches=25)
             
             profile[surf] = {
@@ -565,15 +577,20 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     return metadata
 
 async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
-    """Holt eine längere Historie für Surface-Analysen. (FIXED: Liest nun ai_analysis_text aus!)"""
+    """Holt eine längere Historie für Surface-Analysen. (MIT TELEMETRY)"""
     try:
         res = supabase.table("market_odds")\
             .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text")\
             .or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%")\
             .not_.is_("actual_winner_name", "null")\
             .order("created_at", desc=True).limit(limit).execute()
-        return res.data or []
-    except: return []
+        
+        data = res.data or []
+        log(f"📊 [TELEMETRY] DB Fetch für '{player_last_name}': {len(data)} Historische Matches gefunden.")
+        return data
+    except Exception as e:
+        log(f"🚨 [TELEMETRY ERROR] Fetch fehlgeschlagen für '{player_last_name}': {e}")
+        return []
 
 async def fetch_player_form_quantum(matches: List[Dict], player_last_name: str) -> Dict[str, Any]:
     # Wrapper für Form (nutzt die ersten 20 Matches der langen Liste)
@@ -764,6 +781,8 @@ async def get_db_data():
                         part = part.strip().lower()
                         if part and len(part) > 2:
                             GLOBAL_SURFACE_MAP[part] = t_surf
+                            
+            log(f"📊 [TELEMETRY] GLOBAL_SURFACE_MAP initialisiert mit {len(GLOBAL_SURFACE_MAP)} Keys.")
         
         clean_skills = {}
         if skills:
@@ -1271,6 +1290,7 @@ class QuantumGamesSimulator:
     """
     SOTA Monte Carlo Engine for Tennis Totals.
     """
+    
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
         p_hold = 67.0 
@@ -1369,7 +1389,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V91.5 (DEEP SURFACE INTELLIGENCE) Starting...")
+    log(f"🚀 Neural Scout V92.0 (TELEMETRY EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1498,9 +1518,18 @@ async def run_pipeline():
                                 
                                 # Update Player DB (Self-Healing Profile)
                                 try:
-                                    supabase.table('players').update({'surface_ratings': p1_surface_profile}).eq('id', p1_obj['id']).execute()
-                                    supabase.table('players').update({'surface_ratings': p2_surface_profile}).eq('id', p2_obj['id']).execute()
-                                except: pass
+                                    log(f"💾 [TELEMETRY] Speichere Profil für {n1}...")
+                                    res1 = supabase.table('players').update({'surface_ratings': p1_surface_profile}).eq('id', p1_obj['id']).execute()
+                                    log(f"   ✅ Profil gespeichert für {n1}")
+                                except Exception as e:
+                                    log(f"🚨 [TELEMETRY ERROR] DB Update fehlgeschlagen für {n1}: {e}")
+                                    
+                                try:
+                                    log(f"💾 [TELEMETRY] Speichere Profil für {n2}...")
+                                    res2 = supabase.table('players').update({'surface_ratings': p2_surface_profile}).eq('id', p2_obj['id']).execute()
+                                    log(f"   ✅ Profil gespeichert für {n2}")
+                                except Exception as e:
+                                    log(f"🚨 [TELEMETRY ERROR] DB Update fehlgeschlagen für {n2}: {e}")
                                 # -------------------------------------------------------------
 
                                 surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
