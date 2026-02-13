@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V93.1 - SURFACE MASTERY & TELEMETRY)...")
+log("🔌 Initialisiere Neural Scout (V93.2 - MIGRATION FLAG & SMART BACKFILL)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -522,6 +522,9 @@ class SurfaceIntelligence:
             
             log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | SpecRatio: {ratio:.2f} | Final: {final_rating:.2f}")
             
+        # SILLICON VALLEY FIX: MIGRATION FLAG
+        # Wir speichern ein Flag im JSON, damit das System weiß: Dieser Spieler wurde bereits mit V93 berechnet.
+        profile['_v93_mastery_applied'] = True
         return profile
 
 # =================================================================
@@ -1474,7 +1477,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V93.1 (GLOBAL PROFILER & TELEMETRY) Starting...")
+    log(f"🚀 Neural Scout V93.2 (MIGRATION FLAG & SMART BACKFILL) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1487,22 +1490,29 @@ async def run_pipeline():
             player_names = [p['last_name'] for p in players]
             
             # =================================================================
-            # 🌍 NEW: GLOBAL PROFILER (MASS BACKFILL)
+            # 🌍 NEW: GLOBAL PROFILER (MASS BACKFILL VIA MIGRATION FLAG)
             # =================================================================
             log("🌍 [GLOBAL PROFILER] Starte Massen-Update für ALLE Spieler-Profile (Keine API-Kosten)...")
-            # Finde Spieler, die noch KEIN surface_ratings Profil in der DB haben
-            players_to_update = [p for p in players if not p.get('surface_ratings') or len(p.get('surface_ratings', {})) == 0]
-            log(f"🔄 Führe Backfill für {len(players_to_update)} Spieler ohne Profil durch...")
+            
+            def needs_surface_update(p_data):
+                sr = p_data.get('surface_ratings')
+                if not sr or not isinstance(sr, dict) or len(sr) == 0: return True
+                # THE FIX: Updatet jeden, der das neue Profil-Format noch nicht hat!
+                if not sr.get('_v93_mastery_applied'): return True
+                return False
+
+            players_to_update = [p for p in players if needs_surface_update(p)]
+            log(f"🔄 Führe Backfill für {len(players_to_update)} Spieler durch...")
             
             for p_data in players_to_update:
                 p_name = p_data['last_name']
                 p_hist = await fetch_player_history_extended(p_name, limit=80)
-                if p_hist:
-                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                    try:
-                        supabase.table('players').update({'surface_ratings': p_profile}).eq('id', p_data['id']).execute()
-                    except Exception as e:
-                        log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
+                # Berechne Profil (setzt automatisch _v93_mastery_applied = True)
+                p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                try:
+                    supabase.table('players').update({'surface_ratings': p_profile}).eq('id', p_data['id']).execute()
+                except Exception as e:
+                    log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
                 await asyncio.sleep(0.05) # Rate limit protection für Supabase
             log("✅ [GLOBAL PROFILER] Massen-Update abgeschlossen.")
             # =================================================================
