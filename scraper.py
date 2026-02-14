@@ -272,7 +272,7 @@ class MomentumV2Engine:
             impact = 0.0
 
             if won:
-                if odds < 1.30: impact = 0.3      
+                if odds < 1.30: impact = 0.4      
                 elif odds <= 2.00: impact = 0.8   
                 else: impact = 1.8                
                 score = str(m.get('score', ''))
@@ -281,10 +281,16 @@ class MomentumV2Engine:
                 momentum += 0.2 
                 history_log.append("W")
             else:
-                if odds < 1.40: impact = -1.5     
+                if odds < 1.30: impact = -0.6     
+                elif odds < 1.50: impact = -0.5
                 elif odds <= 2.20: impact = -0.6  
                 else: impact = -0.2               
-                momentum = 0 
+                
+                score = str(m.get('score', ''))
+                if "2-1" in score or "1-2" in score:
+                    momentum = max(0.0, momentum - 0.1)
+                else:
+                    momentum = 0.0 
                 history_log.append("L")
             
             rating += (impact * weight)
