@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V94.0 - CACHE INVALIDATION & 70/30 ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V95.0 - GLOBAL SCHEMA SYNC & 70/30 ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -389,10 +389,11 @@ class SurfaceIntelligence:
             if n_surf == 0:
                 profile[surf] = {
                     "rating": 3.5, 
-                    "color": "#808080", 
+                    "color": "#808080", # Grey
                     "matches_tracked": 0,
                     "text": "No Experience"
                 }
+                log(f"   -> {surf.upper()}: 0 Matches (Base 3.5 applied)")
                 continue
                 
             wins = 0
@@ -402,9 +403,13 @@ class SurfaceIntelligence:
                     wins += 1
             win_rate = wins / n_surf
             
+            # 1. Volume Score (30%) - Caps at 30 Matches
             vol_score = min(1.0, n_surf / 30.0) * 1.95
+            
+            # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
             win_score = win_rate * 4.55
             
+            # FINAL CALCULATION
             final_rating = 3.5 + vol_score + win_score
             final_rating = max(1.0, min(10.0, final_rating))
             
@@ -421,7 +426,7 @@ class SurfaceIntelligence:
             elif final_rating >= 6.5: color_hex = "#00B25B" 
             elif final_rating >= 5.5: color_hex = "#99CC33" 
             elif final_rating <= 4.5: color_hex = "#CC0000" 
-            else: color_hex = "#FF9933" 
+            elif final_rating < 5.5: color_hex = "#FF9933" 
 
             profile[surf] = {
                 "rating": round(final_rating, 2),
@@ -430,7 +435,10 @@ class SurfaceIntelligence:
                 "text": desc
             }
             
-        profile['_v94_mastery_applied'] = True
+            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
+            
+        # SILLICON VALLEY FIX: MIGRATION FLAG V95
+        profile['_v95_mastery_applied'] = True
         return profile
 
 # =================================================================
@@ -1138,7 +1146,7 @@ def parse_matches_locally_v5(html, p_names):
     return found
 
 async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores (V72.0)...")
+    log("🏆 The Auditor: Checking Real-Time Results & Scores (V95.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -1213,9 +1221,7 @@ async def update_past_results(browser: Browser):
                                     "score": score_cleaned
                                 }).eq("id", pm['id']).execute()
                                 
-                                # =================================================================
-                                # SILLICON VALLEY HOOK: Re-Profile players after match settlement
-                                # =================================================================
+                                # RE-PROFILING HOOK (FOR REAL-TIME SYNC)
                                 log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
                                 for p_name in [pm['player1_name'], pm['player2_name']]:
                                     p_hist = await fetch_player_history_extended(p_name, limit=80)
@@ -1225,7 +1231,7 @@ async def update_past_results(browser: Browser):
                                     # Update Profile in DB (This keeps ratings live!)
                                     supabase.table('players').update({
                                         'surface_ratings': p_profile,
-                                        'form_rating': p_form # Persistent Storage of new Momentum V2
+                                        'form_rating': p_form 
                                     }).ilike('last_name', f"%{p_name}%").execute()
 
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
@@ -1339,7 +1345,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V94.0 (CACHE INVALIDATION & 70/30 ENGINE) Starting...")
+    log(f"🚀 Neural Scout V95.0 (GLOBAL RE-SYNC) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1352,9 +1358,9 @@ async def run_pipeline():
             player_names = [p['last_name'] for p in players]
             
             # =================================================================
-            # 🌍 NEW: GLOBAL PROFILER (MASS BACKFILL VIA MIGRATION FLAG)
+            # 🌍 GLOBAL PROFILER (V95 SCHEMA SYNC)
             # =================================================================
-            log("🌍 [GLOBAL PROFILER] Starte Massen-Update für ALLE Spieler-Profile...")
+            log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
             
             def needs_surface_update(p_data):
                 sr = p_data.get('surface_ratings')
@@ -1364,32 +1370,31 @@ async def run_pipeline():
                     except: return True
                 if not isinstance(sr, dict) or len(sr) == 0: return True
                 
-                # Wenn das Mastery-Flag fehlt, muss der Spieler aktualisiert werden.
-                if not sr.get('_v94_mastery_applied'): return True
+                # Updatet jeden, der das NEUE Flag (V95) noch nicht hat!
+                if not sr.get('_v95_mastery_applied'): return True
                 return False
 
             players_to_update = [p for p in players if needs_surface_update(p)]
-            log(f"🔄 Führe Backfill für {len(players_to_update)} Spieler durch...")
+            log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
             
             for p_data in players_to_update:
                 p_name = p_data['last_name']
                 p_hist = await fetch_player_history_extended(p_name, limit=80)
                 
-                # Berechne Surface & Momentum V2
                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                 p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
                 
                 try:
                     supabase.table('players').update({
                         'surface_ratings': p_profile,
-                        'form_rating': p_form # Hier speichern wir das Momentum dauerhaft ab
+                        'form_rating': p_form
                     }).eq('id', p_data['id']).execute()
                 except Exception as e:
                     log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
                 
                 await asyncio.sleep(0.05) 
                 
-            log("✅ [GLOBAL PROFILER] Massen-Update abgeschlossen.")
+            log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
             # =================================================================
             
             for day_offset in range(-1, 11): 
@@ -1434,9 +1439,6 @@ async def run_pipeline():
 
                             db_match_id = None
                             
-                            # =================================================================
-                            # FUSION HOOK: Initialize History Variables (HOISTED)
-                            # =================================================================
                             hist_fair1 = 0
                             hist_fair2 = 0
                             hist_is_value = False
@@ -1460,7 +1462,6 @@ async def run_pipeline():
                                     hist_is_locked = True
                                     log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
 
-                            # --- UPDATE LOGIC WITH LOCK ---
                             if is_signal_locked:
                                 update_data = {
                                     "odds1": m['odds1'], 
@@ -1501,7 +1502,6 @@ async def run_pipeline():
                                 p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, n1)
                                 p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, n2)
                                 
-                                # Momentum V2 calculation
                                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
                                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
 
@@ -1515,7 +1515,7 @@ async def run_pipeline():
                                         'form_rating': p2_form_v2
                                     }).eq('id', p2_obj['id']).execute()
                                 except Exception as e:
-                                    log(f"🚨 [TELEMETRY ERROR] Player Sync failed: {e}")
+                                    log(f"🚨 [TELEMETRY ERROR] Sync failed: {e}")
 
                                 surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
                                 surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
@@ -1625,9 +1625,6 @@ async def run_pipeline():
                                     
                                     db_match_id = final_match_id
 
-                            # =================================================================
-                            # FUSION: ODDS HISTORY LOGGING 
-                            # =================================================================
                             if db_match_id:
                                 should_log_history = False
                                 
