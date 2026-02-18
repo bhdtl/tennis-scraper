@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V97.0 - 1WIN MASTER FEED & TE AUDITOR)...")
+log("🔌 Initialisiere Neural Scout (V98.0 - 1WIN TROJAN INTERCEPTION & TE AUDITOR)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -516,111 +516,127 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (NEW SOTA ARCHITECTURE)
+# 6.5 1WIN SOTA MASTER FEED (TROJAN INTERCEPTION)
 # =================================================================
-async def fetch_1win_api_markets() -> List[Dict]:
+async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """
-    SOTA API Interception: Liest den geheimen JSON-Feed von 1wins Provider 'top-parser' aus.
-    Dies ist ab V97.0 die alleinige Source of Truth für anstehende Matches und Quoten.
+    Silicon Valley Pattern: Network Interception (Trojan Horse).
+    Wir nutzen Playwright, um die Security-Tokens von 1win/Cloudflare zu generieren.
+    Sobald die Seite das JSON vom Backend empfängt, fangen wir es auf ("Sniffing").
+    Das ist unblockbar und liest alle Deep Markets (+99) sofort aus.
     """
-    api_url = "https://api-gateway.top-parser.com/sports/get?sportId=33&l=de-DE&p=44ba10e5-7df2-47ab-a44d-dc93803c7a6e" 
-    
-    log(f"📡 [1WIN MASTER API] Fetching direct JSON markets from {api_url}...")
+    log("🚀 [1WIN TROJAN] Starte Network Interception via Playwright...")
     parsed_1win_matches = []
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": "https://1win.io/",
-        "Origin": "https://1win.io"
-    }
-    
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.get(api_url, headers=headers)
-            if res.status_code != 200:
-                log(f"⚠️ [1WIN MASTER API] Error {res.status_code}. Response: {res.text[:100]}")
-                return []
-                
-            data = res.json()
-            
-            # Die Matches liegen im Array, entweder direkt oder unter "matches" / "data"
-            matches_list = []
-            if isinstance(data, list):
-                matches_list = data
-            elif isinstance(data, dict):
-                matches_list = data.get('matches', data.get('data', []))
-            
-            if not matches_list:
-                log(f"⚠️ [1WIN MASTER API] JSON geladen, aber keine Matches gefunden. Struktur checken: {str(data)[:200]}")
-                return []
-            
-            for m in matches_list:
-                match_name = m.get('name', '')
-                if ' - ' not in match_name:
-                    continue
-                
-                parts = match_name.split(' - ')
-                if len(parts) < 2: continue
-                
-                p1 = parts[0].strip()
-                p2 = parts[1].strip()
-                
-                tournament_obj = m.get('tournament', {})
-                tour_name = tournament_obj.get('slug', tournament_obj.get('name', 'Unknown'))
-                
-                start_time_ts = m.get('startAt', 0)
-                start_time_str = "00:00"
-                if start_time_ts > 0:
-                    start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
+    page = await browser.new_page()
 
-                # Wir extrahieren die Quoten tief aus dem JSON. 
-                # (Abhängig von 1wins genauer Struktur können diese Pfade leicht variieren)
-                odds_markets = m.get('markets', {})
-                moneyline = odds_markets.get('moneyline', {})
-                o1 = to_float(moneyline.get('w1', moneyline.get('team1', 0)), 0)
-                o2 = to_float(moneyline.get('w2', moneyline.get('team2', 0)), 0)
-                
-                # Wenn wir die Quoten direkt in der root-Ebene oder unter "odds" finden:
-                if o1 == 0 and o2 == 0:
-                    o1 = to_float(m.get('w1', 0), 0)
-                    o2 = to_float(m.get('w2', 0), 0)
-                
-                # Falls 1win sie in einer Liste von Events/Selections speichert, nehmen wir an, dass sie zumindest 0 sind 
-                # und vom Value-Scanner ignoriert werden, bis die genaue Pfadstruktur der Quoten analysiert wird.
-                
-                handicap = odds_markets.get('handicap', {})
-                hc_line = to_float(handicap.get('line'), None)
-                hc_o1 = to_float(handicap.get('w1'), 0)
-                hc_o2 = to_float(handicap.get('w2'), 0)
-                
-                totals = odds_markets.get('totals', {})
-                ou_line = to_float(totals.get('line'), None)
-                o_odds = to_float(totals.get('over'), 0)
-                u_odds = to_float(totals.get('under'), 0)
-                
-                parsed_1win_matches.append({
-                    "p1_raw": p1,
-                    "p2_raw": p2,
-                    "tour": clean_tournament_name(tour_name),
-                    "time": start_time_str,
-                    "odds1": o1,
-                    "odds2": o2,
-                    "handicap_line": hc_line,
-                    "handicap_odds1": hc_o1,
-                    "handicap_odds2": hc_o2,
-                    "over_under_line": ou_line,
-                    "over_odds": o_odds,
-                    "under_odds": u_odds,
-                    "actual_winner": None,
-                    "score": ""
-                })
-                
-        log(f"✅ [1WIN MASTER API] Erfolgreich {len(parsed_1win_matches)} Matches geparst.")
-        return parsed_1win_matches
+    async def handle_response(response):
+        # Wir suchen nach den spezifischen JSON-Calls des 1win Providers
+        if response.request.resource_type in ["fetch", "xhr"]:
+            if "top-parser" in response.url or "sports/get" in response.url or "line" in response.url:
+                try:
+                    data = await response.json()
+                    
+                    # Flexibles Parsing: Manchmal ist es dict, manchmal list
+                    matches_list = []
+                    if isinstance(data, list):
+                        matches_list = data
+                    elif isinstance(data, dict):
+                        matches_list = data.get('matches', data.get('data', data.get('result', [])))
+                        if isinstance(matches_list, dict) and 'matches' in matches_list:
+                            matches_list = matches_list['matches']
+
+                    if not isinstance(matches_list, list):
+                        return
+
+                    for m in matches_list:
+                        if not isinstance(m, dict): continue
+                        match_name = m.get('name', '')
+                        if ' - ' not in match_name: continue
+
+                        parts = match_name.split(' - ')
+                        if len(parts) < 2: continue
+                        p1 = parts[0].strip()
+                        p2 = parts[1].strip()
+
+                        tour_name = "Unknown"
+                        tour_obj = m.get('tournament', {})
+                        if isinstance(tour_obj, dict):
+                            tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
+
+                        start_time_ts = m.get('startAt', 0)
+                        start_time_str = "00:00"
+                        if start_time_ts > 0:
+                            start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
+
+                        # Quoten extrahieren
+                        odds_markets = m.get('markets', {})
+                        moneyline = odds_markets.get('moneyline', {})
+                        o1 = to_float(moneyline.get('w1', moneyline.get('team1', 0)), 0)
+                        o2 = to_float(moneyline.get('w2', moneyline.get('team2', 0)), 0)
+
+                        if o1 == 0 and o2 == 0:
+                            o1 = to_float(m.get('w1', 0), 0)
+                            o2 = to_float(m.get('w2', 0), 0)
+
+                        handicap = odds_markets.get('handicap', {})
+                        hc_line = to_float(handicap.get('line'), None)
+                        hc_o1 = to_float(handicap.get('w1'), 0)
+                        hc_o2 = to_float(handicap.get('w2'), 0)
+
+                        totals = odds_markets.get('totals', {})
+                        ou_line = to_float(totals.get('line'), None)
+                        o_odds = to_float(totals.get('over'), 0)
+                        u_odds = to_float(totals.get('under'), 0)
+
+                        parsed_1win_matches.append({
+                            "p1_raw": p1,
+                            "p2_raw": p2,
+                            "tour": clean_tournament_name(tour_name),
+                            "time": start_time_str,
+                            "odds1": o1,
+                            "odds2": o2,
+                            "handicap_line": hc_line,
+                            "handicap_odds1": hc_o1,
+                            "handicap_odds2": hc_o2,
+                            "over_under_line": ou_line,
+                            "over_odds": o_odds,
+                            "under_odds": u_odds,
+                            "actual_winner": None,
+                            "score": ""
+                        })
+                except Exception as e:
+                    pass # Silently drop non-JSON or weird payloads
+
+    # Hänge den Sniffer an die Seite
+    page.on("response", handle_response)
+
+    try:
+        log("🌍 Navigiere zu 1win Tennis, löse Security Tokens...")
+        # Lade die echte 1win Seite
+        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=45000)
+        
+        log("⏳ Warte 10 Sekunden, bis 1win das JSON in den Browser lädt...")
+        await asyncio.sleep(10) 
+        
+        # Simuliere Scrollen, falls 1win Lazy-Loading nutzt
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(3)
     except Exception as e:
-        log(f"⚠️ [1WIN MASTER API] Exception: {e}")
-        return []
+        log(f"⚠️ [1WIN TROJAN] Fehler beim Laden der Seite: {e}")
+    finally:
+        await page.close()
+        
+    # Duplikate entfernen (manchmal schickt die SPA das gleiche JSON mehrfach)
+    unique_matches = []
+    seen = set()
+    for m in parsed_1win_matches:
+        key = f"{m['p1_raw']}_{m['p2_raw']}"
+        if key not in seen:
+            seen.add(key)
+            unique_matches.append(m)
+
+    log(f"✅ [1WIN TROJAN] Erfolgreich {len(unique_matches)} Matches direkt vom 1win Backend abgefangen.")
+    return unique_matches
 
 # =================================================================
 # 7. DATA FETCHING & ORACLE
@@ -1312,7 +1328,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V97.0 (1WIN MASTER FEED EDITION) Starting...")
+    log(f"🚀 Neural Scout V98.0 (1WIN NETWORK INTERCEPTION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1356,12 +1372,12 @@ async def run_pipeline():
                 await asyncio.sleep(0.05) 
             # =================================================================
             
-            # --- THE 1WIN MASTER FEED CALL ---
-            # Das ist jetzt der einzige Ort, an dem wir neue Spiele beziehen!
+            # --- THE 1WIN MASTER FEED CALL (TROJAN HORSE) ---
+            # Wir nutzen Playwright, um die XHR Calls von 1win abzufangen!
             target_date = datetime.now() # Für Date-Referenz des Turniers
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
-            matches = await fetch_1win_api_markets()
+            matches = await fetch_1win_markets_via_interception(browser)
             
             if not matches:
                 log("❌ Keine Matches vom 1win Feed erhalten. Beende Zyklus.")
