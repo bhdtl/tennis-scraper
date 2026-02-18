@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V102.0 - SOTA HEURISTIC ODDS EXTRACTION)...")
+log("🔌 Initialisiere Neural Scout (V103.0 - SOTA STATE RECONSTRUCTION & WS-TRACKING)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,81 +514,162 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (DEEP GHOST INTERCEPTION V102.0)
+# 6.5 1WIN SOTA MASTER FEED (STATE RECONSTRUCTION V103.0)
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
     """
-    V102.0 HEURISTIC MARGIN EXTRACTOR
-    Scans the entire JSON tree for pairs of odds and identifies the Match Winner 
-    market purely by mathematical implied probability logic (margin integrity).
+    V103.0 SILICON VALLEY GOD-MODE EXTRACTOR
+    Extrahiert gnadenlos jede Float-Zahl im JSON und berechnet die 
+    physikalische Buchmacher-Marge aller Paare, um den Match Winner zu isolieren.
     """
-    possible_pairs = []
+    valid_pairs = []
+    
+    def get_floats(d: dict):
+        floats = []
+        for k, v in d.items():
+            try:
+                val = float(v)
+                if 1.01 <= val <= 100.0:
+                    floats.append(val)
+            except: pass
+        return floats
 
-    # 1. Fallback for obvious top-level keys (legacy structure)
-    o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
-    o2 = to_float(m.get('w2', m.get('team2', 0)), 0)
-    if o1 > 1.01 and o2 > 1.01:
-        possible_pairs.append((o1, o2))
-
-    # 2. Heuristic Tree Traversal
-    def extract_odds_from_list(lst):
-        odds_found = []
-        for item in lst:
-            if isinstance(item, dict):
-                # We check all known odds keys 1win might use
-                for k in ['cf', 'coef', 'coefficient', 'price', 'value', 'v', 'k', 'odd']:
-                    val = to_float(item.get(k))
-                    if val > 1.01:
-                        odds_found.append(val)
-                        break 
-        if len(odds_found) >= 2:
-            # We take the first two, usually S1 and S2
-            possible_pairs.append((odds_found[0], odds_found[1]))
-
-    def deep_scan(obj):
+    def deep_search(obj):
         if isinstance(obj, dict):
-            # Try to catch paired structures inside a dictionary node
-            for k1, k2 in [('w1', 'w2'), ('team1', 'team2'), ('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2'), ('v1', 'v2'), ('p1', 'p2')]:
-                v1 = to_float(obj.get(k1))
-                v2 = to_float(obj.get(k2))
-                if v1 > 1.01 and v2 > 1.01:
-                    possible_pairs.append((v1, v2))
-            
+            # Check explicit keys first
+            v1, v2 = 0.0, 0.0
+            for k1, k2 in [('w1', 'w2'), ('team1', 'team2'), ('S1', 'S2'), ('s1', 's2'), ('k1', 'k2'), ('coef1', 'coef2')]:
+                if k1 in obj and k2 in obj:
+                    try:
+                        val1 = float(obj[k1])
+                        val2 = float(obj[k2])
+                        if 1.01 < val1 < 100.0 and 1.01 < val2 < 100.0:
+                            valid_pairs.append((val1, val2))
+                    except: pass
+                    
             for k, v in obj.items():
-                if isinstance(v, list):
-                    extract_odds_from_list(v)
-                    deep_scan(v)
-                elif isinstance(v, dict):
-                    deep_scan(v)
+                deep_search(v)
+                
         elif isinstance(obj, list):
+            # Often outcomes are lists of dicts
+            if len(obj) == 2 and isinstance(obj[0], dict) and isinstance(obj[1], dict):
+                f1 = get_floats(obj[0])
+                f2 = get_floats(obj[1])
+                for val1 in f1:
+                    for val2 in f2:
+                        valid_pairs.append((val1, val2))
+            
+            # Or direct float pairs
+            if len(obj) == 2:
+                try:
+                    val1 = float(obj[0])
+                    val2 = float(obj[1])
+                    if 1.01 < val1 < 100.0 and 1.01 < val2 < 100.0:
+                        valid_pairs.append((val1, val2))
+                except: pass
+                
             for item in obj:
-                deep_scan(item)
+                deep_search(item)
 
-    deep_scan(m)
-
-    # 3. Mathematical Evaluation
-    # wir suchen das Quotenpaar, das eine Marge nahe der Standard 5-6% (1.05) hat
+    deep_search(m)
+    
+    # Margin Evaluation
     best_pair = (0.0, 0.0)
-    best_margin_diff = 999.0 
-
-    for o1, o2 in possible_pairs:
-        # Implied probability: Wenn beide S1 und S2 sind, muss die Summe knapp über 1.0 (100%) liegen.
-        implied_prob = (1/o1) + (1/o2)
-        
-        # Validiere Tennis Sieger-Markt Marge (typisch 1.02 bis 1.15)
-        if 1.02 <= implied_prob <= 1.15:
-            # Wie nah ist es am Idealwert von 1.06?
-            margin_diff = abs(implied_prob - 1.06)
-            if margin_diff < best_margin_diff:
-                best_margin_diff = margin_diff
+    best_diff = 999.0
+    
+    for o1, o2 in valid_pairs:
+        margin = (1/o1) + (1/o2)
+        # 1win Tennis Winner Marge liegt fast immer zwischen 1.03 und 1.12
+        if 1.02 <= margin <= 1.12:
+            # Wir suchen die Marge, die 1.055 (Standard) am nächsten ist.
+            diff = abs(margin - 1.055)
+            
+            # Symmetrische Quoten (Handicaps, z.B. 1.90/1.90) hart bestrafen
+            if abs(o1 - o2) < 0.05:
+                diff += 0.03 
+                
+            if diff < best_diff:
+                best_diff = diff
                 best_pair = (o1, o2)
-
+                
     return best_pair
 
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V102.0 Cloudflare Bypass Mode)...")
-    parsed_1win_matches = []
+    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V103.0 - HTTP/WS Correlation)...")
     
+    matches_meta = {} 
+    matches_raw_nodes = {} 
+    
+    def extract_id(obj: dict) -> Optional[str]:
+        for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId']:
+            if k in obj and str(obj[k]).isdigit():
+                return str(obj[k])
+        return None
+
+    def traverse_and_store(obj):
+        if isinstance(obj, dict):
+            obj_id = extract_id(obj)
+            
+            if obj_id:
+                if obj_id not in matches_raw_nodes:
+                    matches_raw_nodes[obj_id] = []
+                matches_raw_nodes[obj_id].append(obj)
+                
+                name_val = obj.get('name', '') or obj.get('eventName', '')
+                if isinstance(name_val, str) and ' - ' in name_val:
+                    if '/' not in name_val and '&' not in name_val and '+' not in name_val and ' / ' not in name_val:
+                        parts = name_val.split(' - ')
+                        if len(parts) >= 2:
+                            tour_obj = obj.get('tournament', {})
+                            tour_name = "Unknown"
+                            if isinstance(tour_obj, dict):
+                                tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
+                            elif isinstance(tour_obj, str):
+                                tour_name = tour_obj
+                            
+                            start_time_ts = obj.get('startAt', 0)
+                            start_time_str = "00:00"
+                            if start_time_ts > 0:
+                                start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
+                                
+                            matches_meta[obj_id] = {
+                                "p1": parts[0].strip(),
+                                "p2": parts[1].strip(),
+                                "tour": clean_tournament_name(tour_name),
+                                "time": start_time_str
+                            }
+
+            for k, v in obj.items():
+                traverse_and_store(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                traverse_and_store(item)
+
+    async def handle_response(response):
+        if response.request.resource_type in ["fetch", "xhr"]:
+            url = response.url
+            if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events"]):
+                try:
+                    text = await response.text()
+                    if "{" in text and "}" in text:
+                        traverse_and_store(json.loads(text))
+                except: pass
+
+    async def handle_ws(ws):
+        async def on_frame_received(frame):
+            try:
+                text = frame.text
+                if text and "{" in text:
+                    clean_text = re.sub(r'^\d+', '', text)
+                    if clean_text.startswith('['): 
+                        traverse_and_store(json.loads(clean_text))
+                    else:
+                        for match in re.findall(r'\{.*\}', text):
+                            try: traverse_and_store(json.loads(match))
+                            except: pass
+            except: pass
+        ws.on("framereceived", on_frame_received)
+        
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         viewport={"width": 1920, "height": 1080},
@@ -601,85 +682,8 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """)
     
     page = await context.new_page()
-
-    def extract_matches_recursively(obj):
-        matches = []
-        if isinstance(obj, dict):
-            name_val = obj.get('name', '') or obj.get('eventName', '')
-            if isinstance(name_val, str) and ' - ' in name_val and ('id' in obj or 'markets' in obj or 'startAt' in obj):
-                matches.append(obj)
-            for k, v in obj.items():
-                matches.extend(extract_matches_recursively(v))
-        elif isinstance(obj, list):
-            for item in obj:
-                matches.extend(extract_matches_recursively(item))
-        return matches
-
-    async def handle_response(response):
-        if response.request.resource_type in ["fetch", "xhr", "websocket"]:
-            url = response.url
-            if "top-parser" in url or "sports" in url or "matches" in url or "1win" in url:
-                try:
-                    if response.status != 200: return
-                    text = await response.text()
-                    
-                    if not text or "cloudflare" in text.lower() or "<html" in text.lower(): return
-                        
-                    if "{" in text and "}" in text:
-                        data = json.loads(text)
-                        found_items = extract_matches_recursively(data)
-                        
-                        for m in found_items:
-                            match_name = m.get('name', '') or m.get('eventName', '')
-                            if not match_name or ' - ' not in match_name: continue
-                            
-                            if '/' in match_name or '&' in match_name or '+' in match_name or ' / ' in match_name: continue
-                            
-                            parts = match_name.split(' - ')
-                            if len(parts) < 2: continue
-                            p1 = parts[0].strip()
-                            p2 = parts[1].strip()
-                            
-                            tour_obj = m.get('tournament', {})
-                            tour_name = "Unknown"
-                            if isinstance(tour_obj, dict):
-                                tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
-                            elif isinstance(tour_obj, str):
-                                tour_name = tour_obj
-                                
-                            if "doubles" in str(tour_name).lower() or "doppel" in str(tour_name).lower(): continue
-                                
-                            start_time_ts = m.get('startAt', 0)
-                            start_time_str = "00:00"
-                            if start_time_ts > 0:
-                                start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
-                                
-                            # V102.0 Heuristic Extraction
-                            o1, o2 = find_best_odds(m)
-                            
-                            hc_line = None; hc_o1 = 0; hc_o2 = 0
-                            ou_line = None; o_odds = 0; u_odds = 0
-                            
-                            parsed_1win_matches.append({
-                                "p1_raw": p1,
-                                "p2_raw": p2,
-                                "tour": clean_tournament_name(tour_name),
-                                "time": start_time_str,
-                                "odds1": o1,
-                                "odds2": o2,
-                                "handicap_line": hc_line,
-                                "handicap_odds1": hc_o1,
-                                "handicap_odds2": hc_o2,
-                                "over_under_line": ou_line,
-                                "over_odds": o_odds,
-                                "under_odds": u_odds,
-                                "actual_winner": None,
-                                "score": ""
-                            })
-                except Exception:
-                    pass
-
     page.on("response", handle_response)
+    page.on("websocket", handle_ws)
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
@@ -690,7 +694,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Scrolle durch die Seite für Week-Coverage (15x Safe-Scroll)...")
+        log("⏳ Scrolle durch die Seite für State-Reconstruction (15x Safe-Scroll)...")
         for _ in range(15):
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -705,14 +709,38 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
         await context.close()
         
     unique_matches = []
-    seen = set()
-    for m in parsed_1win_matches:
-        key = f"{m['p1_raw']}_{m['p2_raw']}"
-        if key not in seen:
-            seen.add(key)
-            unique_matches.append(m)
+    success_count = 0
+    
+    for obj_id, meta in matches_meta.items():
+        if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower():
+            continue
+            
+        nodes = matches_raw_nodes.get(obj_id, [])
+        best_o1, best_o2 = 0.0, 0.0
+        
+        for node in nodes:
+            o1, o2 = find_best_odds(node)
+            if o1 > 0 and o2 > 0:
+                best_o1, best_o2 = o1, o2
+                break
+                
+        if best_o1 > 0 and best_o2 > 0:
+            unique_matches.append({
+                "p1_raw": meta['p1'],
+                "p2_raw": meta['p2'],
+                "tour": meta['tour'],
+                "time": meta['time'],
+                "odds1": best_o1,
+                "odds2": best_o2,
+                "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                "actual_winner": None, "score": ""
+            })
+            success_count += 1
+        else:
+            log(f"   ⚠️ WebSocket/HTTP Missing Odds: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
 
-    log(f"✅ [1WIN GHOST] {len(unique_matches)} Singles-Matches rekursiv extrahiert.")
+    log(f"✅ [1WIN GHOST] {success_count} Singles-Matches mit Quoten voll-korreliert.")
     return unique_matches
 
 
@@ -1405,7 +1433,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V102.0 (HEURISTIC EXTRACTOR EDITION) Starting...")
+    log(f"🚀 Neural Scout V103.0 (GOD-MODE WS EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1484,7 +1512,6 @@ async def run_pipeline():
                     db_matched_count += 1
                         
                     if m['odds1'] <= 0 or m['odds2'] <= 0:
-                        log(f"   ⏭️ Drop: Keine Quoten gefunden für {n1} vs {n2}.")
                         continue
                     
                     if not validate_market_integrity(m['odds1'], m['odds2']):
