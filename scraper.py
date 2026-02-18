@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V98.0 - 1WIN TROJAN INTERCEPTION & TE AUDITOR)...")
+log("🔌 Initialisiere Neural Scout (V98.1 - GHOST CRAWLER & 1:1 RESTORE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,6 +44,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -401,8 +402,13 @@ class SurfaceIntelligence:
                     wins += 1
             win_rate = wins / n_surf
             
+            # 1. Volume Score (30%) - Caps at 30 Matches
             vol_score = min(1.0, n_surf / 30.0) * 1.95
+            
+            # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
             win_score = win_rate * 4.55
+            
+            # FINAL CALCULATION
             final_rating = 3.5 + vol_score + win_score
             final_rating = max(1.0, min(10.0, final_rating))
             
@@ -516,117 +522,148 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (TROJAN INTERCEPTION)
+# 6.5 1WIN SOTA MASTER FEED (GHOST INTERCEPTION)
 # =================================================================
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """
-    Silicon Valley Pattern: Network Interception (Trojan Horse).
-    Wir nutzen Playwright, um die Security-Tokens von 1win/Cloudflare zu generieren.
-    Sobald die Seite das JSON vom Backend empfängt, fangen wir es auf ("Sniffing").
-    Das ist unblockbar und liest alle Deep Markets (+99) sofort aus.
+    SOTA Bypassing: Startet einen Stealth-Context, umgeht Cloudflare,
+    und scannt die Netzwerk-Payloads rekursiv nach verschachtelten Quoten-Objekten.
     """
-    log("🚀 [1WIN TROJAN] Starte Network Interception via Playwright...")
+    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner...")
     parsed_1win_matches = []
-    page = await browser.new_page()
+    
+    # Cloudflare Evasion Settings
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width": 1920, "height": 1080},
+        java_script_enabled=True
+    )
+    
+    # Stealth Injection: Verstecke die Tatsache, dass es sich um Playwright handelt
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        window.navigator.chrome = { runtime: {} };
+    """)
+    
+    page = await context.new_page()
 
+    # Rekursiver JSON Crawler (Findet Matches egal wie tief sie verschachtelt sind)
+    def extract_matches_recursively(obj):
+        matches = []
+        if isinstance(obj, dict):
+            # Check ob es sich um ein Match-Objekt handelt ("Spieler A - Spieler B")
+            name_val = obj.get('name', '') or obj.get('eventName', '')
+            if isinstance(name_val, str) and ' - ' in name_val and ('id' in obj or 'w1' in obj or 'markets' in obj):
+                matches.append(obj)
+            # Ansonsten tiefer graben
+            for k, v in obj.items():
+                matches.extend(extract_matches_recursively(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                matches.extend(extract_matches_recursively(item))
+        return matches
+
+    # Der Network Sniffer Event-Listener
     async def handle_response(response):
-        # Wir suchen nach den spezifischen JSON-Calls des 1win Providers
-        if response.request.resource_type in ["fetch", "xhr"]:
-            if "top-parser" in response.url or "sports/get" in response.url or "line" in response.url:
+        if response.request.resource_type in ["fetch", "xhr", "websocket"]:
+            url = response.url
+            # Fokussiere auf 1win und deren API Provider
+            if "top-parser" in url or "sports" in url or "matches" in url or "1win" in url:
                 try:
-                    data = await response.json()
+                    if response.status != 200: return
+                    text = await response.text()
                     
-                    # Flexibles Parsing: Manchmal ist es dict, manchmal list
-                    matches_list = []
-                    if isinstance(data, list):
-                        matches_list = data
-                    elif isinstance(data, dict):
-                        matches_list = data.get('matches', data.get('data', data.get('result', [])))
-                        if isinstance(matches_list, dict) and 'matches' in matches_list:
-                            matches_list = matches_list['matches']
+                    if not text or "cloudflare" in text.lower() or "<html" in text.lower():
+                        return # Ist HTML oder Captcha, ignorieren
+                        
+                    if "{" in text and "}" in text:
+                        data = json.loads(text)
+                        found_items = extract_matches_recursively(data)
+                        
+                        for m in found_items:
+                            match_name = m.get('name', '') or m.get('eventName', '')
+                            if not match_name or ' - ' not in match_name: continue
+                            
+                            parts = match_name.split(' - ')
+                            p1 = parts[0].strip()
+                            p2 = parts[1].strip()
+                            
+                            tour_obj = m.get('tournament', {})
+                            tour_name = "Unknown"
+                            if isinstance(tour_obj, dict):
+                                tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
+                                
+                            start_time_ts = m.get('startAt', 0)
+                            start_time_str = "00:00"
+                            if start_time_ts > 0:
+                                start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
+                                
+                            # Quoten auslesen (Flach oder im "markets" Objekt)
+                            o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
+                            o2 = to_float(m.get('w2', m.get('team2', 0)), 0)
+                            
+                            hc_line = None; hc_o1 = 0; hc_o2 = 0
+                            ou_line = None; o_odds = 0; u_odds = 0
+                            
+                            markets = m.get('markets', m.get('odds', {}))
+                            if isinstance(markets, dict):
+                                moneyline = markets.get('moneyline', markets.get('1x2', {}))
+                                if isinstance(moneyline, dict):
+                                    if o1 == 0: o1 = to_float(moneyline.get('w1', moneyline.get('team1', 0)), 0)
+                                    if o2 == 0: o2 = to_float(moneyline.get('w2', moneyline.get('team2', 0)), 0)
+                                    
+                                handicap = markets.get('handicap', {})
+                                if isinstance(handicap, dict):
+                                    hc_line = to_float(handicap.get('line'), None)
+                                    hc_o1 = to_float(handicap.get('w1'), 0)
+                                    hc_o2 = to_float(handicap.get('w2'), 0)
+                                    
+                                totals = markets.get('totals', {})
+                                if isinstance(totals, dict):
+                                    ou_line = to_float(totals.get('line'), None)
+                                    o_odds = to_float(totals.get('over'), 0)
+                                    u_odds = to_float(totals.get('under'), 0)
+                                    
+                            parsed_1win_matches.append({
+                                "p1_raw": p1,
+                                "p2_raw": p2,
+                                "tour": clean_tournament_name(tour_name),
+                                "time": start_time_str,
+                                "odds1": o1,
+                                "odds2": o2,
+                                "handicap_line": hc_line,
+                                "handicap_odds1": hc_o1,
+                                "handicap_odds2": hc_o2,
+                                "over_under_line": ou_line,
+                                "over_odds": o_odds,
+                                "under_odds": u_odds,
+                                "actual_winner": None,
+                                "score": ""
+                            })
+                except Exception:
+                    pass
 
-                    if not isinstance(matches_list, list):
-                        return
-
-                    for m in matches_list:
-                        if not isinstance(m, dict): continue
-                        match_name = m.get('name', '')
-                        if ' - ' not in match_name: continue
-
-                        parts = match_name.split(' - ')
-                        if len(parts) < 2: continue
-                        p1 = parts[0].strip()
-                        p2 = parts[1].strip()
-
-                        tour_name = "Unknown"
-                        tour_obj = m.get('tournament', {})
-                        if isinstance(tour_obj, dict):
-                            tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
-
-                        start_time_ts = m.get('startAt', 0)
-                        start_time_str = "00:00"
-                        if start_time_ts > 0:
-                            start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
-
-                        # Quoten extrahieren
-                        odds_markets = m.get('markets', {})
-                        moneyline = odds_markets.get('moneyline', {})
-                        o1 = to_float(moneyline.get('w1', moneyline.get('team1', 0)), 0)
-                        o2 = to_float(moneyline.get('w2', moneyline.get('team2', 0)), 0)
-
-                        if o1 == 0 and o2 == 0:
-                            o1 = to_float(m.get('w1', 0), 0)
-                            o2 = to_float(m.get('w2', 0), 0)
-
-                        handicap = odds_markets.get('handicap', {})
-                        hc_line = to_float(handicap.get('line'), None)
-                        hc_o1 = to_float(handicap.get('w1'), 0)
-                        hc_o2 = to_float(handicap.get('w2'), 0)
-
-                        totals = odds_markets.get('totals', {})
-                        ou_line = to_float(totals.get('line'), None)
-                        o_odds = to_float(totals.get('over'), 0)
-                        u_odds = to_float(totals.get('under'), 0)
-
-                        parsed_1win_matches.append({
-                            "p1_raw": p1,
-                            "p2_raw": p2,
-                            "tour": clean_tournament_name(tour_name),
-                            "time": start_time_str,
-                            "odds1": o1,
-                            "odds2": o2,
-                            "handicap_line": hc_line,
-                            "handicap_odds1": hc_o1,
-                            "handicap_odds2": hc_o2,
-                            "over_under_line": ou_line,
-                            "over_odds": o_odds,
-                            "under_odds": u_odds,
-                            "actual_winner": None,
-                            "score": ""
-                        })
-                except Exception as e:
-                    pass # Silently drop non-JSON or weird payloads
-
-    # Hänge den Sniffer an die Seite
     page.on("response", handle_response)
 
     try:
-        log("🌍 Navigiere zu 1win Tennis, löse Security Tokens...")
-        # Lade die echte 1win Seite
-        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=45000)
+        log("🌍 Navigiere im Stealth-Modus zu 1win...")
+        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
         
-        log("⏳ Warte 10 Sekunden, bis 1win das JSON in den Browser lädt...")
-        await asyncio.sleep(10) 
-        
-        # Simuliere Scrollen, falls 1win Lazy-Loading nutzt
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(3)
+        page_title = await page.title()
+        if "Just a moment" in page_title or "Cloudflare" in page_title:
+            log("🛑 WARNUNG: Cloudflare Challenge aktiv! Interception könnte fehlschlagen.")
+            
+        log("⏳ Scrolle durch die Seite, um Lazy-Loading und API Calls zu triggern (10s)...")
+        for _ in range(5):
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(2)
+            
     except Exception as e:
-        log(f"⚠️ [1WIN TROJAN] Fehler beim Laden der Seite: {e}")
+        log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
     finally:
-        await page.close()
+        await context.close()
         
-    # Duplikate entfernen (manchmal schickt die SPA das gleiche JSON mehrfach)
+    # Deduplizieren
     unique_matches = []
     seen = set()
     for m in parsed_1win_matches:
@@ -635,8 +672,9 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             seen.add(key)
             unique_matches.append(m)
 
-    log(f"✅ [1WIN TROJAN] Erfolgreich {len(unique_matches)} Matches direkt vom 1win Backend abgefangen.")
+    log(f"✅ [1WIN GHOST] {len(unique_matches)} Matches rekursiv extrahiert.")
     return unique_matches
+
 
 # =================================================================
 # 7. DATA FETCHING & ORACLE
@@ -1133,7 +1171,7 @@ def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
     except: return default
 
 async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores via TE...")
+    log("🏆 The Auditor: Checking Real-Time Results & Scores (V95.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): return
     safe_to_check = list(pending)
@@ -1215,6 +1253,7 @@ async def update_past_results(browser: Browser):
                                     p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                                     p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
                                     
+                                    # Update Profile in DB (This keeps ratings live!)
                                     supabase.table('players').update({
                                         'surface_ratings': p_profile,
                                         'form_rating': p_form 
@@ -1229,6 +1268,9 @@ async def update_past_results(browser: Browser):
 # 10. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
 # =================================================================
 class QuantumGamesSimulator:
+    """
+    SOTA Monte Carlo Engine for Tennis Totals.
+    """
     
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
@@ -1328,23 +1370,23 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V98.0 (1WIN NETWORK INTERCEPTION) Starting...")
+    log(f"🚀 Neural Scout V98.1 (GHOST CRAWLER & 1:1 RESTORE) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 1. AUDITOR (TE Historie prüfen)
             await update_past_results(browser)
-            
-            # 2. CACHES & DB INIT
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
+            player_names = [p['last_name'] for p in players]
             
             # =================================================================
             # 🌍 GLOBAL PROFILER (V95 SCHEMA SYNC)
             # =================================================================
+            log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
+            
             def needs_surface_update(p_data):
                 sr = p_data.get('surface_ratings')
                 if not sr: return True
@@ -1352,29 +1394,35 @@ async def run_pipeline():
                     try: sr = json.loads(sr)
                     except: return True
                 if not isinstance(sr, dict) or len(sr) == 0: return True
+                
+                # Updatet jeden, der das NEUE Flag (V95) noch nicht hat!
                 if not sr.get('_v95_mastery_applied'): return True
                 return False
 
             players_to_update = [p for p in players if needs_surface_update(p)]
-            if players_to_update: log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
+            log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
             
             for p_data in players_to_update:
                 p_name = p_data['last_name']
                 p_hist = await fetch_player_history_extended(p_name, limit=80)
+                
                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                 p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                
                 try:
                     supabase.table('players').update({
                         'surface_ratings': p_profile,
                         'form_rating': p_form
                     }).eq('id', p_data['id']).execute()
-                except Exception as e: pass
+                except Exception as e:
+                    log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
+                
                 await asyncio.sleep(0.05) 
+                
+            log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
             # =================================================================
             
-            # --- THE 1WIN MASTER FEED CALL (TROJAN HORSE) ---
-            # Wir nutzen Playwright, um die XHR Calls von 1win abzufangen!
-            target_date = datetime.now() # Für Date-Referenz des Turniers
+            target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
             matches = await fetch_1win_markets_via_interception(browser)
@@ -1398,9 +1446,9 @@ async def run_pipeline():
                             if "united cup" not in m['tour'].lower(): continue 
                         
                         # --- V83.4: MARKET SANITY GATEKEEPER ---
-                        # Ignoriere Matches, in denen wir (noch) keine sauberen Quoten geparst haben
                         if m['odds1'] > 0 and m['odds2'] > 0:
                             if not validate_market_integrity(m['odds1'], m['odds2']):
+                                log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
                                 continue 
 
                         existing_match = None
@@ -1410,15 +1458,21 @@ async def run_pipeline():
                             res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                             if res2.data: existing_match = res2.data[0]
                         
-                        # --- VELOCITY CHECK ---
+                        # --- VELOCITY CHECK (Anti-Spike) ---
                         if existing_match and m['odds1'] > 0 and m['odds2'] > 0:
                             prev_o1 = to_float(existing_match.get('odds1'), 0)
                             prev_o2 = to_float(existing_match.get('odds2'), 0)
                             if is_suspicious_movement(prev_o1, m['odds1'], prev_o2, m['odds2']):
+                                log(f"   ⚠️ REJECTED SPIKE: {n1} ({prev_o1}->{m['odds1']}) vs {n2}")
                                 continue
 
                         db_match_id = None
-                        hist_fair1 = 0; hist_fair2 = 0; hist_is_value = False; hist_pick_player = None; hist_is_locked = False
+                        
+                        hist_fair1 = 0
+                        hist_fair2 = 0
+                        hist_is_value = False
+                        hist_pick_player = None
+                        hist_is_locked = False
                         
                         is_signal_locked = False
                         if existing_match:
@@ -1436,7 +1490,6 @@ async def run_pipeline():
                                 update_data["odds1"] = m['odds1']
                                 update_data["odds2"] = m['odds2']
                             
-                            # Update Deep Markets
                             if m.get('handicap_line') is not None:
                                 update_data['handicap_line'] = m['handicap_line']
                                 update_data['handicap_odds1'] = m['handicap_odds1']
@@ -1485,7 +1538,18 @@ async def run_pipeline():
                             p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
                             p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
 
-                            # Dummy HREFs for TE Stats, da wir sie nicht mehr haben
+                            try:
+                                supabase.table('players').update({
+                                    'surface_ratings': p1_surface_profile,
+                                    'form_rating': p1_form_v2
+                                }).eq('id', p1_obj['id']).execute()
+                                supabase.table('players').update({
+                                    'surface_ratings': p2_surface_profile,
+                                    'form_rating': p2_form_v2
+                                }).eq('id', p2_obj['id']).execute()
+                            except Exception as e:
+                                log(f"🚨 [TELEMETRY ERROR] Sync failed: {e}")
+
                             surf_rate1 = 0.5
                             surf_rate2 = 0.5
                             
@@ -1516,6 +1580,7 @@ async def run_pipeline():
                                 val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                                 
                                 value_tag = ""
+                                
                                 if val_p1["is_value"]: 
                                     value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                     is_value_active = True; value_pick_player = n1
@@ -1526,19 +1591,25 @@ async def run_pipeline():
                                 ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                                 ai_text_final = ai_text_base + value_tag
 
-                                hist_fair1 = fair1; hist_fair2 = fair2
-                                hist_is_value = is_value_active; hist_pick_player = value_pick_player
+                                hist_fair1 = fair1
+                                hist_fair2 = fair2
+                                hist_is_value = is_value_active
+                                hist_pick_player = value_pick_player
 
                             else:
                                 log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2}")
                                 
-                                f1_data = p1_form_v2; f2_data = p2_form_v2
+                                f1_data = p1_form_v2
+                                f2_data = p2_form_v2
+                                
                                 elo_key = 'Clay' if 'clay' in surf.lower() else ('Grass' if 'grass' in surf.lower() else 'Hard')
                                 e1 = ELO_CACHE.get("ATP", {}).get(n1.lower(), {}).get(elo_key, 1500)
                                 e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                                 
                                 sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
+                                
                                 ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, weather_data, p1_surface_profile, p2_surface_profile)
+                                
                                 prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                                 
                                 fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -1556,6 +1627,7 @@ async def run_pipeline():
                                     is_value_active = True; value_pick_player = n2
                                 
                                 games_tag = f" [🎲 SIM: {sim_result['predicted_line']} Games]"
+                                
                                 ai_text_base = ai.get('ai_text', '').replace("json", "").strip()
                                 ai_text_final = f"{ai_text_base} {value_tag} {games_tag}"
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
@@ -1568,12 +1640,11 @@ async def run_pipeline():
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                                 }
-                                
+
                                 if m['odds1'] > 0:
                                     data["odds1"] = m['odds1']
                                     data["odds2"] = m['odds2']
                                 
-                                # Deep Markets
                                 if m.get('handicap_line') is not None:
                                     data['handicap_line'] = m['handicap_line']
                                     data['handicap_odds1'] = m['handicap_odds1']
@@ -1583,8 +1654,10 @@ async def run_pipeline():
                                     data['over_odds'] = m['over_odds']
                                     data['under_odds'] = m['under_odds']
                                 
-                                hist_fair1 = fair1; hist_fair2 = fair2
-                                hist_is_value = is_value_active; hist_pick_player = value_pick_player
+                                hist_fair1 = fair1
+                                hist_fair2 = fair2
+                                hist_is_value = is_value_active
+                                hist_pick_player = value_pick_player
                                 
                                 final_match_id = None
                                 if db_match_id:
@@ -1603,6 +1676,7 @@ async def run_pipeline():
 
                         if db_match_id and m['odds1'] > 0:
                             should_log_history = False
+                            
                             if not existing_match: should_log_history = True
                             elif hist_is_locked: should_log_history = True
                             elif hist_is_value: should_log_history = True
@@ -1614,6 +1688,7 @@ async def run_pipeline():
                             
                             if should_log_history:
                                 pick_name = "LOCKED" if hist_is_locked else hist_pick_player
+                                
                                 h_data = {
                                     "match_id": db_match_id, 
                                     "odds1": m['odds1'], 
@@ -1624,11 +1699,19 @@ async def run_pipeline():
                                     "pick_player_name": pick_name,
                                     "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                 }
-                                try: supabase.table("odds_history").insert(h_data).execute()
-                                except: pass
+                                
+                                try:
+                                    supabase.table("odds_history").insert(h_data).execute()
+                                except Exception as db_err:
+                                    log(f"⚠️ History Insert Error: {db_err}")
 
                 except Exception as e: log(f"⚠️ Match Error: {e}")
         finally: await browser.close()
+    
+    log("🏁 Cycle Finished.")
+
+if __name__ == "__main__":
+    asyncio.run(run_pipeline())
     
     log("🏁 Cycle Finished.")
 
