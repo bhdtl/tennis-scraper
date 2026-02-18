@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V99.5 - SINGLES ONLY & DEEP ODDS EXTRACTOR)...")
+log("🔌 Initialisiere Neural Scout (V100.0 - TITANIUM EDITION: OOM-SAFE & SINGLES ONLY)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,7 +44,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
+# SOTA Model Selection
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -518,30 +518,37 @@ call_gemini = call_groq
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
     """
-    V99.5 Deep Extractor: Durchsucht rekursiv den kompletten JSON-Baum,
-    egal wie tief 1win die Quoten (cf, odd, k, w1, price) versteckt.
+    V100.0 BRUTE-FORCE EXTRACTOR: Durchsucht rekursiv ALLES. 
+    1win versteckt Quoten überall. Diese Funktion gräbt sie aus dem tiefsten JSON-Keller.
     """
     o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
     o2 = to_float(m.get('w2', m.get('team2', 0)), 0)
     if o1 > 0 and o2 > 0: return o1, o2
     
+    for k_pair in [('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2'), ('v1', 'v2')]:
+        if to_float(m.get(k_pair[0])) > 0 and to_float(m.get(k_pair[1])) > 0:
+            return to_float(m.get(k_pair[0])), to_float(m.get(k_pair[1]))
+
     def deep_search(obj):
         nonlocal o1, o2
         if isinstance(obj, dict):
-            c1 = to_float(obj.get('w1', obj.get('team1', obj.get('v1', 0))))
-            c2 = to_float(obj.get('w2', obj.get('team2', obj.get('v2', 0))))
-            if c1 > 0 and c2 > 0:
-                o1, o2 = c1, c2
-                return True
+            for k_pair in [('w1', 'w2'), ('team1', 'team2'), ('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2')]:
+                c1 = to_float(obj.get(k_pair[0]))
+                c2 = to_float(obj.get(k_pair[1]))
+                if c1 > 1.0 and c2 > 1.0:
+                    o1, o2 = c1, c2
+                    return True
             
             for k, v in obj.items():
-                if k in ['outcomes', 'bets', 'markets', 'prices'] and isinstance(v, list) and len(v) >= 2:
+                if isinstance(v, list) and len(v) >= 2:
                     try:
-                        cand1 = to_float(v[0].get('cf', v[0].get('odd', v[0].get('k', v[0].get('price', 0)))))
-                        cand2 = to_float(v[1].get('cf', v[1].get('odd', v[1].get('k', v[1].get('price', 0)))))
-                        if cand1 > 0 and cand2 > 0:
-                            o1, o2 = cand1, cand2
-                            return True
+                        if isinstance(v[0], dict) and isinstance(v[1], dict):
+                            for odds_key in ['cf', 'odd', 'k', 'price', 'coefficient', 'value', 'v']:
+                                cand1 = to_float(v[0].get(odds_key))
+                                cand2 = to_float(v[1].get(odds_key))
+                                if cand1 > 1.0 and cand2 > 1.0:
+                                    o1, o2 = cand1, cand2
+                                    return True
                     except: pass
                 if deep_search(v): return True
         elif isinstance(obj, list):
@@ -553,7 +560,7 @@ def find_best_odds(m: Dict) -> tuple[float, float]:
     return o1, o2
 
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (Week-Coverage Mode)...")
+    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V100.0 Memory-Safe Mode)...")
     parsed_1win_matches = []
     
     context = await browser.new_context(
@@ -568,6 +575,9 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """)
     
     page = await context.new_page()
+
+    # V100.0 MEMORY LEAK FIX: Blockiert Bilder, Videos und Fonts. Verhindert Canceled/OOM Errors!
+    await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] else route.continue_())
 
     def extract_matches_recursively(obj):
         matches = []
@@ -600,10 +610,11 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             match_name = m.get('name', '') or m.get('eventName', '')
                             if not match_name or ' - ' not in match_name: continue
                             
-                            # V99.5 FIX: FILTER OUT DOUBLES MATCHES (Strict Singles Only)
-                            if '/' in match_name or ' / ' in match_name or '+' in match_name or '&' in match_name: continue
+                            # V100.0 STRICT FILTER: Nur Singles! Wenn ein /, & oder + im Namen ist = Drop.
+                            if '/' in match_name or '&' in match_name or '+' in match_name or ' / ' in match_name: continue
                             
                             parts = match_name.split(' - ')
+                            if len(parts) < 2: continue
                             p1 = parts[0].strip()
                             p2 = parts[1].strip()
                             
@@ -614,15 +625,15 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             elif isinstance(tour_obj, str):
                                 tour_name = tour_obj
                                 
-                            # V99.5 FIX: FILTER OUT DOUBLES IN TOURNAMENT NAME
-                            if "doubles" in tour_name.lower() or "doppel" in tour_name.lower(): continue
+                            # V100.0 STRICT FILTER: Keine Doubles Turniere
+                            if "doubles" in str(tour_name).lower() or "doppel" in str(tour_name).lower(): continue
                                 
                             start_time_ts = m.get('startAt', 0)
                             start_time_str = "00:00"
                             if start_time_ts > 0:
                                 start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
                                 
-                            # V99.5 Deep Odds Extraction
+                            # V100.0 Brute-Force Odds Extraction
                             o1, o2 = find_best_odds(m)
                             
                             hc_line = None; hc_o1 = 0; hc_o2 = 0
@@ -651,16 +662,21 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
-        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
+        # V100.0 FIX: domcontentloaded anstatt networkidle verhindert endlose Ladezeiten durch Ads/Websockets.
+        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="domcontentloaded", timeout=60000)
         
         page_title = await page.title()
         if "Just a moment" in page_title or "Cloudflare" in page_title:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Interception könnte fehlschlagen.")
             
-        log("⏳ Scrolle tief durch die Seite für Week-Coverage (25x Scrolling)...")
-        for _ in range(25):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(1.5)
+        log("⏳ Scrolle durch die Seite für Week-Coverage (12x Safe-Scroll)...")
+        # 12 Scrolls reichen für 2-3 Tage, was das RAM-Limit absolut schützt und Canceled-Errors verhindert.
+        for _ in range(12):
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(1.2)
+            except Exception as scroll_e:
+                break
             
     except Exception as e:
         log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
@@ -1065,7 +1081,6 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
     return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
-    # V99.5 FIX: Gibt den exakten Match-Namen aus deiner DB zurück
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
@@ -1374,7 +1389,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V99.5 (SINGLES ONLY & DEEP ODDS EXTRACTOR) Starting...")
+    log(f"🚀 Neural Scout V100.0 (TITANIUM EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1432,7 +1447,7 @@ async def run_pipeline():
                 log("❌ Keine Matches vom 1win Feed erhalten. Beende Zyklus.")
                 return
                 
-            log(f"🔍 Starte Oracle Enrichment für die gefundenen 1win Matches...")
+            log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
             
             db_matched_count = 0
             skipped_db_count = 0
@@ -1441,24 +1456,26 @@ async def run_pipeline():
                 try:
                     await asyncio.sleep(0.5) 
                     
-                    # V99.5: Pipeline Step 1 - Sind BEIDE Spieler in der DB?
+                    # Step 1 - Sind BEIDE Spieler in der DB?
                     p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                     p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                     
                     if not p1_obj or not p2_obj:
                         skipped_db_count += 1
-                        continue # Silent Drop - Wir loggen hier nicht, sonst spamt es!
+                        continue # Silent Drop
                         
-                    db_matched_count += 1
                     n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                     
                     if n1 == n2: continue
                     if p1_obj.get('tour') != p2_obj.get('tour'):
                         if "united cup" not in m['tour'].lower(): continue 
                         
-                    # V99.5: Pipeline Step 2 - Check Odds (Nur noch für relevante DB Matches)
+                    db_matched_count += 1
+                        
+                    # Step 2 - Odds Validierung
                     if m['odds1'] <= 0 or m['odds2'] <= 0:
-                        log(f"   ⏭️ Drop: Keine Quoten im JSON gefunden für {n1} vs {n2} (Struktur geändert?)")
+                        log(f"   ⏭️ Drop: Keine Quoten gefunden für {n1} vs {n2}.")
+                        log(f"   🚨 DEBUG 1WIN PAYLOAD: {m.get('_debug_payload', 'Kein Payload')}")
                         continue
                     
                     # --- V83.4: MARKET SANITY GATEKEEPER ---
@@ -1529,7 +1546,6 @@ async def run_pipeline():
                         
                         c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                         
-                        # V99.5: Unpacking the pure DB tournament name
                         surf, bsi, notes, city_for_weather, matched_tour_name = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
                         weather_data = await fetch_weather_data(city_for_weather)
 
