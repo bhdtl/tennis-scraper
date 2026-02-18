@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V96.2 - CLOUDFLARE STEALTH & X-RAY DUMPER)...")
+log("🔌 Initialisiere Neural Scout (V97.0 - WIRETAP PROTOCOL & LLM PARSER)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -499,15 +499,15 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a tennis analyst. Return ONLY valid JSON."},
+            {"role": "system", "content": "You are a highly capable data extraction AI. Return ONLY valid JSON."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
+        "temperature": 0.0,
         "response_format": {"type": "json_object"}
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            response = await client.post(url, headers=headers, json=payload, timeout=45.0)
             if response.status_code != 200: return None
             return response.json()['choices'][0]['message']['content']
         except: return None
@@ -518,7 +518,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
     url = f"https://de.tennistemple.com/matches/{date_str}"
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    context = await browser.new_context()
     page = await context.new_page()
     metadata = {}
     try:
@@ -644,7 +644,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
     if not relative_url.startswith("/"): relative_url = f"/{relative_url}"
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    context = await browser.new_context()
     page = await context.new_page()
     try:
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
@@ -684,7 +684,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    context = await browser.new_context()
     for tour, url in urls.items():
         page = await context.new_page()
         try:
@@ -842,7 +842,7 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
     url = "https://www.unitedcup.com/en/scores/group-standings"
-    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    context = await browser.new_context()
     page = await context.new_page()
     try:
         await page.goto(url, timeout=20000, wait_until="networkidle")
@@ -1005,17 +1005,75 @@ def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
     except: return default
 
 # =================================================================
-# 9.5 SOTA 1WIN SPA SCRAPER (V96.2 - CLOUDFLARE BYPASS & REGEX ANCHOR)
+# 9.5 THE WIRETAP (API INTERCEPTION & LLM PARSER)
 # =================================================================
+async def extract_matches_via_groq(raw_json_str: str) -> List[Dict]:
+    """Übergibt das abgefangene JSON an Groq, um die komplexe Struktur zu knacken."""
+    log("🧠 [LLM PARSER] Übergebe rohen API-Traffic an KI zur Datenextraktion...")
+    
+    # Kürzen, falls das JSON gigantisch ist (Groq Kontextfenster schützen)
+    safe_json = raw_json_str[:30000]
+    
+    prompt = f"""
+    ROLE: You are an expert data extraction bot for sports betting APIs.
+    TASK: I have intercepted a raw background API payload from '1win'. Extract all TENNIS matches from it.
+    
+    CRITICAL INSTRUCTIONS:
+    - Look for matches with Player 1 and Player 2.
+    - Extract Moneyline odds (Winner).
+    - Extract the main Handicap line and odds if present.
+    - Extract the main Total Games (Over/Under) line and odds if present.
+    - If a specific deep market is missing for a match, set its value to 0.0.
+    
+    OUTPUT FORMAT: You MUST return a JSON object with a key 'matches' containing an array of objects.
+    Example Object in Array:
+    {{
+        "p1_raw": "Player 1 Name",
+        "p2_raw": "Player 2 Name",
+        "tour": "Tournament Name or 1win",
+        "odds1": 1.50,
+        "odds2": 2.50,
+        "handicap_line": -1.5,
+        "handicap_odds1": 1.85,
+        "total_games_line": 22.5,
+        "total_over_odds": 1.90,
+        "total_under_odds": 1.90
+    }}
+    
+    RAW PAYLOAD TO ANALYZE:
+    {safe_json}
+    """
+    
+    res = await call_groq(prompt)
+    if not res: return []
+    
+    try:
+        cleaned = res.replace("json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+        if "matches" in parsed and isinstance(parsed["matches"], list):
+            valid_matches = []
+            for m in parsed["matches"]:
+                # Normalisierung der Rückgabe
+                m['time'] = "00:00"
+                m['p1_href'] = "1win_dummy"
+                m['p2_href'] = "1win_dummy"
+                m['actual_winner'] = None
+                m['score'] = ""
+                if float(m.get('odds1', 0)) > 1.0 and float(m.get('odds2', 0)) > 1.0:
+                    valid_matches.append(m)
+            return valid_matches
+        return []
+    except Exception as e:
+        log(f"⚠️ LLM Parsing Error: {e}")
+        return []
+
 async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     """
-    V96.2: Implementiert Anti-Bot Argumente, User-Agents und sucht im DOM
-    rein nach "+XX" Buttons (regex), um komplett sprachunabhängig zu sein,
-    da GH Actions manchmal englische Seiten (statt "Sieger") laden.
+    V97.0: Das Wiretap-Protokoll. Nutzt Network Interception und injiziert 
+    SOTA Stealth Scripts, um Cloudflare zu umgehen.
     """
-    log("🌐 [1WIN AGENT] Starte SOTA SPA Scraper für 1win.io (Stealth Mode)...")
+    log("🌐 [1WIN AGENT] Aktiviere Stealth Mode & Network Interceptor...")
     
-    # 1. Stealth Context Injection
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         viewport={"width": 1920, "height": 1080},
@@ -1026,126 +1084,149 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
         }
     )
     
+    # 1. Stealth Injection (Umgeht Headless-Erkennung für CF Turnstile)
+    await context.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        window.navigator.chrome = { runtime: {} };
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+    """)
+    
     page = await context.new_page()
+    
+    # Blockiere Medien, ABER ERLAUBE SCRIPTS UND FETCH/XHR
+    await page.route("**/*", lambda route: route.continue_() if route.request.resource_type not in ["image", "media", "font"] else route.abort())
+    
+    intercepted_payloads = []
+
+    # 2. Der Wiretap (Event Listener für XHR/Fetch)
+    async def capture_api(response):
+        try:
+            if response.request.resource_type in ["xhr", "fetch"] and response.status == 200:
+                url = response.url
+                # Filtere GTM, Tracking und Logs heraus
+                if "tracker" not in url and "google" not in url and "amplitude" not in url:
+                    # Versuche den Body zu lesen
+                    body = await response.text()
+                    # Indikatoren für Betting-Payloads
+                    if "Tennis" in body or "tennis" in body or "match" in body:
+                        if "odds" in body.lower() or "S1" in body or "W1" in body:
+                            log(f"📡 [WIRETAP] Payload an {url} abgefangen! (Größe: {len(body)})")
+                            intercepted_payloads.append(body)
+        except Exception:
+            pass
+
+    page.on("response", capture_api)
+    
     found_matches = []
     
-    # Bilder/Medien blockieren für Speed (aber KEINE Skripte!)
-    await page.route("**/*", lambda route: route.continue_() if route.request.resource_type not in ["image", "font", "media"] else route.abort())
-    
     try:
-        url = "https://1win.io/betting/prematch/tennis-33"
+        url = "[https://1win.io/betting/prematch/tennis-33](https://1win.io/betting/prematch/tennis-33)"
+        log("🌐 [1WIN AGENT] Betrete 1win.io und starte Daten-Schnüffler...")
         
-        # 2. Wait until networkidle - the true test of SPA hydration
-        log("🌐 [1WIN AGENT] Lade Seite und warte auf Network-Idle (Cloudflare/Vue-Hydration)...")
-        await page.goto(url, wait_until="networkidle", timeout=45000)
+        # Gehe zur Seite und erlaube Zeit für Cloudflare-Checks und SPA-Hydration
+        await page.goto(url, wait_until="networkidle", timeout=30000)
         
-        # 3. Der sprachunabhängige SOTA Anchor
-        # Wir suchen nach Buttons, die EXAKT z.B. "+99", "+14" etc. enthalten.
-        # Das ist das universellste Merkmal für Match-Reihen auf 1win.
-        button_regex = re.compile(r"^\+\d+$")
+        # Triggere Scrolling, um das Lazy-Loading der Vue-App für Matches zu erzwingen
+        await page.evaluate("window.scrollBy(0, 1000)")
+        await page.wait_for_timeout(2000)
+        await page.evaluate("window.scrollBy(0, 1000)")
+        await page.wait_for_timeout(3000)
         
-        try:
-            # Warten, bis mindestens ein solcher Button auftaucht
-            await page.wait_for_selector("text=/(^\\+\\d+$)/", timeout=20000)
-            await page.wait_for_timeout(2000) # DOM Stabilization
-            log("🌐 [1WIN AGENT] UI erfolgreich gerendert (Cloudflare passiert!).")
-        except PlaywrightTimeoutError:
-            html_dump = await page.content()
-            log(f"🚨 [X-RAY DUMPER] SPA Timeout! DOM-Auszug (erste 800 Zeichen):\n{html_dump[:800]}\n...")
-            if "challenge-platform" in html_dump or "Just a moment" in html_dump:
-                log("🚨 CRITICAL: Wir hängen in der Cloudflare Turnstile Loop fest! Scraper blockiert.")
+        log(f"🌐 [1WIN AGENT] Page-Load abgeschlossen. Payloads im Speicher: {len(intercepted_payloads)}")
+        
+        # 3. LLM Processing der abgefangenen Daten
+        if intercepted_payloads:
+            # Nimm den größten Payload (enthält meistens alle Match-Daten)
+            best_payload = max(intercepted_payloads, key=len)
+            log("🧠 Sende größten JSON-Payload an den LLM-Parser...")
+            found_matches = await extract_matches_via_groq(best_payload)
+            
+            if found_matches:
+                log(f"✅ [WIRETAP ERFOLG] Die KI hat {len(found_matches)} Matches direkt aus der API extrahiert!")
+                return found_matches
             else:
-                log("🚨 SPA hat keine +XX Buttons gerendert. Vlt keine Matches verfügbar?")
-            return []
+                log("⚠️ KI konnte keine verwertbaren Matches im Payload finden.")
+        else:
+            log("⚠️ Wiretap hat keine passenden Payloads gefangen. Cloudflare hat die API vermutlich blockiert.")
 
-        # Hole alle +XX Buttons
-        deep_market_buttons = await page.get_by_text(button_regex).all()
-        log(f"🔍 [1WIN AGENT] {len(deep_market_buttons)} Match-Buttons gefunden. Starte Extraktion...")
-        
-        for idx, btn in enumerate(deep_market_buttons):
-             try:
-                 # Gehe 3 DOM-Level hoch, um die Match-Card zu fassen
-                 container = btn.locator("..").locator("..").locator("..")
-                 text_content = await container.inner_text()
-                 
-                 lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                 if len(lines) < 4: continue
-                 
-                 p1_raw = lines[1]
-                 p2_raw = lines[2]
-                 
-                 odds_text = " ".join(lines)
-                 # Manchmal heißen sie "W1" in EN oder "S1" in DE, wir fangen beides ab
-                 s1_match = re.search(r'(S1|W1)\s*(\d+\.\d+)', odds_text)
-                 s2_match = re.search(r'(S2|W2)\s*(\d+\.\d+)', odds_text)
-                 
-                 o1 = float(s1_match.group(2)) if s1_match else 0.0
-                 o2 = float(s2_match.group(2)) if s2_match else 0.0
-                 
-                 log(f"🕵️ [{idx+1}/{len(deep_market_buttons)}] Extrahiere: {p1_raw} vs {p2_raw} (ML: {o1} | {o2})")
-                 if o1 == 0.0 or o2 == 0.0: continue
-                 
-                 # Klicke auf den +XX Button für Deep Markets
-                 await btn.click()
-                 
-                 # Warte auf das Overlay/Modal. "Handicap" ist oft auf EN/DE gleich, oder wir warten einfach 2 sek
-                 await page.wait_for_timeout(3000) 
-                 
-                 handicap_line = 0.0; handicap_o1 = 0.0; handicap_o2 = 0.0
-                 total_line = 0.0; total_over = 0.0; total_under = 0.0
-                 
-                 # Deep Market Extract (Versuche DE und EN Terms)
-                 full_modal_text = await page.inner_text("body")
-                 
-                 # Heuristik: "Adam Walton -1.5  3.67"
-                 hc_match = re.search(r'(-?\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
-                 if hc_match:
-                     handicap_line = float(hc_match.group(1))
-                     handicap_o1 = float(hc_match.group(2))
+        # ==================================================
+        # FALLBACK: Regex-DOM Scanning (Falls Wiretap versagt)
+        # ==================================================
+        log("🔄 [FALLBACK] Versuche DOM-Extraktion...")
+        button_regex = re.compile(r"^\+\d+$")
+        try:
+            await page.wait_for_selector("text=/(^\\+\\d+$)/", timeout=15000)
+            deep_market_buttons = await page.get_by_text(button_regex).all()
+            log(f"🔍 [FALLBACK] {len(deep_market_buttons)} Match-Buttons im DOM gefunden.")
+            
+            for idx, btn in enumerate(deep_market_buttons):
+                 try:
+                     container = btn.locator("..").locator("..").locator("..")
+                     text_content = await container.inner_text()
+                     lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                     if len(lines) < 4: continue
                      
-                 # Heuristik: "Unter/Under 22.5  1.91  Über/Over 22.5  1.87"
-                 over_match = re.search(r'(?:Über|Over) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
-                 under_match = re.search(r'(?:Unter|Under) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
-                 
-                 if over_match and under_match:
-                     total_line = float(over_match.group(1))
-                     total_over = float(over_match.group(2))
-                     total_under = float(under_match.group(2))
-                 
-                 log(f"   ✅ Daten erfasst. HC: {handicap_line} (@{handicap_o1}), Total: {total_line} (O:{total_over}/U:{total_under})")
-                 
-                 # Zurückgehen (Sicherster Weg bei SPAs ohne expliziten Back-Button)
-                 await page.go_back()
-                 await page.wait_for_timeout(2000)
-                 
-                 found_matches.append({
-                    "p1_raw": p1_raw, "p2_raw": p2_raw, 
-                    "tour": "1win Tournament",
-                    "time": "00:00", 
-                    "odds1": o1, "odds2": o2,
-                    "p1_href": "1win_dummy", "p2_href": "1win_dummy",
-                    "actual_winner": None,
-                    "score": "",
-                    "handicap_line": handicap_line,
-                    "handicap_odds1": handicap_o1,
-                    "total_games_line": total_line,
-                    "total_over_odds": total_over,
-                    "total_under_odds": total_under
-                 })
-                 
-             except PlaywrightTimeoutError:
-                 log(f"   ❌ Timeout im Modal. Gehe zurück...")
-                 await page.go_back()
-                 await page.wait_for_timeout(2000)
-             except Exception as ex:
-                 log(f"   ❌ Fehler bei Match {idx+1}: {ex}")
+                     p1_raw = lines[1]; p2_raw = lines[2]
+                     odds_text = " ".join(lines)
+                     s1_match = re.search(r'(S1|W1)\s*(\d+\.\d+)', odds_text)
+                     s2_match = re.search(r'(S2|W2)\s*(\d+\.\d+)', odds_text)
                      
+                     o1 = float(s1_match.group(2)) if s1_match else 0.0
+                     o2 = float(s2_match.group(2)) if s2_match else 0.0
+                     
+                     if o1 == 0.0 or o2 == 0.0: continue
+                     
+                     await btn.click()
+                     await page.wait_for_timeout(3000) 
+                     
+                     handicap_line = 0.0; handicap_o1 = 0.0; handicap_o2 = 0.0
+                     total_line = 0.0; total_over = 0.0; total_under = 0.0
+                     
+                     full_modal_text = await page.inner_text("body")
+                     
+                     hc_match = re.search(r'(-?\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                     if hc_match:
+                         handicap_line = float(hc_match.group(1)); handicap_o1 = float(hc_match.group(2))
+                         
+                     over_match = re.search(r'(?:Über|Over) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                     under_match = re.search(r'(?:Unter|Under) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                     
+                     if over_match and under_match:
+                         total_line = float(over_match.group(1))
+                         total_over = float(over_match.group(2))
+                         total_under = float(under_match.group(2))
+                     
+                     await page.go_back()
+                     await page.wait_for_timeout(1500)
+                     
+                     found_matches.append({
+                        "p1_raw": p1_raw, "p2_raw": p2_raw, 
+                        "tour": "1win Tournament", "time": "00:00", 
+                        "odds1": o1, "odds2": o2,
+                        "p1_href": "1win_dummy", "p2_href": "1win_dummy",
+                        "actual_winner": None, "score": "",
+                        "handicap_line": handicap_line, "handicap_odds1": handicap_o1,
+                        "total_games_line": total_line, "total_over_odds": total_over, "total_under_odds": total_under
+                     })
+                 except Exception:
+                     await page.go_back()
+                     await page.wait_for_timeout(1500)
+                     
+        except PlaywrightTimeoutError:
+            log("🚨 [FALLBACK] DOM Timeout. Keine Daten geladen.")
+            
     except Exception as e: 
         log(f"🚨 [1WIN AGENT FATAL]: {e}")
     finally: 
         await context.close()
         
-    log(f"🏁 [1WIN AGENT] Abgeschlossen. {len(found_matches)} 1win-Matches ins System geladen.")
     return found_matches
 
 # =================================================================
@@ -1159,10 +1240,10 @@ async def update_past_results(browser: Browser):
 
     for day_off in range(0, 3): 
         t_date = datetime.now() - timedelta(days=day_off)
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        context = await browser.new_context()
         page = await context.new_page()
         try:
-            url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            url = f"[https://www.tennisexplorer.com/results/?type=all&year=](https://www.tennisexplorer.com/results/?type=all&year=){t_date.year}&month={t_date.month}&day={t_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             soup = BeautifulSoup(await page.content(), 'html.parser')
             table = soup.find('table', class_='result')
@@ -1228,7 +1309,6 @@ async def update_past_results(browser: Browser):
                                     "score": score_cleaned
                                 }).eq("id", pm['id']).execute()
                                 
-                                # RE-PROFILING HOOK (FOR REAL-TIME SYNC)
                                 log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
                                 for p_name in [pm['player1_name'], pm['player2_name']]:
                                     p_hist = await fetch_player_history_extended(p_name, limit=80)
@@ -1340,19 +1420,17 @@ class QuantumGamesSimulator:
             }
         }
 
-# --- SMART FREEZE HELPER ---
 def is_valid_opening_odd(o1: float, o2: float) -> bool:
     if o1 < 1.06 and o2 < 1.06: return False 
     if o1 <= 1.01 or o2 <= 1.01: return False 
     return True
 
 # =================================================================
-# 12. PIPELINE RUNNER (1WIN & ORACLE SYNC)
+# 12. PIPELINE RUNNER
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V96.2 Starting...")
+    log(f"🚀 Neural Scout V97.0 (WIRETAP PROTOCOL) Starting...")
     async with async_playwright() as p:
-        # STEALTH ARGUMENTS: disable-blink-features ist entscheidend gegen Cloudflare!
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -1364,7 +1442,6 @@ async def run_pipeline():
             ]
         )
         try:
-            # Oracle & Results
             await update_past_results(browser)
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
@@ -1372,7 +1449,6 @@ async def run_pipeline():
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
-            # 1WIN SCRAPING START
             matches = await scrape_1win_markets_sota(browser)
             log(f"🔍 [MAIN PIPELINE] Verarbeite {len(matches)} 1win Matches...")
             
@@ -1388,9 +1464,8 @@ async def run_pipeline():
                         n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                         if n1 == n2: continue
                         if p1_obj.get('tour') != p2_obj.get('tour'):
-                            if "united cup" not in m['tour'].lower(): continue 
+                            if "united cup" not in m.get('tour', '').lower(): continue 
                         
-                        # --- MARKET SANITY GATEKEEPER ---
                         if not validate_market_integrity(m['odds1'], m['odds2']):
                             continue 
 
@@ -1401,7 +1476,6 @@ async def run_pipeline():
                             res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                             if res2.data: existing_match = res2.data[0]
                         
-                        # --- VELOCITY CHECK (Anti-Spike) ---
                         if existing_match:
                             prev_o1 = to_float(existing_match.get('odds1'), 0)
                             prev_o2 = to_float(existing_match.get('odds2'), 0)
@@ -1429,8 +1503,7 @@ async def run_pipeline():
                         if is_signal_locked:
                             update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
                             
-                            # Deep Market Update if available
-                            if m.get('handicap_line') != 0.0:
+                            if m.get('handicap_line') and m.get('handicap_line') != 0.0:
                                 update_data['handicap_line'] = m['handicap_line']
                                 update_data['handicap_odds1'] = m['handicap_odds1']
                                 update_data['total_games_line'] = m['total_games_line']
@@ -1454,7 +1527,7 @@ async def run_pipeline():
                             
                             c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                             
-                            surf, bsi, notes, city_for_weather = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
+                            surf, bsi, notes, city_for_weather = await find_best_court_match_smart(m.get('tour', ''), all_tournaments, n1, n2, c1, c2, match_date=target_date)
                             weather_data = await fetch_weather_data(city_for_weather)
 
                             s1 = all_skills.get(p1_obj['id'], {}); s2 = all_skills.get(p2_obj['id'], {})
@@ -1473,8 +1546,8 @@ async def run_pipeline():
                             p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
                             p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
 
-                            surf_rate1 = await fetch_tennisexplorer_stats(browser, m['p1_href'], surf)
-                            surf_rate2 = await fetch_tennisexplorer_stats(browser, m['p2_href'], surf)
+                            surf_rate1 = await fetch_tennisexplorer_stats(browser, m.get('p1_href', ''), surf)
+                            surf_rate2 = await fetch_tennisexplorer_stats(browser, m.get('p2_href', ''), surf)
                             
                             is_value_active = False; value_pick_player = None
                             
@@ -1546,17 +1619,16 @@ async def run_pipeline():
                                 if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                             
                                 data = {
-                                    "player1_name": n1, "player2_name": n2, "tournament": m['tour'],
+                                    "player1_name": n1, "player2_name": n2, "tournament": m.get('tour', 'Unknown'),
                                     "odds1": m['odds1'], "odds2": m['odds2'], 
                                     "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                     "ai_analysis_text": ai_text_final,
                                     "games_prediction": sim_result, 
                                     "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                    "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                                    "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m.get('time', '00:00')}:00Z"
                                 }
                                 
-                                # Inject Deep Markets
-                                if m.get('handicap_line') != 0.0:
+                                if m.get('handicap_line') and m.get('handicap_line') != 0.0:
                                     data['handicap_line'] = m['handicap_line']
                                     data['handicap_odds1'] = m['handicap_odds1']
                                     data['total_games_line'] = m['total_games_line']
