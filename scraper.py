@@ -1124,7 +1124,7 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     
     try:
         # HIER IST DER FIX: Ein sauberer, unformatierter Raw-String
-        url = "[https://1win.io/betting/prematch/tennis-33](https://1win.io/betting/prematch/tennis-33)"
+        url = "https://1win.io/betting/prematch/tennis-33"
         log("🌐 [1WIN AGENT] Betrete 1win.io und starte Daten-Schnüffler...")
         
         await page.goto(url, wait_until="networkidle", timeout=30000)
