@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V99.0 - DEEP GHOST CRAWLER & ZERO-LOSS PIPELINE)...")
+log("🔌 Initialisiere Neural Scout (V99.5 - SINGLES ONLY & DEEP ODDS EXTRACTOR)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -65,7 +65,7 @@ COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 # =================================================================
 # 2. HELPER FUNCTIONS
 # =================================================================
-def to_float(val: Any, default: float = 50.0) -> float:
+def to_float(val: Any, default: float = 0.0) -> float:
     if val is None: return default
     try: return float(val)
     except: return default
@@ -159,7 +159,7 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_tokens -= stop_words; d_tokens -= stop_words
     if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
-    score = len(common) * 15 # V99.0: Multiplikator erhöht für präziseres Turnier-Matching
+    score = len(common) * 15
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
@@ -374,7 +374,6 @@ class SurfaceIntelligence:
     @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
         profile = {}
-        log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
         surfaces_data = {
             "hard": SurfaceIntelligence.get_matches_by_surface(matches, "hard"),
@@ -392,7 +391,6 @@ class SurfaceIntelligence:
                     "matches_tracked": 0,
                     "text": "No Experience"
                 }
-                log(f"   -> {surf.upper()}: 0 Matches (Base 3.5 applied)")
                 continue
                 
             wins = 0
@@ -402,13 +400,9 @@ class SurfaceIntelligence:
                     wins += 1
             win_rate = wins / n_surf
             
-            # 1. Volume Score (30%) - Caps at 30 Matches
             vol_score = min(1.0, n_surf / 30.0) * 1.95
-            
-            # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
             win_score = win_rate * 4.55
             
-            # FINAL CALCULATION
             final_rating = 3.5 + vol_score + win_score
             final_rating = max(1.0, min(10.0, final_rating))
             
@@ -433,8 +427,6 @@ class SurfaceIntelligence:
                 "matches_tracked": n_surf,
                 "text": desc
             }
-            
-            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
             
         profile['_v95_mastery_applied'] = True
         return profile
@@ -526,38 +518,38 @@ call_gemini = call_groq
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
     """
-    V99.0 Deep Extractor: 1win versteckt Quoten extrem tief in Arrays (outcomes/bets).
-    Dieser Rekursions-Bypass liest garantiert jede Quote aus.
+    V99.5 Deep Extractor: Durchsucht rekursiv den kompletten JSON-Baum,
+    egal wie tief 1win die Quoten (cf, odd, k, w1, price) versteckt.
     """
     o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
     o2 = to_float(m.get('w2', m.get('team2', 0)), 0)
     if o1 > 0 and o2 > 0: return o1, o2
     
-    markets = m.get('markets', m.get('odds', []))
-    
-    # Variante A: Markets ist ein Dictionary
-    if isinstance(markets, dict):
-        ml = markets.get('moneyline', markets.get('1x2', markets.get('match_winner', {})))
-        if isinstance(ml, dict):
-            o1 = to_float(ml.get('w1', ml.get('team1', ml.get('v1', 0))), o1)
-            o2 = to_float(ml.get('w2', ml.get('team2', ml.get('v2', 0))), o2)
+    def deep_search(obj):
+        nonlocal o1, o2
+        if isinstance(obj, dict):
+            c1 = to_float(obj.get('w1', obj.get('team1', obj.get('v1', 0))))
+            c2 = to_float(obj.get('w2', obj.get('team2', obj.get('v2', 0))))
+            if c1 > 0 and c2 > 0:
+                o1, o2 = c1, c2
+                return True
             
-    # Variante B: Markets ist eine Liste (1win Standard Payload 2026)
-    elif isinstance(markets, list):
-        for mrk in markets:
-            name = str(mrk.get('name', '')).lower()
-            if 'winner' in name or 'match' in name or '1x2' in name or not name:
-                outcomes = mrk.get('outcomes', mrk.get('bets', []))
-                if isinstance(outcomes, list) and len(outcomes) >= 2:
-                    o1_cand = to_float(outcomes[0].get('odd', outcomes[0].get('k', outcomes[0].get('cf', 0))))
-                    o2_cand = to_float(outcomes[1].get('odd', outcomes[1].get('k', outcomes[1].get('cf', 0))))
-                    if o1_cand > 0 and o2_cand > 0:
-                        return o1_cand, o2_cand
-                elif isinstance(outcomes, dict):
-                    o1_cand = to_float(outcomes.get('w1', outcomes.get('team1', 0)))
-                    o2_cand = to_float(outcomes.get('w2', outcomes.get('team2', 0)))
-                    if o1_cand > 0 and o2_cand > 0:
-                        return o1_cand, o2_cand
+            for k, v in obj.items():
+                if k in ['outcomes', 'bets', 'markets', 'prices'] and isinstance(v, list) and len(v) >= 2:
+                    try:
+                        cand1 = to_float(v[0].get('cf', v[0].get('odd', v[0].get('k', v[0].get('price', 0)))))
+                        cand2 = to_float(v[1].get('cf', v[1].get('odd', v[1].get('k', v[1].get('price', 0)))))
+                        if cand1 > 0 and cand2 > 0:
+                            o1, o2 = cand1, cand2
+                            return True
+                    except: pass
+                if deep_search(v): return True
+        elif isinstance(obj, list):
+            for item in obj:
+                if deep_search(item): return True
+        return False
+
+    deep_search(m)
     return o1, o2
 
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
@@ -608,6 +600,9 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             match_name = m.get('name', '') or m.get('eventName', '')
                             if not match_name or ' - ' not in match_name: continue
                             
+                            # V99.5 FIX: FILTER OUT DOUBLES MATCHES (Strict Singles Only)
+                            if '/' in match_name or ' / ' in match_name or '+' in match_name or '&' in match_name: continue
+                            
                             parts = match_name.split(' - ')
                             p1 = parts[0].strip()
                             p2 = parts[1].strip()
@@ -619,31 +614,20 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             elif isinstance(tour_obj, str):
                                 tour_name = tour_obj
                                 
+                            # V99.5 FIX: FILTER OUT DOUBLES IN TOURNAMENT NAME
+                            if "doubles" in tour_name.lower() or "doppel" in tour_name.lower(): continue
+                                
                             start_time_ts = m.get('startAt', 0)
                             start_time_str = "00:00"
                             if start_time_ts > 0:
                                 start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
                                 
-                            # V99.0 Deep Odds Extraction
+                            # V99.5 Deep Odds Extraction
                             o1, o2 = find_best_odds(m)
                             
                             hc_line = None; hc_o1 = 0; hc_o2 = 0
                             ou_line = None; o_odds = 0; u_odds = 0
                             
-                            markets = m.get('markets', m.get('odds', {}))
-                            if isinstance(markets, dict):
-                                handicap = markets.get('handicap', {})
-                                if isinstance(handicap, dict):
-                                    hc_line = to_float(handicap.get('line'), None)
-                                    hc_o1 = to_float(handicap.get('w1'), 0)
-                                    hc_o2 = to_float(handicap.get('w2'), 0)
-                                    
-                                totals = markets.get('totals', {})
-                                if isinstance(totals, dict):
-                                    ou_line = to_float(totals.get('line'), None)
-                                    o_odds = to_float(totals.get('over'), 0)
-                                    u_odds = to_float(totals.get('under'), 0)
-                                    
                             parsed_1win_matches.append({
                                 "p1_raw": p1,
                                 "p2_raw": p2,
@@ -674,7 +658,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Interception könnte fehlschlagen.")
             
         log("⏳ Scrolle tief durch die Seite für Week-Coverage (25x Scrolling)...")
-        # V99.0 FIX: 25 Iterationen zwingt 1win, die komplette Woche in die API zu pumpen.
         for _ in range(25):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(1.5)
@@ -692,7 +675,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             seen.add(key)
             unique_matches.append(m)
 
-    log(f"✅ [1WIN GHOST] {len(unique_matches)} Matches rekursiv extrahiert.")
+    log(f"✅ [1WIN GHOST] {len(unique_matches)} Singles-Matches rekursiv extrahiert.")
     return unique_matches
 
 
@@ -1082,7 +1065,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
     return None
 
 async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
-    # V99.0 FIX: Gibt jetzt 5 Parameter zurück, inklusive "matched_tour_name" für die DB
+    # V99.5 FIX: Gibt den exakten Match-Namen aus deiner DB zurück
     s_low = clean_tournament_name(tour).lower().strip()
     if "united cup" in s_low:
         arena_target = await resolve_united_cup_via_country(p1)
@@ -1391,7 +1374,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V99.0 (DEEP GHOST CRAWLER & ZERO-LOSS PIPELINE) Starting...")
+    log(f"🚀 Neural Scout V99.5 (SINGLES ONLY & DEEP ODDS EXTRACTOR) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1401,7 +1384,6 @@ async def run_pipeline():
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
-            player_names = [p['last_name'] for p in players]
             
             # =================================================================
             # 🌍 GLOBAL PROFILER (V95 SCHEMA SYNC)
@@ -1415,8 +1397,6 @@ async def run_pipeline():
                     try: sr = json.loads(sr)
                     except: return True
                 if not isinstance(sr, dict) or len(sr) == 0: return True
-                
-                # Updatet jeden, der das NEUE Flag (V95) noch nicht hat!
                 if not sr.get('_v95_mastery_applied'): return True
                 return False
 
@@ -1452,33 +1432,34 @@ async def run_pipeline():
                 log("❌ Keine Matches vom 1win Feed erhalten. Beende Zyklus.")
                 return
                 
-            log(f"🔍 Starte Oracle Enrichment für {len(matches)} 1win Matches...")
+            log(f"🔍 Starte Oracle Enrichment für die gefundenen 1win Matches...")
             
             db_matched_count = 0
-            skipped_count = 0
+            skipped_db_count = 0
             
             for m in matches:
                 try:
                     await asyncio.sleep(0.5) 
                     
-                    # V99.0 ZERO-LOSS GATEKEEPER
-                    if m['odds1'] <= 0 or m['odds2'] <= 0:
-                        log(f"   ⏭️ Drop: Keine Quoten gefunden für {m['p1_raw']} vs {m['p2_raw']}")
-                        continue
-                    
+                    # V99.5: Pipeline Step 1 - Sind BEIDE Spieler in der DB?
                     p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                     p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                     
                     if not p1_obj or not p2_obj:
-                        skipped_count += 1
-                        continue # Nur analysieren, wenn BEIDE Spieler in der DB sind!
+                        skipped_db_count += 1
+                        continue # Silent Drop - Wir loggen hier nicht, sonst spamt es!
                         
                     db_matched_count += 1
-                    
                     n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
+                    
                     if n1 == n2: continue
                     if p1_obj.get('tour') != p2_obj.get('tour'):
                         if "united cup" not in m['tour'].lower(): continue 
+                        
+                    # V99.5: Pipeline Step 2 - Check Odds (Nur noch für relevante DB Matches)
+                    if m['odds1'] <= 0 or m['odds2'] <= 0:
+                        log(f"   ⏭️ Drop: Keine Quoten im JSON gefunden für {n1} vs {n2} (Struktur geändert?)")
+                        continue
                     
                     # --- V83.4: MARKET SANITY GATEKEEPER ---
                     if not validate_market_integrity(m['odds1'], m['odds2']):
@@ -1501,14 +1482,11 @@ async def run_pipeline():
                             continue
 
                     db_match_id = None
-                    
-                    hist_fair1 = 0
-                    hist_fair2 = 0
-                    hist_is_value = False
-                    hist_pick_player = None
+                    hist_fair1 = 0; hist_fair2 = 0
+                    hist_is_value = False; hist_pick_player = None
                     hist_is_locked = False
-                    
                     is_signal_locked = False
+                    
                     if existing_match:
                         db_match_id = existing_match['id']
                         if existing_match.get('actual_winner_name'): continue 
@@ -1551,7 +1529,7 @@ async def run_pipeline():
                         
                         c1 = p1_obj.get('country', 'Unknown'); c2 = p2_obj.get('country', 'Unknown')
                         
-                        # V99.0 FIX: Unpacking von matched_tour_name zur Speicherung in der DB
+                        # V99.5: Unpacking the pure DB tournament name
                         surf, bsi, notes, city_for_weather, matched_tour_name = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, c1, c2, match_date=target_date)
                         weather_data = await fetch_weather_data(city_for_weather)
 
@@ -1587,12 +1565,11 @@ async def run_pipeline():
                         surf_rate2 = 0.5
                         
                         is_value_active = False; value_pick_player = None
-                        
                         should_run_ai = True
+                        
                         if db_match_id and cached_ai:
                             odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
                             is_significant_move = odds_diff > (m['odds1'] * 0.05)
-                                
                             try:
                                 last_up = datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))
                                 is_stale = (datetime.now(timezone.utc) - last_up) > timedelta(hours=6)
@@ -1610,7 +1587,6 @@ async def run_pipeline():
                             val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                             
                             value_tag = ""
-                            
                             if val_p1["is_value"]: 
                                 value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                 is_value_active = True; value_pick_player = n1
@@ -1621,10 +1597,8 @@ async def run_pipeline():
                             ai_text_base = re.sub(r'\[.*?\]', '', ai_text_final).strip()
                             ai_text_final = ai_text_base + value_tag
 
-                            hist_fair1 = fair1
-                            hist_fair2 = fair2
-                            hist_is_value = is_value_active
-                            hist_pick_player = value_pick_player
+                            hist_fair1 = fair1; hist_fair2 = fair2
+                            hist_is_value = is_value_active; hist_pick_player = value_pick_player
 
                         else:
                             log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2} | T: {matched_tour_name} ({surf})")
@@ -1637,9 +1611,7 @@ async def run_pipeline():
                             e2 = ELO_CACHE.get("ATP", {}).get(n2.lower(), {}).get(elo_key, 1500)
                             
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
-                            
                             ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, r1, r2, surf, bsi, notes, e1, e2, f1_data, f2_data, weather_data, p1_surface_profile, p2_surface_profile)
-                            
                             prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'], surf_rate1, surf_rate2, bool(r1.get('strengths')), style_stats_p1, style_stats_p2)
                             
                             fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -1668,12 +1640,10 @@ async def run_pipeline():
                                 "ai_analysis_text": ai_text_final,
                                 "games_prediction": sim_result, 
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z",
+                                "odds1": m['odds1'],
+                                "odds2": m['odds2']
                             }
-
-                            # Da wir oben bereits mit if m['odds1'] <= 0 gefiltert haben, sind die Odds hier garantiert > 0
-                            data["odds1"] = m['odds1']
-                            data["odds2"] = m['odds2']
                             
                             if m.get('handicap_line') is not None:
                                 data['handicap_line'] = m['handicap_line']
@@ -1684,29 +1654,26 @@ async def run_pipeline():
                                 data['over_odds'] = m['over_odds']
                                 data['under_odds'] = m['under_odds']
                             
-                            hist_fair1 = fair1
-                            hist_fair2 = fair2
-                            hist_is_value = is_value_active
-                            hist_pick_player = value_pick_player
+                            hist_fair1 = fair1; hist_fair2 = fair2
+                            hist_is_value = is_value_active; hist_pick_player = value_pick_player
                             
                             final_match_id = None
                             if db_match_id:
                                 supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                 final_match_id = db_match_id
-                                log(f"🔄 Updated: {n1} vs {n2} (via 1WIN)")
+                                log(f"🔄 Updated: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
                             else:
                                 if is_valid_opening_odd(m['odds1'], m['odds2']):
                                     data["opening_odds1"] = m['odds1']
                                     data["opening_odds2"] = m['odds2']
                                 res_insert = supabase.table("market_odds").insert(data).execute()
                                 if res_insert.data: final_match_id = res_insert.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2} (via 1WIN)")
+                                log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
                             
                             db_match_id = final_match_id
 
                     if db_match_id:
                         should_log_history = False
-                        
                         if not existing_match: should_log_history = True
                         elif hist_is_locked: should_log_history = True
                         elif hist_is_value: should_log_history = True
@@ -1718,7 +1685,6 @@ async def run_pipeline():
                         
                         if should_log_history:
                             pick_name = "LOCKED" if hist_is_locked else hist_pick_player
-                            
                             h_data = {
                                 "match_id": db_match_id, 
                                 "odds1": m['odds1'], 
@@ -1729,7 +1695,6 @@ async def run_pipeline():
                                 "pick_player_name": pick_name,
                                 "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                             }
-                            
                             try:
                                 supabase.table("odds_history").insert(h_data).execute()
                             except Exception as db_err:
@@ -1737,8 +1702,7 @@ async def run_pipeline():
 
                 except Exception as e: log(f"⚠️ Match Error: {e}")
             
-            # Neue Telemetrie-Ausgabe am Ende
-            log(f"📊 SUMMARY: {db_matched_count} Matches erfolgreich mit DB verknüpft (Skips weil Spieler nicht in DB: {skipped_count}).")
+            log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches analysiert (Verworfene Random/ITF-Matches: {skipped_db_count}).")
 
         finally: await browser.close()
     
