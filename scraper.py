@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V96.0 - 1WIN SOTA INTEGRATION & HYBRID ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V96.2 - CLOUDFLARE STEALTH & X-RAY DUMPER)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -373,7 +373,6 @@ class SurfaceIntelligence:
 
     @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
-        """Berechnet das komplette Profil für Hard, Clay, Grass (70% WinRate / 30% Volume Engine)"""
         profile = {}
         log(f"📊 [TELEMETRY] Starte Surface-Profilierung für '{player_name}' mit {len(matches)} historischen Matches.")
         
@@ -389,11 +388,10 @@ class SurfaceIntelligence:
             if n_surf == 0:
                 profile[surf] = {
                     "rating": 3.5, 
-                    "color": "#808080", # Grey
+                    "color": "#808080", 
                     "matches_tracked": 0,
                     "text": "No Experience"
                 }
-                log(f"   -> {surf.upper()}: 0 Matches (Base 3.5 applied)")
                 continue
                 
             wins = 0
@@ -403,13 +401,9 @@ class SurfaceIntelligence:
                     wins += 1
             win_rate = wins / n_surf
             
-            # 1. Volume Score (30%) - Caps at 30 Matches
             vol_score = min(1.0, n_surf / 30.0) * 1.95
-            
-            # 2. Win Rate Score (70%) - Direct scale from 0% to 100%
             win_score = win_rate * 4.55
             
-            # FINAL CALCULATION
             final_rating = 3.5 + vol_score + win_score
             final_rating = max(1.0, min(10.0, final_rating))
             
@@ -434,8 +428,6 @@ class SurfaceIntelligence:
                 "matches_tracked": n_surf,
                 "text": desc
             }
-            
-            log(f"   -> {surf.upper()}: {n_surf} Matches. WinRate: {win_rate:.2f} | Final: {round(final_rating, 2)}")
             
         profile['_v95_mastery_applied'] = True
         return profile
@@ -526,7 +518,8 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
     url = f"https://de.tennistemple.com/matches/{date_str}"
-    page = await browser.new_page()
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    page = await context.new_page()
     metadata = {}
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=20000)
@@ -544,7 +537,7 @@ async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
                 if norm_name and current_tournament != "Unknown":
                     metadata[norm_name] = current_tournament
     except: pass
-    finally: await page.close()
+    finally: await context.close()
     return metadata
 
 async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
@@ -646,13 +639,13 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     except: return "Unknown"
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
-    # 1win provides no stats, so we fallback to a safe 0.5 if we can't find TE URL.
     if not relative_url or relative_url == "1win_dummy": return 0.5
     cache_key = f"{relative_url}_{surface}"
     if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
     if not relative_url.startswith("/"): relative_url = f"/{relative_url}"
     url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
-    page = await browser.new_page()
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    page = await context.new_page()
     try:
         await page.goto(url, timeout=15000, wait_until="domcontentloaded")
         content = await page.content()
@@ -685,14 +678,15 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
             SURFACE_STATS_CACHE[cache_key] = rate
             return rate
     except: pass
-    finally: await page.close()
+    finally: await context.close()
     return 0.5
 
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
     for tour, url in urls.items():
-        page = await browser.new_page()
+        page = await context.new_page()
         try:
             await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
             content = await page.content()
@@ -712,6 +706,7 @@ async def fetch_elo_ratings(browser: Browser):
                         }
         except: pass
         finally: await page.close()
+    await context.close()
 
 async def get_db_data():
     try:
@@ -847,7 +842,8 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: return
     url = "https://www.unitedcup.com/en/scores/group-standings"
-    page = await browser.new_page()
+    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+    page = await context.new_page()
     try:
         await page.goto(url, timeout=20000, wait_until="networkidle")
         text_content = await page.inner_text("body")
@@ -859,7 +855,7 @@ async def build_country_city_map(browser: Browser):
                 COUNTRY_TO_CITY_MAP.update(ensure_dict(data))
             except: pass
     except: pass
-    finally: await page.close()
+    finally: await context.close()
 
 async def resolve_united_cup_via_country(p1):
     if not COUNTRY_TO_CITY_MAP: return None
@@ -944,13 +940,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         return surf, bsi, "AI Guess", city
     return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0]
 
-def get_city_from_note(note):
-    if not note: return "Unknown"
-    if "AI/Oracle:" in note: return note.split(":")[-1].strip()
-    if "(" in note: return note.split("(")[-1].replace(")", "").strip()
-    if len(note) > 50: return "Unknown" 
-    return note
-
 async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, elo1, elo2, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
@@ -1016,261 +1005,148 @@ def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
     except: return default
 
 # =================================================================
-# 9.5 SOTA 1WIN SPA SCRAPER (NEW - DOM TRAVERSAL + DEEP MARKETS)
+# 9.5 SOTA 1WIN SPA SCRAPER (V96.2 - CLOUDFLARE BYPASS & REGEX ANCHOR)
 # =================================================================
 async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     """
-    SOTA Implementation für 1win.io. 
-    Löst das Problem dynamischer React-Klassen durch Text-Selektoren und 
-    navigiert durch die Deep Markets (Handicap, Over/Under) via '+99' Klick.
+    V96.2: Implementiert Anti-Bot Argumente, User-Agents und sucht im DOM
+    rein nach "+XX" Buttons (regex), um komplett sprachunabhängig zu sein,
+    da GH Actions manchmal englische Seiten (statt "Sieger") laden.
     """
-    log("🌐 [1WIN AGENT] Starte SOTA SPA Scraper für 1win.io...")
-    page = await browser.new_page()
+    log("🌐 [1WIN AGENT] Starte SOTA SPA Scraper für 1win.io (Stealth Mode)...")
+    
+    # 1. Stealth Context Injection
+    context = await browser.new_context(
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        viewport={"width": 1920, "height": 1080},
+        extra_http_headers={
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Ch-Ua": "\"Not A(Brand\";v=\"99\", \"Google Chrome\";v=\"121\", \"Chromium\";v=\"121\"",
+            "Sec-Ch-Ua-Platform": "\"Windows\""
+        }
+    )
+    
+    page = await context.new_page()
     found_matches = []
     
-    # Blockiere Bilder & Fonts für massiv schnelleren Page Load und weniger Memory
+    # Bilder/Medien blockieren für Speed (aber KEINE Skripte!)
     await page.route("**/*", lambda route: route.continue_() if route.request.resource_type not in ["image", "font", "media"] else route.abort())
     
     try:
         url = "https://1win.io/betting/prematch/tennis-33"
-        await page.goto(url, wait_until="networkidle", timeout=60000)
-        log("🌐 [1WIN AGENT] Hauptseite geladen. Suche nach Matches...")
         
-        # Warte, bis Match-Container im DOM auftauchen (SPA Rendering abwarten)
-        await page.wait_for_selector("div[data-testid='match-card']", timeout=15000) # Annahme eines generischen TestIDs oder wir suchen per Struktur
+        # 2. Wait until networkidle - the true test of SPA hydration
+        log("🌐 [1WIN AGENT] Lade Seite und warte auf Network-Idle (Cloudflare/Vue-Hydration)...")
+        await page.goto(url, wait_until="networkidle", timeout=45000)
         
-        # Suchen wir alle Links/Buttons, die ein +XX Format haben (die Deep Market Trigger)
-        # Da Klassennamen sich ändern, suchen wir per Regex im DOM
-        match_elements = await page.locator("div:has(> div:has-text('S1'))").all() # Heuristik, um die Boxen zu finden, die "S1" enthalten
+        # 3. Der sprachunabhängige SOTA Anchor
+        # Wir suchen nach Buttons, die EXAKT z.B. "+99", "+14" etc. enthalten.
+        # Das ist das universellste Merkmal für Match-Reihen auf 1win.
+        button_regex = re.compile(r"^\+\d+$")
         
-        # Fallback falls der genaue Locator scheitert (1win DOM ist tricky)
-        if not match_elements:
-             # Suchen wir nach dem typischen "+XX" Button Text
-             deep_market_buttons = await page.locator("text=/\\+\\d{2}/").all()
-             
-             for btn in deep_market_buttons:
-                 try:
-                     # Navigiere im DOM Baum nach oben, um den Container des Matches zu finden
-                     container = btn.locator("..").locator("..").locator("..")
+        try:
+            # Warten, bis mindestens ein solcher Button auftaucht
+            await page.wait_for_selector("text=/(^\\+\\d+$)/", timeout=20000)
+            await page.wait_for_timeout(2000) # DOM Stabilization
+            log("🌐 [1WIN AGENT] UI erfolgreich gerendert (Cloudflare passiert!).")
+        except PlaywrightTimeoutError:
+            html_dump = await page.content()
+            log(f"🚨 [X-RAY DUMPER] SPA Timeout! DOM-Auszug (erste 800 Zeichen):\n{html_dump[:800]}\n...")
+            if "challenge-platform" in html_dump or "Just a moment" in html_dump:
+                log("🚨 CRITICAL: Wir hängen in der Cloudflare Turnstile Loop fest! Scraper blockiert.")
+            else:
+                log("🚨 SPA hat keine +XX Buttons gerendert. Vlt keine Matches verfügbar?")
+            return []
+
+        # Hole alle +XX Buttons
+        deep_market_buttons = await page.get_by_text(button_regex).all()
+        log(f"🔍 [1WIN AGENT] {len(deep_market_buttons)} Match-Buttons gefunden. Starte Extraktion...")
+        
+        for idx, btn in enumerate(deep_market_buttons):
+             try:
+                 # Gehe 3 DOM-Level hoch, um die Match-Card zu fassen
+                 container = btn.locator("..").locator("..").locator("..")
+                 text_content = await container.inner_text()
+                 
+                 lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+                 if len(lines) < 4: continue
+                 
+                 p1_raw = lines[1]
+                 p2_raw = lines[2]
+                 
+                 odds_text = " ".join(lines)
+                 # Manchmal heißen sie "W1" in EN oder "S1" in DE, wir fangen beides ab
+                 s1_match = re.search(r'(S1|W1)\s*(\d+\.\d+)', odds_text)
+                 s2_match = re.search(r'(S2|W2)\s*(\d+\.\d+)', odds_text)
+                 
+                 o1 = float(s1_match.group(2)) if s1_match else 0.0
+                 o2 = float(s2_match.group(2)) if s2_match else 0.0
+                 
+                 log(f"🕵️ [{idx+1}/{len(deep_market_buttons)}] Extrahiere: {p1_raw} vs {p2_raw} (ML: {o1} | {o2})")
+                 if o1 == 0.0 or o2 == 0.0: continue
+                 
+                 # Klicke auf den +XX Button für Deep Markets
+                 await btn.click()
+                 
+                 # Warte auf das Overlay/Modal. "Handicap" ist oft auf EN/DE gleich, oder wir warten einfach 2 sek
+                 await page.wait_for_timeout(3000) 
+                 
+                 handicap_line = 0.0; handicap_o1 = 0.0; handicap_o2 = 0.0
+                 total_line = 0.0; total_over = 0.0; total_under = 0.0
+                 
+                 # Deep Market Extract (Versuche DE und EN Terms)
+                 full_modal_text = await page.inner_text("body")
+                 
+                 # Heuristik: "Adam Walton -1.5  3.67"
+                 hc_match = re.search(r'(-?\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                 if hc_match:
+                     handicap_line = float(hc_match.group(1))
+                     handicap_o1 = float(hc_match.group(2))
                      
-                     text_content = await container.inner_text()
-                     lines = [line.strip() for line in text_content.split('\n') if line.strip()]
-                     
-                     if len(lines) < 4: continue
-                     
-                     # Extraktion der Spieler (oft Zeile 2 und 3 nach Datum)
-                     p1_raw = lines[1]
-                     p2_raw = lines[2]
-                     
-                     # Extraktion Moneyline
-                     odds_text = " ".join(lines)
-                     s1_match = re.search(r'S1\s*(\d+\.\d+)', odds_text)
-                     s2_match = re.search(r'S2\s*(\d+\.\d+)', odds_text)
-                     
-                     o1 = float(s1_match.group(1)) if s1_match else 0.0
-                     o2 = float(s2_match.group(1)) if s2_match else 0.0
-                     
-                     log(f"🕵️ [1WIN AGENT] Match entdeckt: {p1_raw} vs {p2_raw} (ML: {o1} | {o2})")
-                     
-                     if o1 == 0.0 or o2 == 0.0: continue
-                     
-                     # DEEP MARKET TRAVERSAL (Clicking +99)
-                     log(f"   -> Klicke auf Deep Markets für {p1_raw}...")
-                     await btn.click()
-                     
-                     # Warte auf das Modal oder den neuen View (wir warten auf das Wort "Handicap")
-                     await page.wait_for_selector("text=Handicap", timeout=10000)
-                     
-                     handicap_line = 0.0
-                     handicap_o1 = 0.0
-                     handicap_o2 = 0.0
-                     total_line = 0.0
-                     total_over = 0.0
-                     total_under = 0.0
-                     
-                     try:
-                         # Extrahiere Handicap
-                         hc_section = page.locator("text=Handicap").locator("..")
-                         hc_text = await hc_section.inner_text()
-                         # Heuristik: "Adam Walton -1.5  3.67"
-                         hc_match = re.search(r'(-?\d+\.\d+)\s+(\d+\.\d+)', hc_text)
-                         if hc_match:
-                             handicap_line = float(hc_match.group(1))
-                             handicap_o1 = float(hc_match.group(2))
-                     except Exception as e: log(f"   ⚠️ Hc Fetch Error: {e}")
-                     
-                     try:
-                         # Extrahiere Gesamtzahl (Totals)
-                         tot_section = page.locator("text=Gesamtzahl").locator("..")
-                         tot_text = await tot_section.inner_text()
-                         # Heuristik: "Unter 22.5  1.91  Über 22.5  1.87"
-                         over_match = re.search(r'Über (\d+\.\d+)\s+(\d+\.\d+)', tot_text)
-                         under_match = re.search(r'Unter (\d+\.\d+)\s+(\d+\.\d+)', tot_text)
-                         
-                         if over_match and under_match:
-                             total_line = float(over_match.group(1))
-                             total_over = float(over_match.group(2))
-                             total_under = float(under_match.group(2))
-                     except Exception as e: log(f"   ⚠️ Total Fetch Error: {e}")
-                     
-                     log(f"   ✅ Daten extrahiert. HC: {handicap_line}, Total: {total_line}")
-                     
-                     # Gehe zurück zur Hauptübersicht (oder schließe Modal)
-                     back_btn = page.locator("button[aria-label='Back']") # Oder ähnlich, je nach DOM
-                     if await back_btn.count() > 0: await back_btn.click()
-                     else: await page.go_back()
-                     
-                     # Warte kurz, bis Übersicht wieder da ist
-                     await page.wait_for_timeout(1500)
-                     
-                     found_matches.append({
-                        "p1_raw": p1_raw, "p2_raw": p2_raw, 
-                        "tour": "1win Tournament", # 1win zeigt das oft drüber an, setzen wir als Fallback
-                        "time": "00:00", 
-                        "odds1": o1, "odds2": o2,
-                        "p1_href": "1win_dummy", "p2_href": "1win_dummy",
-                        "actual_winner": None,
-                        "score": "",
-                        "handicap_line": handicap_line,
-                        "handicap_odds1": handicap_o1,
-                        "total_games_line": total_line,
-                        "total_over_odds": total_over,
-                        "total_under_odds": total_under
-                     })
-                     
-                 except PlaywrightTimeoutError:
-                     log(f"   ❌ Timeout beim Auslesen der Deep Markets für ein Match. Gehe zurück...")
-                     await page.go_back()
-                     await page.wait_for_timeout(2000)
-                 except Exception as ex:
-                     log(f"   ❌ Unerwarteter Fehler im 1win Loop: {ex}")
+                 # Heuristik: "Unter/Under 22.5  1.91  Über/Over 22.5  1.87"
+                 over_match = re.search(r'(?:Über|Over) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                 under_match = re.search(r'(?:Unter|Under) (\d+\.\d+)\s+(\d+\.\d+)', full_modal_text)
+                 
+                 if over_match and under_match:
+                     total_line = float(over_match.group(1))
+                     total_over = float(over_match.group(2))
+                     total_under = float(under_match.group(2))
+                 
+                 log(f"   ✅ Daten erfasst. HC: {handicap_line} (@{handicap_o1}), Total: {total_line} (O:{total_over}/U:{total_under})")
+                 
+                 # Zurückgehen (Sicherster Weg bei SPAs ohne expliziten Back-Button)
+                 await page.go_back()
+                 await page.wait_for_timeout(2000)
+                 
+                 found_matches.append({
+                    "p1_raw": p1_raw, "p2_raw": p2_raw, 
+                    "tour": "1win Tournament",
+                    "time": "00:00", 
+                    "odds1": o1, "odds2": o2,
+                    "p1_href": "1win_dummy", "p2_href": "1win_dummy",
+                    "actual_winner": None,
+                    "score": "",
+                    "handicap_line": handicap_line,
+                    "handicap_odds1": handicap_o1,
+                    "total_games_line": total_line,
+                    "total_over_odds": total_over,
+                    "total_under_odds": total_under
+                 })
+                 
+             except PlaywrightTimeoutError:
+                 log(f"   ❌ Timeout im Modal. Gehe zurück...")
+                 await page.go_back()
+                 await page.wait_for_timeout(2000)
+             except Exception as ex:
+                 log(f"   ❌ Fehler bei Match {idx+1}: {ex}")
                      
     except Exception as e: 
-        log(f"🚨 [1WIN AGENT CRITICAL ERROR]: {e}")
+        log(f"🚨 [1WIN AGENT FATAL]: {e}")
     finally: 
-        await page.close()
+        await context.close()
         
-    log(f"🏁 [1WIN AGENT] Abgeschlossen. {len(found_matches)} Matches mit Deep Markets extrahiert.")
+    log(f"🏁 [1WIN AGENT] Abgeschlossen. {len(found_matches)} 1win-Matches ins System geladen.")
     return found_matches
-
-# LEGACY PARSER (Beibehalten auf Wunsch, falls TE HTML doch reinkommt)
-def parse_matches_locally_v5(html, p_names): 
-    soup = BeautifulSoup(html, 'html.parser')
-    found = []
-    
-    for table in soup.find_all("table", class_="result"):
-        rows = table.find_all("tr")
-        current_tour = "Unknown"
-        pending_p1_raw = None; pending_p1_href = None; pending_time = "00:00"
-        i = 0
-        while i < len(rows):
-            row = rows[i]
-            
-            if "head" in row.get("class", []): 
-                current_tour = row.get_text(strip=True)
-                pending_p1_raw = None
-                i += 1; continue
-            
-            cols = row.find_all('td')
-            if len(cols) < 2: i += 1; continue
-            
-            first_cell = row.find('td', class_='first')
-            if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
-                tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
-                if tm: pending_time = tm.group(1).zfill(5)
-            
-            p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
-            if not p_cell: i += 1; continue
-            p_raw = clean_player_name(p_cell.get_text(strip=True))
-            p_href = p_cell.find('a')['href']
-            
-            raw_odds = []
-            for c in row.find_all('td', class_=re.compile(r'course')):
-                try:
-                    val = float(c.get_text(strip=True))
-                    if 1.01 <= val <= 100.0: raw_odds.append(val)
-                except: pass
-
-            if pending_p1_raw:
-                p2_raw = p_raw; p2_href = p_href
-                if '/' in pending_p1_raw or '/' in p2_raw: 
-                    pending_p1_raw = None; i += 1; continue
-                
-                prev_row = rows[i-1]
-                prev_odds = []
-                for c in prev_row.find_all('td', class_=re.compile(r'course')):
-                    try:
-                        val = float(c.get_text(strip=True))
-                        if 1.01 <= val <= 100.0: prev_odds.append(val)
-                    except: pass
-                
-                all_odds = prev_odds + raw_odds
-                if len(all_odds) >= 2:
-                    final_o1 = all_odds[0]; final_o2 = all_odds[1]
-                    winner_found = None
-                    final_score = ""
-                    
-                    def extract_row_data(r_row):
-                        cells = r_row.find_all('td')
-                        p_idx = -1
-                        for idx, c in enumerate(cells):
-                            if c.find('a') and 'time' not in c.get('class', []):
-                                p_idx = idx
-                                break
-                        
-                        if p_idx != -1 and p_idx + 1 < len(cells):
-                            sets_cell = cells[p_idx + 1]
-                            sets_val = sets_cell.get_text(strip=True)
-                            
-                            if sets_val.isdigit():
-                                scores = []
-                                for k in range(1, 6):
-                                    if p_idx + 1 + k >= len(cells): break
-                                    sc_cell = cells[p_idx + 1 + k]
-                                    
-                                    raw_txt = ""
-                                    for child in sc_cell.children:
-                                        if child.name == 'sup': continue
-                                        raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
-                                    
-                                    raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
-                                    
-                                    if raw_txt.isdigit():
-                                        scores.append(raw_txt)
-                                    else:
-                                        break
-                                return int(sets_val), scores
-                        return -1, []
-
-                    s1, scores1 = extract_row_data(prev_row)
-                    s2, scores2 = extract_row_data(row)
-                    
-                    if s1 != -1 and s2 != -1:
-                        if s1 > s2: winner_found = pending_p1_raw
-                        elif s2 > s1: winner_found = p2_raw
-                        
-                        score_parts = []
-                        min_len = min(len(scores1), len(scores2))
-                        for k in range(min_len):
-                            score_parts.append(f"{scores1[k]}-{scores2[k]}")
-                        
-                        if score_parts:
-                            final_score = " ".join(score_parts)
-
-                    found.append({
-                        "p1_raw": pending_p1_raw, "p2_raw": p2_raw, 
-                        "tour": clean_tournament_name(current_tour), 
-                        "time": pending_time, "odds1": final_o1, "odds2": final_o2,
-                        "p1_href": pending_p1_href, "p2_href": p2_href,
-                        "actual_winner": winner_found,
-                        "score": final_score
-                    })
-                pending_p1_raw = None
-            else:
-                if first_cell and first_cell.get('rowspan') == '2': pending_p1_raw = p_raw; pending_p1_href = p_href
-                else: pending_p1_raw = p_raw; pending_p1_href = p_href
-            i += 1
-    return found
 
 # =================================================================
 # 10. THE AUDITOR (RESULTS ENGINE - TENNIS EXPLORER)
@@ -1283,7 +1159,8 @@ async def update_past_results(browser: Browser):
 
     for day_off in range(0, 3): 
         t_date = datetime.now() - timedelta(days=day_off)
-        page = await browser.new_page()
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+        page = await context.new_page()
         try:
             url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -1358,7 +1235,6 @@ async def update_past_results(browser: Browser):
                                     p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                                     p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
                                     
-                                    # Update Profile in DB (This keeps ratings live!)
                                     supabase.table('players').update({
                                         'surface_ratings': p_profile,
                                         'form_rating': p_form 
@@ -1367,7 +1243,7 @@ async def update_past_results(browser: Browser):
                                 safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
                                 break
         except: pass
-        finally: await page.close()
+        finally: await context.close()
 
 # =================================================================
 # 11. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
@@ -1474,11 +1350,21 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
 # 12. PIPELINE RUNNER (1WIN & ORACLE SYNC)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V96.0 (1WIN SOTA DEEP MARKET INTEGRATION) Starting...")
+    log(f"🚀 Neural Scout V96.2 Starting...")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # STEALTH ARGUMENTS: disable-blink-features ist entscheidend gegen Cloudflare!
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-infobars",
+                "--disable-dev-shm-usage",
+                "--disable-gpu"
+            ]
+        )
         try:
-            # Oracle & Results via TE bleiben unangetastet
+            # Oracle & Results
             await update_past_results(browser)
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
@@ -1490,8 +1376,7 @@ async def run_pipeline():
             matches = await scrape_1win_markets_sota(browser)
             log(f"🔍 [MAIN PIPELINE] Verarbeite {len(matches)} 1win Matches...")
             
-            # Da 1win eine SPA ist, ziehen wir alle sichtbaren Matches und verarbeiten sie
-            target_date = datetime.now() # Fallback Date für Weather/Oracle Calls
+            target_date = datetime.now() 
             
             for m in matches:
                 try:
@@ -1507,7 +1392,6 @@ async def run_pipeline():
                         
                         # --- MARKET SANITY GATEKEEPER ---
                         if not validate_market_integrity(m['odds1'], m['odds2']):
-                            log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
                             continue 
 
                         existing_match = None
@@ -1522,15 +1406,11 @@ async def run_pipeline():
                             prev_o1 = to_float(existing_match.get('odds1'), 0)
                             prev_o2 = to_float(existing_match.get('odds2'), 0)
                             if is_suspicious_movement(prev_o1, m['odds1'], prev_o2, m['odds2']):
-                                log(f"   ⚠️ REJECTED SPIKE: {n1} ({prev_o1}->{m['odds1']}) vs {n2}")
                                 continue
 
                         db_match_id = None
-                        
                         hist_fair1 = 0; hist_fair2 = 0
-                        hist_is_value = False
-                        hist_pick_player = None
-                        hist_is_locked = False
+                        hist_is_value = False; hist_pick_player = None; hist_is_locked = False
                         
                         is_signal_locked = False
                         if existing_match:
@@ -1540,19 +1420,15 @@ async def run_pipeline():
                                  update_payload = {"actual_winner_name": actual_winner_val}
                                  if m.get('score'): update_payload["score"] = m['score']
                                  supabase.table("market_odds").update(update_payload).eq("id", db_match_id).execute()
-                                 log(f"      🏆 LIVE SETTLEMENT: {actual_winner_val} won")
                                  continue 
                             if existing_match.get('actual_winner_name'): continue 
 
                             if has_active_signal(existing_match.get('ai_analysis_text', '')):
                                 is_signal_locked = True; hist_is_locked = True
-                                log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
 
                         if is_signal_locked:
-                            update_data = {
-                                "odds1": m['odds1'], 
-                                "odds2": m['odds2'],
-                            }
+                            update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
+                            
                             # Deep Market Update if available
                             if m.get('handicap_line') != 0.0:
                                 update_data['handicap_line'] = m['handicap_line']
@@ -1679,7 +1555,7 @@ async def run_pipeline():
                                     "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
                                 }
                                 
-                                # Inject Deep Markets (1Win SOTA)
+                                # Inject Deep Markets
                                 if m.get('handicap_line') != 0.0:
                                     data['handicap_line'] = m['handicap_line']
                                     data['handicap_odds1'] = m['handicap_odds1']
@@ -1694,14 +1570,14 @@ async def run_pipeline():
                                 if db_match_id:
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                                     final_match_id = db_match_id
-                                    log(f"🔄 Updated: {n1} vs {n2} (inkl. Deep Markets)")
+                                    log(f"🔄 Updated: {n1} vs {n2}")
                                 else:
                                     if is_valid_opening_odd(m['odds1'], m['odds2']):
                                         data["opening_odds1"] = m['odds1']
                                         data["opening_odds2"] = m['odds2']
                                     res_insert = supabase.table("market_odds").insert(data).execute()
                                     if res_insert.data: final_match_id = res_insert.data[0]['id']
-                                    log(f"💾 Saved: {n1} vs {n2} (inkl. Deep Markets)")
+                                    log(f"💾 Saved: {n1} vs {n2}")
                                 
                                 db_match_id = final_match_id
 
