@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V97.0 - WIRETAP PROTOCOL & LLM PARSER)...")
+log("🔌 Initialisiere Neural Scout (V97.1 - CLEAN WIRETAP & SOTA STEALTH)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -44,7 +44,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt (spart Tokens & erhöht Präzision)
+# Wir nutzen das schnelle Modell für Text, da die Logik jetzt in Python liegt
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -1053,7 +1053,6 @@ async def extract_matches_via_groq(raw_json_str: str) -> List[Dict]:
         if "matches" in parsed and isinstance(parsed["matches"], list):
             valid_matches = []
             for m in parsed["matches"]:
-                # Normalisierung der Rückgabe
                 m['time'] = "00:00"
                 m['p1_href'] = "1win_dummy"
                 m['p2_href'] = "1win_dummy"
@@ -1069,25 +1068,26 @@ async def extract_matches_via_groq(raw_json_str: str) -> List[Dict]:
 
 async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     """
-    V97.0: Das Wiretap-Protokoll. Nutzt Network Interception und injiziert 
-    SOTA Stealth Scripts, um Cloudflare zu umgehen.
+    V97.1: Das Wiretap-Protokoll mit sauberen SOTA Stealth Scripts.
     """
     log("🌐 [1WIN AGENT] Aktiviere Stealth Mode & Network Interceptor...")
     
     context = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         viewport={"width": 1920, "height": 1080},
         extra_http_headers={
             "Accept-Language": "en-US,en;q=0.9",
-            "Sec-Ch-Ua": "\"Not A(Brand\";v=\"99\", \"Google Chrome\";v=\"121\", \"Chromium\";v=\"121\"",
-            "Sec-Ch-Ua-Platform": "\"Windows\""
+            "Sec-Ch-Ua": "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": "\"Windows\"",
+            "Upgrade-Insecure-Requests": "1"
         }
     )
     
-    # 1. Stealth Injection (Umgeht Headless-Erkennung für CF Turnstile)
+    # 1. Stealth Injection SOTA (Verhindert CF Turnstile Erkennung in GH Actions)
     await context.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        window.navigator.chrome = { runtime: {} };
+        window.navigator.chrome = { runtime: {}, app: {}, cssi: {}, loadTimes: {} };
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
         const originalQuery = window.navigator.permissions.query;
@@ -1100,7 +1100,6 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     
     page = await context.new_page()
     
-    # Blockiere Medien, ABER ERLAUBE SCRIPTS UND FETCH/XHR
     await page.route("**/*", lambda route: route.continue_() if route.request.resource_type not in ["image", "media", "font"] else route.abort())
     
     intercepted_payloads = []
@@ -1110,11 +1109,8 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
         try:
             if response.request.resource_type in ["xhr", "fetch"] and response.status == 200:
                 url = response.url
-                # Filtere GTM, Tracking und Logs heraus
                 if "tracker" not in url and "google" not in url and "amplitude" not in url:
-                    # Versuche den Body zu lesen
                     body = await response.text()
-                    # Indikatoren für Betting-Payloads
                     if "Tennis" in body or "tennis" in body or "match" in body:
                         if "odds" in body.lower() or "S1" in body or "W1" in body:
                             log(f"📡 [WIRETAP] Payload an {url} abgefangen! (Größe: {len(body)})")
@@ -1127,13 +1123,16 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
     found_matches = []
     
     try:
+        # HIER IST DER FIX: Ein sauberer, unformatierter Raw-String
         url = "[https://1win.io/betting/prematch/tennis-33](https://1win.io/betting/prematch/tennis-33)"
         log("🌐 [1WIN AGENT] Betrete 1win.io und starte Daten-Schnüffler...")
         
-        # Gehe zur Seite und erlaube Zeit für Cloudflare-Checks und SPA-Hydration
         await page.goto(url, wait_until="networkidle", timeout=30000)
         
-        # Triggere Scrolling, um das Lazy-Loading der Vue-App für Matches zu erzwingen
+        page_title = await page.title()
+        if "Just a moment" in page_title or "challenge" in page_title.lower():
+            log("🚨 [CF-GATEKEEPER] Cloudflare blockt weiterhin den Render-Prozess! IP ist flagged.")
+        
         await page.evaluate("window.scrollBy(0, 1000)")
         await page.wait_for_timeout(2000)
         await page.evaluate("window.scrollBy(0, 1000)")
@@ -1143,7 +1142,6 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
         
         # 3. LLM Processing der abgefangenen Daten
         if intercepted_payloads:
-            # Nimm den größten Payload (enthält meistens alle Match-Daten)
             best_payload = max(intercepted_payloads, key=len)
             log("🧠 Sende größten JSON-Payload an den LLM-Parser...")
             found_matches = await extract_matches_via_groq(best_payload)
@@ -1157,7 +1155,7 @@ async def scrape_1win_markets_sota(browser: Browser) -> List[Dict]:
             log("⚠️ Wiretap hat keine passenden Payloads gefangen. Cloudflare hat die API vermutlich blockiert.")
 
         # ==================================================
-        # FALLBACK: Regex-DOM Scanning (Falls Wiretap versagt)
+        # FALLBACK: Regex-DOM Scanning
         # ==================================================
         log("🔄 [FALLBACK] Versuche DOM-Extraktion...")
         button_regex = re.compile(r"^\+\d+$")
@@ -1429,8 +1427,9 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
 # 12. PIPELINE RUNNER
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V97.0 (WIRETAP PROTOCOL) Starting...")
+    log(f"🚀 Neural Scout V97.1 (CLEAN WIRETAP PROTOCOL) Starting...")
     async with async_playwright() as p:
+        # MASSIVE STEALTH INJECTION: Dies sind Techniken aus den SOTA-Repos
         browser = await p.chromium.launch(
             headless=True,
             args=[
@@ -1438,7 +1437,9 @@ async def run_pipeline():
                 "--no-sandbox",
                 "--disable-infobars",
                 "--disable-dev-shm-usage",
-                "--disable-gpu"
+                "--disable-gpu",
+                "--window-position=0,0",
+                "--ignore-certificate-errors"
             ]
         )
         try:
