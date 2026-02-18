@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V100.0 - TITANIUM EDITION: OOM-SAFE & SINGLES ONLY)...")
+log("🔌 Initialisiere Neural Scout (V101.0 - CLOUDFLARE BYPASS & DEEP ODDS)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -518,7 +518,7 @@ call_gemini = call_groq
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
     """
-    V100.0 BRUTE-FORCE EXTRACTOR: Durchsucht rekursiv ALLES. 
+    V101.0 BRUTE-FORCE EXTRACTOR: Durchsucht rekursiv ALLES. 
     1win versteckt Quoten überall. Diese Funktion gräbt sie aus dem tiefsten JSON-Keller.
     """
     o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
@@ -560,7 +560,7 @@ def find_best_odds(m: Dict) -> tuple[float, float]:
     return o1, o2
 
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V100.0 Memory-Safe Mode)...")
+    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V101.0 Cloudflare Bypass Mode)...")
     parsed_1win_matches = []
     
     context = await browser.new_context(
@@ -575,9 +575,9 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """)
     
     page = await context.new_page()
-
-    # V100.0 MEMORY LEAK FIX: Blockiert Bilder, Videos und Fonts. Verhindert Canceled/OOM Errors!
-    await page.route("**/*", lambda route: route.abort() if route.request.resource_type in ["image", "media", "font", "stylesheet"] else route.continue_())
+    
+    # V101.0 FIX: KEIN BLOCKIEREN VON BILDERN MEHR! Cloudflare erkennt Bots, wenn Bilder/Fonts blockiert werden.
+    # Wir laden die Seite regulär wie ein echter Mensch.
 
     def extract_matches_recursively(obj):
         matches = []
@@ -610,7 +610,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             match_name = m.get('name', '') or m.get('eventName', '')
                             if not match_name or ' - ' not in match_name: continue
                             
-                            # V100.0 STRICT FILTER: Nur Singles! Wenn ein /, & oder + im Namen ist = Drop.
+                            # V101.0 STRICT FILTER: Nur Singles! Wenn ein /, & oder + im Namen ist = Drop.
                             if '/' in match_name or '&' in match_name or '+' in match_name or ' / ' in match_name: continue
                             
                             parts = match_name.split(' - ')
@@ -625,7 +625,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             elif isinstance(tour_obj, str):
                                 tour_name = tour_obj
                                 
-                            # V100.0 STRICT FILTER: Keine Doubles Turniere
+                            # V101.0 STRICT FILTER: Keine Doubles Turniere
                             if "doubles" in str(tour_name).lower() or "doppel" in str(tour_name).lower(): continue
                                 
                             start_time_ts = m.get('startAt', 0)
@@ -633,7 +633,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             if start_time_ts > 0:
                                 start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
                                 
-                            # V100.0 Brute-Force Odds Extraction
+                            # V101.0 Brute-Force Odds Extraction
                             o1, o2 = find_best_odds(m)
                             
                             hc_line = None; hc_o1 = 0; hc_o2 = 0
@@ -662,21 +662,24 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
-        # V100.0 FIX: domcontentloaded anstatt networkidle verhindert endlose Ladezeiten durch Ads/Websockets.
-        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="domcontentloaded", timeout=60000)
+        # V101.0 FIX: networkidle ist Pflicht, damit Cloudflare uns den Zugang vollständig gewährt, bevor wir scrollen!
+        await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
         
         page_title = await page.title()
         if "Just a moment" in page_title or "Cloudflare" in page_title:
-            log("🛑 WARNUNG: Cloudflare Challenge aktiv! Interception könnte fehlschlagen.")
+            log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
+            await asyncio.sleep(5)
             
-        log("⏳ Scrolle durch die Seite für Week-Coverage (12x Safe-Scroll)...")
-        # 12 Scrolls reichen für 2-3 Tage, was das RAM-Limit absolut schützt und Canceled-Errors verhindert.
-        for _ in range(12):
+        log("⏳ Scrolle durch die Seite für Week-Coverage (15x Safe-Scroll)...")
+        # 15 Scrolls = Guter Sweetspot zwischen Coverage und Memory Limit.
+        for _ in range(15):
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(1.5)
             except Exception as scroll_e:
-                break
+                # V101.0 FIX: CONTINUE statt BREAK! Wenn ein Error passiert, mach einfach weiter, brich nicht alles ab!
+                log(f"⚠️ Kleine Scroll-Verzögerung: {scroll_e} -> Mache weiter.")
+                continue
             
     except Exception as e:
         log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
@@ -1389,7 +1392,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V100.0 (TITANIUM EDITION) Starting...")
+    log(f"🚀 Neural Scout V101.0 (TITANIUM EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1475,7 +1478,6 @@ async def run_pipeline():
                     # Step 2 - Odds Validierung
                     if m['odds1'] <= 0 or m['odds2'] <= 0:
                         log(f"   ⏭️ Drop: Keine Quoten gefunden für {n1} vs {n2}.")
-                        log(f"   🚨 DEBUG 1WIN PAYLOAD: {m.get('_debug_payload', 'Kein Payload')}")
                         continue
                     
                     # --- V83.4: MARKET SANITY GATEKEEPER ---
