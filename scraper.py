@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V103.0 - SOTA STATE RECONSTRUCTION & WS-TRACKING)...")
+log("🔌 Initialisiere Neural Scout (V104.0 - EARLY FILTERING & PAYLOAD DUMPER)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,14 +514,9 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (STATE RECONSTRUCTION V103.0)
+# 6.5 1WIN SOTA MASTER FEED (V104.0 EARLY FILTER & DUMPER)
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
-    """
-    V103.0 SILICON VALLEY GOD-MODE EXTRACTOR
-    Extrahiert gnadenlos jede Float-Zahl im JSON und berechnet die 
-    physikalische Buchmacher-Marge aller Paare, um den Match Winner zu isolieren.
-    """
     valid_pairs = []
     
     def get_floats(d: dict):
@@ -536,8 +531,6 @@ def find_best_odds(m: Dict) -> tuple[float, float]:
 
     def deep_search(obj):
         if isinstance(obj, dict):
-            # Check explicit keys first
-            v1, v2 = 0.0, 0.0
             for k1, k2 in [('w1', 'w2'), ('team1', 'team2'), ('S1', 'S2'), ('s1', 's2'), ('k1', 'k2'), ('coef1', 'coef2')]:
                 if k1 in obj and k2 in obj:
                     try:
@@ -551,15 +544,12 @@ def find_best_odds(m: Dict) -> tuple[float, float]:
                 deep_search(v)
                 
         elif isinstance(obj, list):
-            # Often outcomes are lists of dicts
             if len(obj) == 2 and isinstance(obj[0], dict) and isinstance(obj[1], dict):
                 f1 = get_floats(obj[0])
                 f2 = get_floats(obj[1])
                 for val1 in f1:
                     for val2 in f2:
                         valid_pairs.append((val1, val2))
-            
-            # Or direct float pairs
             if len(obj) == 2:
                 try:
                     val1 = float(obj[0])
@@ -567,52 +557,44 @@ def find_best_odds(m: Dict) -> tuple[float, float]:
                     if 1.01 < val1 < 100.0 and 1.01 < val2 < 100.0:
                         valid_pairs.append((val1, val2))
                 except: pass
-                
             for item in obj:
                 deep_search(item)
 
     deep_search(m)
     
-    # Margin Evaluation
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
     for o1, o2 in valid_pairs:
         margin = (1/o1) + (1/o2)
-        # 1win Tennis Winner Marge liegt fast immer zwischen 1.03 und 1.12
         if 1.02 <= margin <= 1.12:
-            # Wir suchen die Marge, die 1.055 (Standard) am nächsten ist.
             diff = abs(margin - 1.055)
-            
-            # Symmetrische Quoten (Handicaps, z.B. 1.90/1.90) hart bestrafen
-            if abs(o1 - o2) < 0.05:
-                diff += 0.03 
-                
+            if abs(o1 - o2) < 0.05: diff += 0.03 
             if diff < best_diff:
                 best_diff = diff
                 best_pair = (o1, o2)
                 
     return best_pair
 
-async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V103.0 - HTTP/WS Correlation)...")
+async def fetch_1win_markets_via_interception(browser: Browser, db_players: List[Dict]) -> List[Dict]:
+    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V104.0 - DB Filter & Dumper)...")
     
     matches_meta = {} 
     matches_raw_nodes = {} 
     
+    # V104.0: Baue ein schnelles Set aller DB-Nachnamen für EARLY DROPS
+    db_last_names = {normalize_db_name(p.get('last_name', '')) for p in db_players if p.get('last_name')}
+    
     def extract_id(obj: dict) -> Optional[str]:
         for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId']:
-            if k in obj and str(obj[k]).isdigit():
-                return str(obj[k])
+            if k in obj and str(obj[k]).isdigit(): return str(obj[k])
         return None
 
     def traverse_and_store(obj):
         if isinstance(obj, dict):
             obj_id = extract_id(obj)
-            
             if obj_id:
-                if obj_id not in matches_raw_nodes:
-                    matches_raw_nodes[obj_id] = []
+                if obj_id not in matches_raw_nodes: matches_raw_nodes[obj_id] = []
                 matches_raw_nodes[obj_id].append(obj)
                 
                 name_val = obj.get('name', '') or obj.get('eventName', '')
@@ -622,15 +604,12 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                         if len(parts) >= 2:
                             tour_obj = obj.get('tournament', {})
                             tour_name = "Unknown"
-                            if isinstance(tour_obj, dict):
-                                tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
-                            elif isinstance(tour_obj, str):
-                                tour_name = tour_obj
+                            if isinstance(tour_obj, dict): tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
+                            elif isinstance(tour_obj, str): tour_name = tour_obj
                             
                             start_time_ts = obj.get('startAt', 0)
                             start_time_str = "00:00"
-                            if start_time_ts > 0:
-                                start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
+                            if start_time_ts > 0: start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
                                 
                             matches_meta[obj_id] = {
                                 "p1": parts[0].strip(),
@@ -639,11 +618,9 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                                 "time": start_time_str
                             }
 
-            for k, v in obj.items():
-                traverse_and_store(v)
+            for k, v in obj.items(): traverse_and_store(v)
         elif isinstance(obj, list):
-            for item in obj:
-                traverse_and_store(item)
+            for item in obj: traverse_and_store(item)
 
     async def handle_response(response):
         if response.request.resource_type in ["fetch", "xhr"]:
@@ -651,8 +628,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events"]):
                 try:
                     text = await response.text()
-                    if "{" in text and "}" in text:
-                        traverse_and_store(json.loads(text))
+                    if "{" in text and "}" in text: traverse_and_store(json.loads(text))
                 except: pass
 
     async def handle_ws(ws):
@@ -661,8 +637,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                 text = frame.text
                 if text and "{" in text:
                     clean_text = re.sub(r'^\d+', '', text)
-                    if clean_text.startswith('['): 
-                        traverse_and_store(json.loads(clean_text))
+                    if clean_text.startswith('['): traverse_and_store(json.loads(clean_text))
                     else:
                         for match in re.findall(r'\{.*\}', text):
                             try: traverse_and_store(json.loads(match))
@@ -676,11 +651,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
         java_script_enabled=True
     )
     
-    await context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        window.navigator.chrome = { runtime: {} };
-    """)
-    
+    await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
     page = await context.new_page()
     page.on("response", handle_response)
     page.on("websocket", handle_ws)
@@ -688,7 +659,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
-        
         page_title = await page.title()
         if "Just a moment" in page_title or "Cloudflare" in page_title:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
@@ -699,21 +669,22 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(1.5)
-            except Exception as scroll_e:
-                log(f"⚠️ Kleine Scroll-Verzögerung: {scroll_e} -> Mache weiter.")
-                continue
-            
-    except Exception as e:
-        log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
-    finally:
-        await context.close()
+            except Exception as scroll_e: continue
+    except Exception as e: log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
+    finally: await context.close()
         
     unique_matches = []
     success_count = 0
     
     for obj_id, meta in matches_meta.items():
-        if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower():
-            continue
+        if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower(): continue
+        
+        # V104.0 EARLY DROP: Ist einer der Spieler in der DB?
+        p1_norm = normalize_db_name(get_last_name(meta['p1']))
+        p2_norm = normalize_db_name(get_last_name(meta['p2']))
+        
+        if p1_norm not in db_last_names and p2_norm not in db_last_names:
+            continue # Silent Drop. Kein Log-Spam für irrelevante Matches!
             
         nodes = matches_raw_nodes.get(obj_id, [])
         best_o1, best_o2 = 0.0, 0.0
@@ -726,21 +697,25 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                 
         if best_o1 > 0 and best_o2 > 0:
             unique_matches.append({
-                "p1_raw": meta['p1'],
-                "p2_raw": meta['p2'],
-                "tour": meta['tour'],
-                "time": meta['time'],
-                "odds1": best_o1,
-                "odds2": best_o2,
+                "p1_raw": meta['p1'], "p2_raw": meta['p2'], "tour": meta['tour'], "time": meta['time'],
+                "odds1": best_o1, "odds2": best_o2,
                 "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
                 "over_under_line": None, "over_odds": 0, "under_odds": 0,
                 "actual_winner": None, "score": ""
             })
             success_count += 1
         else:
-            log(f"   ⚠️ WebSocket/HTTP Missing Odds: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
+            log(f"   ⚠️ FEHLENDE QUOTEN für DB-Match: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
+            # V104.0 THE ARCHITECT'S PROBE: Schreibe den Payload in eine Datei zur Analyse!
+            try:
+                filename = f"debug_1win_{obj_id}.json"
+                with open(filename, "w", encoding="utf-8") as f:
+                    json.dump(nodes, f, indent=4)
+                log(f"   🛠️ DEBUG FILE ERSTELLT: {filename} - Bitte den Inhalt dieser Datei an den Architect senden!")
+            except Exception as dump_e:
+                log(f"   ❌ Konnte Debug-File nicht schreiben: {dump_e}")
 
-    log(f"✅ [1WIN GHOST] {success_count} Singles-Matches mit Quoten voll-korreliert.")
+    log(f"✅ [1WIN GHOST] {success_count} relevante DB-Matches mit Quoten korreliert.")
     return unique_matches
 
 
@@ -1433,7 +1408,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V103.0 (GOD-MODE WS EDITION) Starting...")
+    log(f"🚀 Neural Scout V104.0 (TARGETED DUMPER EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1481,7 +1456,7 @@ async def run_pipeline():
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
-            matches = await fetch_1win_markets_via_interception(browser)
+            matches = await fetch_1win_markets_via_interception(browser, players)
             
             if not matches:
                 log("❌ Keine Matches vom 1win Feed erhalten. Beende Zyklus.")
