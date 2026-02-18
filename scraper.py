@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V101.0 - CLOUDFLARE BYPASS & DEEP ODDS)...")
+log("🔌 Initialisiere Neural Scout (V102.0 - SOTA HEURISTIC ODDS EXTRACTION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,53 +514,79 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (DEEP GHOST INTERCEPTION)
+# 6.5 1WIN SOTA MASTER FEED (DEEP GHOST INTERCEPTION V102.0)
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
     """
-    V101.0 BRUTE-FORCE EXTRACTOR: Durchsucht rekursiv ALLES. 
-    1win versteckt Quoten überall. Diese Funktion gräbt sie aus dem tiefsten JSON-Keller.
+    V102.0 HEURISTIC MARGIN EXTRACTOR
+    Scans the entire JSON tree for pairs of odds and identifies the Match Winner 
+    market purely by mathematical implied probability logic (margin integrity).
     """
+    possible_pairs = []
+
+    # 1. Fallback for obvious top-level keys (legacy structure)
     o1 = to_float(m.get('w1', m.get('team1', 0)), 0)
     o2 = to_float(m.get('w2', m.get('team2', 0)), 0)
-    if o1 > 0 and o2 > 0: return o1, o2
-    
-    for k_pair in [('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2'), ('v1', 'v2')]:
-        if to_float(m.get(k_pair[0])) > 0 and to_float(m.get(k_pair[1])) > 0:
-            return to_float(m.get(k_pair[0])), to_float(m.get(k_pair[1]))
+    if o1 > 1.01 and o2 > 1.01:
+        possible_pairs.append((o1, o2))
 
-    def deep_search(obj):
-        nonlocal o1, o2
+    # 2. Heuristic Tree Traversal
+    def extract_odds_from_list(lst):
+        odds_found = []
+        for item in lst:
+            if isinstance(item, dict):
+                # We check all known odds keys 1win might use
+                for k in ['cf', 'coef', 'coefficient', 'price', 'value', 'v', 'k', 'odd']:
+                    val = to_float(item.get(k))
+                    if val > 1.01:
+                        odds_found.append(val)
+                        break 
+        if len(odds_found) >= 2:
+            # We take the first two, usually S1 and S2
+            possible_pairs.append((odds_found[0], odds_found[1]))
+
+    def deep_scan(obj):
         if isinstance(obj, dict):
-            for k_pair in [('w1', 'w2'), ('team1', 'team2'), ('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2')]:
-                c1 = to_float(obj.get(k_pair[0]))
-                c2 = to_float(obj.get(k_pair[1]))
-                if c1 > 1.0 and c2 > 1.0:
-                    o1, o2 = c1, c2
-                    return True
+            # Try to catch paired structures inside a dictionary node
+            for k1, k2 in [('w1', 'w2'), ('team1', 'team2'), ('k1', 'k2'), ('c1', 'c2'), ('coef1', 'coef2'), ('v1', 'v2'), ('p1', 'p2')]:
+                v1 = to_float(obj.get(k1))
+                v2 = to_float(obj.get(k2))
+                if v1 > 1.01 and v2 > 1.01:
+                    possible_pairs.append((v1, v2))
             
             for k, v in obj.items():
-                if isinstance(v, list) and len(v) >= 2:
-                    try:
-                        if isinstance(v[0], dict) and isinstance(v[1], dict):
-                            for odds_key in ['cf', 'odd', 'k', 'price', 'coefficient', 'value', 'v']:
-                                cand1 = to_float(v[0].get(odds_key))
-                                cand2 = to_float(v[1].get(odds_key))
-                                if cand1 > 1.0 and cand2 > 1.0:
-                                    o1, o2 = cand1, cand2
-                                    return True
-                    except: pass
-                if deep_search(v): return True
+                if isinstance(v, list):
+                    extract_odds_from_list(v)
+                    deep_scan(v)
+                elif isinstance(v, dict):
+                    deep_scan(v)
         elif isinstance(obj, list):
             for item in obj:
-                if deep_search(item): return True
-        return False
+                deep_scan(item)
 
-    deep_search(m)
-    return o1, o2
+    deep_scan(m)
+
+    # 3. Mathematical Evaluation
+    # wir suchen das Quotenpaar, das eine Marge nahe der Standard 5-6% (1.05) hat
+    best_pair = (0.0, 0.0)
+    best_margin_diff = 999.0 
+
+    for o1, o2 in possible_pairs:
+        # Implied probability: Wenn beide S1 und S2 sind, muss die Summe knapp über 1.0 (100%) liegen.
+        implied_prob = (1/o1) + (1/o2)
+        
+        # Validiere Tennis Sieger-Markt Marge (typisch 1.02 bis 1.15)
+        if 1.02 <= implied_prob <= 1.15:
+            # Wie nah ist es am Idealwert von 1.06?
+            margin_diff = abs(implied_prob - 1.06)
+            if margin_diff < best_margin_diff:
+                best_margin_diff = margin_diff
+                best_pair = (o1, o2)
+
+    return best_pair
 
 async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V101.0 Cloudflare Bypass Mode)...")
+    log("🚀 [1WIN GHOST] Starte getarnten Network Interception Scanner (V102.0 Cloudflare Bypass Mode)...")
     parsed_1win_matches = []
     
     context = await browser.new_context(
@@ -575,9 +601,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
     """)
     
     page = await context.new_page()
-    
-    # V101.0 FIX: KEIN BLOCKIEREN VON BILDERN MEHR! Cloudflare erkennt Bots, wenn Bilder/Fonts blockiert werden.
-    # Wir laden die Seite regulär wie ein echter Mensch.
 
     def extract_matches_recursively(obj):
         matches = []
@@ -610,7 +633,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             match_name = m.get('name', '') or m.get('eventName', '')
                             if not match_name or ' - ' not in match_name: continue
                             
-                            # V101.0 STRICT FILTER: Nur Singles! Wenn ein /, & oder + im Namen ist = Drop.
                             if '/' in match_name or '&' in match_name or '+' in match_name or ' / ' in match_name: continue
                             
                             parts = match_name.split(' - ')
@@ -625,7 +647,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             elif isinstance(tour_obj, str):
                                 tour_name = tour_obj
                                 
-                            # V101.0 STRICT FILTER: Keine Doubles Turniere
                             if "doubles" in str(tour_name).lower() or "doppel" in str(tour_name).lower(): continue
                                 
                             start_time_ts = m.get('startAt', 0)
@@ -633,7 +654,7 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
                             if start_time_ts > 0:
                                 start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
                                 
-                            # V101.0 Brute-Force Odds Extraction
+                            # V102.0 Heuristic Extraction
                             o1, o2 = find_best_odds(m)
                             
                             hc_line = None; hc_o1 = 0; hc_o2 = 0
@@ -662,7 +683,6 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
-        # V101.0 FIX: networkidle ist Pflicht, damit Cloudflare uns den Zugang vollständig gewährt, bevor wir scrollen!
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
         
         page_title = await page.title()
@@ -671,13 +691,11 @@ async def fetch_1win_markets_via_interception(browser: Browser) -> List[Dict]:
             await asyncio.sleep(5)
             
         log("⏳ Scrolle durch die Seite für Week-Coverage (15x Safe-Scroll)...")
-        # 15 Scrolls = Guter Sweetspot zwischen Coverage und Memory Limit.
         for _ in range(15):
             try:
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await asyncio.sleep(1.5)
             except Exception as scroll_e:
-                # V101.0 FIX: CONTINUE statt BREAK! Wenn ein Error passiert, mach einfach weiter, brich nicht alles ab!
                 log(f"⚠️ Kleine Scroll-Verzögerung: {scroll_e} -> Mache weiter.")
                 continue
             
@@ -1268,14 +1286,12 @@ async def update_past_results(browser: Browser):
                                     "score": score_cleaned
                                 }).eq("id", pm['id']).execute()
                                 
-                                # RE-PROFILING HOOK (FOR REAL-TIME SYNC)
                                 log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
                                 for p_name in [pm['player1_name'], pm['player2_name']]:
                                     p_hist = await fetch_player_history_extended(p_name, limit=80)
                                     p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                                     p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
                                     
-                                    # Update Profile in DB (This keeps ratings live!)
                                     supabase.table('players').update({
                                         'surface_ratings': p_profile,
                                         'form_rating': p_form 
@@ -1290,9 +1306,6 @@ async def update_past_results(browser: Browser):
 # 10. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
 # =================================================================
 class QuantumGamesSimulator:
-    """
-    SOTA Monte Carlo Engine for Tennis Totals.
-    """
     
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
@@ -1392,7 +1405,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V101.0 (TITANIUM EDITION) Starting...")
+    log(f"🚀 Neural Scout V102.0 (HEURISTIC EXTRACTOR EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1403,9 +1416,6 @@ async def run_pipeline():
             if not players: return
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
-            # =================================================================
-            # 🌍 GLOBAL PROFILER (V95 SCHEMA SYNC)
-            # =================================================================
             log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
             
             def needs_surface_update(p_data):
@@ -1439,7 +1449,6 @@ async def run_pipeline():
                 await asyncio.sleep(0.05) 
                 
             log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
-            # =================================================================
             
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
@@ -1459,13 +1468,12 @@ async def run_pipeline():
                 try:
                     await asyncio.sleep(0.5) 
                     
-                    # Step 1 - Sind BEIDE Spieler in der DB?
                     p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                     p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                     
                     if not p1_obj or not p2_obj:
                         skipped_db_count += 1
-                        continue # Silent Drop
+                        continue
                         
                     n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                     
@@ -1475,12 +1483,10 @@ async def run_pipeline():
                         
                     db_matched_count += 1
                         
-                    # Step 2 - Odds Validierung
                     if m['odds1'] <= 0 or m['odds2'] <= 0:
                         log(f"   ⏭️ Drop: Keine Quoten gefunden für {n1} vs {n2}.")
                         continue
                     
-                    # --- V83.4: MARKET SANITY GATEKEEPER ---
                     if not validate_market_integrity(m['odds1'], m['odds2']):
                         log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
                         continue 
@@ -1492,7 +1498,6 @@ async def run_pipeline():
                         res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                         if res2.data: existing_match = res2.data[0]
                     
-                    # --- VELOCITY CHECK (Anti-Spike) ---
                     if existing_match:
                         prev_o1 = to_float(existing_match.get('odds1'), 0)
                         prev_o2 = to_float(existing_match.get('odds2'), 0)
