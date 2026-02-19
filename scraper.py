@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V109.0 - TML SINGULARITY & STRICT ATP ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V110.0 - HORIZONTAL TOKEN ISOLATION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -56,7 +56,7 @@ SURFACE_STATS_CACHE: Dict[str, float] = {}
 METADATA_CACHE: Dict[str, Any] = {} 
 WEATHER_CACHE: Dict[str, Any] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
-TML_MATCH_CACHE: List[Dict] = [] # V109.0: TennisMyLife Data Lake
+TML_MATCH_CACHE: List[Dict] = [] 
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -69,19 +69,7 @@ COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 # 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
 # =================================================================
 async def fetch_tml_database():
-    """
-    V109.0: Zieht beim Start die hochpräzisen ATP Stats von TennisMyLife 
-    und lädt sie in den Arbeitsspeicher für maximale Modell-Performance.
-    """
     log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
-    urls_to_fetch = [
-        "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_2024.csv",
-        "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_2025.csv",
-        "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_2026.csv"
-    ]
-    
-    # Fallback/Proxy Nutzung der echten TML API falls vorhanden, hier Sackmann Base als Standard für CSV
-    # Da TML eine dynamische API nutzt, adaptieren wir hier den direkten Download
     loaded_matches = 0
     async with httpx.AsyncClient() as client:
         try:
@@ -287,7 +275,6 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 class MomentumV2Engine:
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
-        # V109.0: Blend Supabase match history with TML Data
         if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
         recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
@@ -553,7 +540,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V109.0 STRICT ATP SPATIAL ENGINE)
+# 6.5 1WIN SOTA MASTER FEED (V110.0 HORIZONTAL ISOLATION ENGINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     """Sucht in einem vertikalen Text-Slice nach der besten physikalischen Marge"""
@@ -586,11 +573,11 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V109.0 STRICT ATP SPATIAL STREAM ENGINE. 
-    Verhindert Jovic/Lajovic Cross-Pollination durch strikte ATP/WTA Barrieren 
-    und enge Line-Proximity-Checks.
+    V110.0 HORIZONTAL TOKEN ISOLATION ENGINE. 
+    Liest den DOM als vertikalen Stream, aber zwingt Matches auf dieselbe Zeile.
+    Killt Cross-Pollination und blendet Challenger/WTA rigoros aus.
     """
-    log("🚀 [1WIN GHOST] Starte Strict ATP Spatial Stream Engine (V109.0)...")
+    log("🚀 [1WIN GHOST] Starte Horizontal Token Isolation Engine (V110.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -638,72 +625,67 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
                 
                 current_tour = "Unknown"
-                # V109.0: STRICT ATP KEYWORDS ONLY
-                tour_keywords = ['atp', 'challenger', 'open', 'masters', 'cup', 'tour', 'grand slam']
-                wta_keywords = ['wta', 'women', 'itf women', 'doubles', 'doppel']
                 
-                is_wta_block = False
-
-                skip_until_index = -1
+                # V110.0 STRICT FILTER LOGIC
+                tour_keywords = ['atp', 'open', 'masters', 'cup', 'tour', 'grand slam']
+                wta_keywords = ['wta', 'women', 'itf women', 'doubles', 'doppel', 'challenger', 'itf'] # Challenger & ITF sind jetzt BLACKLIST!
+                
+                is_invalid_block = False
 
                 for i, line in enumerate(lines):
-                    if i < skip_until_index: continue
-
                     line_norm = normalize_text(line).lower()
                     
-                    # V109.0: Harte Barriere für Frauen/Doppel-Turniere
+                    # 1. Blockiere ungültige Turniere (WTA, Challenger)
                     if any(kw in line_norm for kw in wta_keywords):
-                        is_wta_block = True
+                        is_invalid_block = True
                         current_tour = line
                         continue
                     
+                    # 2. Aktiviere gültige Turniere (nur reine ATP-Events)
                     if any(kw in line_norm for kw in tour_keywords) and not any(kw in line_norm for kw in wta_keywords):
                         if len(line) < 60 and not re.match(r'^[\d\.,\s]+$', line):
                             current_tour = line
-                            is_wta_block = False
+                            is_invalid_block = False
                             continue
                             
-                    if is_wta_block: continue
+                    if is_invalid_block: continue
 
-                    p1_found_real = None
-                    for p_norm, p_real in db_name_map.items():
-                        if len(p_norm) > 3 and p_norm in line_norm:
-                            p1_found_real = p_real
-                            break
-                            
-                    if p1_found_real:
-                        # V109.0: Nur MAXIMAL 2 Zeilen weiter schauen, um Jovic vs Lajovic Bug zu killen!
-                        p2_found_real = None
-                        search_slice = lines[i:min(i+3, len(lines))]
-                        combined_text_norm = normalize_text(" ".join(search_slice)).lower()
+                    # 3. HORIZONTAL MATCHING: 1win schreibt Matches meistens als "Giron - Ruud" oder "Giron vs Ruud" in EINE Zeile.
+                    if "-" in line_norm or " vs " in line_norm or " v " in line_norm:
                         
+                        found_in_line = []
+                        # V110.0 Bounded Regex Suche statt "in string" (verhindert Jovic == Lajovic)
                         for p_norm, p_real in db_name_map.items():
-                            if len(p_norm) > 3 and p_norm in combined_text_norm and p_real != p1_found_real:
-                                p2_found_real = p_real
-                                break
-                                
-                        if p2_found_real:
-                            match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                            if len(p_norm) > 3:
+                                # Wir suchen das ganze Wort, umgeben von Wortgrenzen \b
+                                if re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
+                                    found_in_line.append(p_real)
+                        
+                        # Wenn wir auf EINER Zeile exakt zwei verschiedene Namen aus unserer DB finden:
+                        if len(found_in_line) >= 2:
+                            p1_found_real = found_in_line[0]
+                            p2_found_real = found_in_line[1]
                             
-                            if match_key not in seen_matches:
-                                odds_slice = lines[i:min(i+10, len(lines))] # Quoten müssen extrem nah sein
-                                o1, o2 = extract_odds_from_lines(odds_slice)
+                            if p1_found_real != p2_found_real:
+                                match_key = tuple(sorted([p1_found_real, p2_found_real]))
                                 
-                                if o1 > 0 and o2 > 0:
-                                    seen_matches.add(match_key)
-                                    parsed_matches.append({
-                                        "p1_raw": p1_found_real,
-                                        "p2_raw": p2_found_real,
-                                        "tour": clean_tournament_name(current_tour),
-                                        "time": "00:00",
-                                        "odds1": o1,
-                                        "odds2": o2,
-                                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                                        "actual_winner": None, "score": ""
-                                    })
-                                    # V109.0: Überspringe die nächsten 5 Zeilen, damit wir nicht nochmal im selben Block scrapen
-                                    skip_until_index = i + 5
+                                if match_key not in seen_matches:
+                                    odds_slice = lines[i:min(i+15, len(lines))]
+                                    o1, o2 = extract_odds_from_lines(odds_slice)
+                                    
+                                    if o1 > 0 and o2 > 0:
+                                        seen_matches.add(match_key)
+                                        parsed_matches.append({
+                                            "p1_raw": p1_found_real,
+                                            "p2_raw": p2_found_real,
+                                            "tour": clean_tournament_name(current_tour),
+                                            "time": "00:00",
+                                            "odds1": o1,
+                                            "odds2": o2,
+                                            "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                                            "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                                            "actual_winner": None, "score": ""
+                                        })
                 
                 await page.evaluate("window.scrollBy(0, 1000)")
                 
@@ -715,7 +697,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} relevante STRICT-ATP DB-Matches isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V110.0) isoliert.")
     return parsed_matches
 
 
@@ -992,13 +974,12 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     m1 = to_float(ai_meta.get('p1_tactical_score', 5)); m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
     
-    # V109.0: Serve TML Injector (If TML Data exists, it boosts the serve calculation)
     p1_tml_aces = sum(float(r.get('w_ace', 0) or 0) for r in TML_MATCH_CACHE if r.get('winner_name', '').endswith(n1))
     p2_tml_aces = sum(float(r.get('w_ace', 0) or 0) for r in TML_MATCH_CACHE if r.get('winner_name', '').endswith(n2))
     
     def get_offense(s, tml_boost): 
         base = s.get('serve', 50) + s.get('power', 50)
-        return base + (min(tml_boost, 100) * 0.1) # TML Boost Factor
+        return base + (min(tml_boost, 100) * 0.1) 
 
     c1_score = get_offense(s1, p1_tml_aces); c2_score = get_offense(s2, p2_tml_aces)
     
@@ -1410,10 +1391,15 @@ class QuantumGamesSimulator:
             }
         }
 
+# --- SMART FREEZE HELPER ---
+def is_valid_opening_odd(o1: float, o2: float) -> bool:
+    if o1 < 1.06 and o2 < 1.06: return False 
+    if o1 <= 1.01 or o2 <= 1.01: return False 
+    return True
+
 async def run_pipeline():
-    log(f"🚀 Neural Scout V109.0 (STRICT ATP & TML EDITION) Starting...")
+    log(f"🚀 Neural Scout V109.0 (STRICT ATP EDITION) Starting...")
     
-    # V109.0: Hole die TML Daten in den Speicher
     await fetch_tml_database()
     
     async with async_playwright() as p:
@@ -1458,153 +1444,7 @@ async def run_pipeline():
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
-            # --- V109.0 SPATIAL STREAM EXTRACTION ---
-            log("🚀 [1WIN GHOST] Starte STRICT ATP Spatial Stream Engine (V109.0)...")
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                java_script_enabled=True
-            )
-            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
-            page = await context.new_page()
-
-            db_name_map = {}
-            for db_p in players:
-                real_last = db_p.get('last_name', '')
-                if real_last:
-                    db_name_map[normalize_db_name(real_last)] = real_last
-
-            parsed_matches = []
-            seen_matches = set()
-
-            def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
-                floats = []
-                for l in lines_slice:
-                    cl = l.replace(',', '.').strip()
-                    matches = re.findall(r'\b\d+\.\d{2,3}\b', cl)
-                    for m_odd in matches:
-                        try:
-                            val = float(m_odd)
-                            if 1.01 < val < 50.0:
-                                floats.append(val)
-                        except: pass
-                
-                best_pair = (0.0, 0.0)
-                best_diff = 999.0
-                for f_idx in range(len(floats)):
-                    for s_idx in range(f_idx+1, min(f_idx+4, len(floats))):
-                        o1, o2 = floats[f_idx], floats[s_idx]
-                        try:
-                            implied = (1/o1) + (1/o2)
-                            if 1.02 <= implied <= 1.15:
-                                diff = abs(implied - 1.055)
-                                if abs(o1 - o2) < 0.05: diff += 0.03
-                                if diff < best_diff:
-                                    best_diff = diff
-                                    best_pair = (o1, o2)
-                        except: pass
-                return best_pair
-
-            try:
-                log("🌍 Navigiere im Stealth-Modus zu 1win...")
-                await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
-                
-                page_title = await page.title()
-                if "Just a moment" in page_title or "Cloudflare" in page_title:
-                    log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
-                    await asyncio.sleep(5)
-                    
-                log("⏳ Scrolle, klappe Matches auf und verarbeite top-down Text-Stream...")
-                
-                for scroll_step in range(20):
-                    try:
-                        await page.evaluate("""
-                            let buttons = document.querySelectorAll('div, button');
-                            for(let b of buttons) {
-                                let txt = b.innerText ? b.innerText.toLowerCase() : '';
-                                if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0 && b.clientWidth > 0) {
-                                    try { b.click(); } catch(e) {}
-                                }
-                            }
-                        """)
-                        await asyncio.sleep(1.0)
-                        
-                        text_dump = await page.evaluate("document.body.innerText")
-                        lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
-                        
-                        current_tour = "Unknown"
-                        # V109.0 STRICT ATP FILTER:
-                        tour_keywords = ['atp', 'challenger', 'open', 'masters', 'cup', 'tour', 'grand slam']
-                        wta_keywords = ['wta', 'women', 'itf women', 'doubles', 'doppel']
-                        is_wta_block = False
-                        
-                        for i, line in enumerate(lines):
-                            line_norm = normalize_text(line).lower()
-                            
-                            # V109.0: Block WTA und Doppel Turniere sofort
-                            if any(kw in line_norm for kw in wta_keywords):
-                                is_wta_block = True
-                                current_tour = line
-                                continue
-                                
-                            if any(kw in line_norm for kw in tour_keywords) and not any(kw in line_norm for kw in wta_keywords):
-                                if len(line) < 60 and not re.match(r'^[\d\.,\s]+$', line):
-                                    current_tour = line
-                                    is_wta_block = False
-                                    continue
-                                    
-                            if is_wta_block: continue
-                                    
-                            p1_found_real = None
-                            for p_norm, p_real in db_name_map.items():
-                                if len(p_norm) > 3 and p_norm in line_norm:
-                                    p1_found_real = p_real
-                                    break
-                                    
-                            if p1_found_real:
-                                p2_found_real = None
-                                # V109.0: Begrenze Suche auf max 3 Zeilen um Cross-Pollination (Jovic vs Lajovic) zu verhindern
-                                search_slice = lines[i:min(i+3, len(lines))]
-                                combined_text_norm = normalize_text(" ".join(search_slice)).lower()
-                                
-                                for p_norm, p_real in db_name_map.items():
-                                    if len(p_norm) > 3 and p_norm in combined_text_norm and p_real != p1_found_real:
-                                        p2_found_real = p_real
-                                        break
-                                        
-                                if p2_found_real:
-                                    match_key = tuple(sorted([p1_found_real, p2_found_real]))
-                                    
-                                    if match_key not in seen_matches:
-                                        odds_slice = lines[i:min(i+15, len(lines))]
-                                        o1, o2 = extract_odds_from_lines(odds_slice)
-                                        
-                                        if o1 > 0 and o2 > 0:
-                                            seen_matches.add(match_key)
-                                            parsed_matches.append({
-                                                "p1_raw": p1_found_real,
-                                                "p2_raw": p2_found_real,
-                                                "tour": clean_tournament_name(current_tour),
-                                                "time": "00:00",
-                                                "odds1": o1,
-                                                "odds2": o2,
-                                                "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                                                "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                                                "actual_winner": None, "score": ""
-                                            })
-                        
-                        await page.evaluate("window.scrollBy(0, 1000)")
-                        
-                    except Exception as scroll_e: 
-                        continue
-                        
-            except Exception as e:
-                log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
-            finally:
-                await context.close()
-
-            log(f"✅ [1WIN GHOST] {len(parsed_matches)} STRICT-ATP DB-Matches isoliert.")
-            matches = parsed_matches
+            matches = await fetch_1win_markets_spatial_stream(browser, players)
             
             if not matches:
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
@@ -1682,9 +1522,9 @@ async def run_pipeline():
                             update_data['over_odds'] = m['over_odds']
                             update_data['under_odds'] = m['under_odds']
                         
-                        # V109.0: Sichere Opening Odds Zuweisung
                         stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
-                        if stored_op1 <= 1.01 and m['odds1'] > 1.01:
+                        stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
+                        if not is_valid_opening_odd(stored_op1, stored_op2) and is_valid_opening_odd(m['odds1'], m['odds2']):
                              update_data["opening_odds1"] = m['odds1']
                              update_data["opening_odds2"] = m['odds2']
 
@@ -1843,7 +1683,7 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V109.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
+                    # V110.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER (Bugfixed)
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
@@ -1856,11 +1696,12 @@ async def run_pipeline():
                             try:
                                 old_o1 = to_float(existing_match.get('odds1'), 0)
                                 old_o2 = to_float(existing_match.get('odds2'), 0)
-                                # Wenn sich eine Quote um mehr als 0.01 ändert = LOG IT!
-                                if abs(old_o1 - m['odds1']) > 0.01 or abs(old_o2 - m['odds2']) > 0.01: 
+                                # Strict Float Check
+                                if abs(old_o1 - m['odds1']) >= 0.01 or abs(old_o2 - m['odds2']) >= 0.01: 
                                     should_log_history = True
-                                    log(f"      📈 [ODDS MOVEMENT DETECTED] {n1} vs {n2} | {old_o1} -> {m['odds1']}")
-                            except: pass
+                                    log(f"      📈 [ODDS MOVEMENT] {n1} vs {n2} | P1: {old_o1} -> {m['odds1']} | P2: {old_o2} -> {m['odds2']}")
+                            except Exception as e: 
+                                log(f"      ⚠️ History Check Error: {e}")
                         
                         if should_log_history:
                             pick_name = "LOCKED" if hist_is_locked else hist_pick_player
