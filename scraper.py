@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V113.0 - OMNI-DIRECTIONAL & TEMPORAL ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V114.0 - MICRO-TARGETING & UNSHACKLED ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -263,15 +263,15 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
 def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
     if old_o1 == 0 or old_o2 == 0: return False 
     
-    # V113.0: Odds Swap Detection (Bookmaker hat Seiten getauscht -> Kein Spike!)
-    if abs(new_o1 - old_o2) < 0.15 and abs(new_o2 - old_o1) < 0.15:
+    # V114.0: Swap Detection - Wenn Buchmacher S1 und S2 vertauscht
+    if abs(new_o1 - old_o2) < 0.25 and abs(new_o2 - old_o1) < 0.25:
         return False
         
     change_p1 = abs(new_o1 - old_o1) / old_o1
     change_p2 = abs(new_o2 - old_o2) / old_o2
     
-    # V113.0: Toleranz erhöht auf 60%, um Volatilität (wie bei Kopriva) zuzulassen
-    if change_p1 > 0.60 or change_p2 > 0.60:
+    # V114.0: Toleranz massiv erhöht (150%) - Value Scanner brauchen Volatilität!
+    if change_p1 > 1.50 or change_p2 > 1.50:
         if old_o1 < 1.10 or old_o2 < 1.10: return False
         return True
     return False
@@ -547,7 +547,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V113.0 OMNI-DIRECTIONAL TEMPORAL ENGINE)
+# 6.5 1WIN SOTA MASTER FEED (V114.0 MICRO-TARGETING ENGINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -578,7 +578,6 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     return best_pair
 
 def extract_time_context(lines_slice: List[str]) -> str:
-    """V113.0: Zieht Datum & Uhrzeit aus der Umgebung"""
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
         r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
@@ -603,10 +602,11 @@ def extract_time_context(lines_slice: List[str]) -> str:
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V113.0 OMNI-DIRECTIONAL ENGINE. 
-    Sucht Player 2 in derselben Zeile UND in den nächsten Zeilen (fixt Doha).
+    V114.0 MICRO-TARGETING ENGINE. 
+    Verhindert Cross-Pollination durch strikte 1-Linien Distanz und 
+    findet Turniere durch intelligentes Reverse-Backtracking.
     """
-    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V113.0)...")
+    log("🚀 [1WIN GHOST] Starte Micro-Targeting Engine (V114.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -623,6 +623,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last:
             db_name_map[normalize_db_name(real_last)] = real_last
 
+    # V114.0: Sortiere nach Länge absteigend, um "Martin" vs "Etcheverry" zu fixen
     sorted_db_names = sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True)
 
     parsed_matches = []
@@ -655,54 +656,60 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
                 
-                current_tour = "Unknown"
-                is_invalid_block = False
-
                 for i, line in enumerate(lines):
                     line_norm = normalize_text(line).lower()
                     
-                    # 1. State Machine: Header Filter
-                    # V113.0: Erlaube Zahlen im Namen (ATP 250 Doha)
-                    if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-                        if any(kw in line_norm for kw in ['wta', 'women', 'itf', 'challenger', 'doubles', 'doppel']):
-                            is_invalid_block = True
-                            current_tour = line
-                            continue
-                        elif any(kw in line_norm for kw in ['atp', 'open', 'masters', 'tour', 'classic', 'championship', 'cup']):
-                            is_invalid_block = False
-                            current_tour = line
-                            continue
-                            
-                    if is_invalid_block: continue
-
-                    # 2. Strict Boundary Search für Player 1
+                    # 1. P1 in dieser Zeile suchen (Exakter Match via \b)
                     p1_found_real = None
                     for p_norm, p_real in sorted_db_names:
-                        if len(p_norm) > 3:
+                        if len(p_norm) >= 2:
                             if re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
                                 p1_found_real = p_real
                                 break 
                                 
                     if p1_found_real:
-                        # 3. Omni-Directional Search: Schau in der AKTUELLEN und den nächsten 3 Zeilen nach P2!
                         p2_found_real = None
-                        search_slice = lines[i:min(i+4, len(lines))]
-                        combined_text_norm = normalize_text(" ".join(search_slice)).lower()
                         
+                        # 2A. P2 in der EXAKT SELBEN ZEILE suchen (Format: "Tsitsipas - Rublev")
                         for p_norm, p_real in sorted_db_names:
-                            if len(p_norm) > 3 and re.search(rf'\b{re.escape(p_norm)}\b', combined_text_norm):
-                                if p_real != p1_found_real:
+                            if len(p_norm) >= 2 and p_real != p1_found_real:
+                                if re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
                                     p2_found_real = p_real
                                     break
+                        
+                        # 2B. Wenn nicht, P2 in EXAKT DER NÄCHSTEN ZEILE suchen (Format: Grid / Flexbox)
+                        if not p2_found_real and i + 1 < len(lines):
+                            next_line_norm = normalize_text(lines[i+1]).lower()
+                            for p_norm, p_real in sorted_db_names:
+                                if len(p_norm) >= 2 and p_real != p1_found_real:
+                                    if re.search(rf'\b{re.escape(p_norm)}\b', next_line_norm):
+                                        p2_found_real = p_real
+                                        break
                                 
                         if p2_found_real:
                             match_key = tuple(sorted([p1_found_real, p2_found_real]))
                             
                             if match_key not in seen_matches:
-                                odds_slice = lines[i:min(i+15, len(lines))]
+                                
+                                # 3. REVERSE TOURNAMENT LOOKUP (Fixt Doha State-Machine Bug)
+                                current_tour = "Unknown"
+                                for j in range(i, max(-1, i-15), -1):
+                                    ln = lines[j].lower()
+                                    if 3 < len(ln) < 60 and not re.search(r'\d{1,2}\.\d{2}', ln):
+                                        if any(kw in ln for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'challenger', 'classic', 'cup', 'championship']):
+                                            current_tour = lines[j].strip()
+                                            break
+                                            
+                                # V114.0: Wenn das Turnier eindeutig WTA ist, ignoriere dieses Match
+                                if any(kw in current_tour.lower() for kw in ['wta', 'women', 'itf women']):
+                                    continue
+
+                                # 4. Quoten holen
+                                odds_slice = lines[i:min(i+12, len(lines))]
                                 o1, o2 = extract_odds_from_lines(odds_slice)
                                 
-                                time_context_slice = lines[max(0, i-4):min(i+4, len(lines))]
+                                # 5. Zeit/Datum holen
+                                time_context_slice = lines[max(0, i-3):min(i+3, len(lines))]
                                 extracted_time = extract_time_context(time_context_slice)
                                 
                                 if o1 > 0 and o2 > 0:
@@ -729,7 +736,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V113.0) isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V114.0) isoliert.")
     return parsed_matches
 
 
@@ -1424,7 +1431,7 @@ class QuantumGamesSimulator:
         }
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V113.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
+    log(f"🚀 Neural Scout V114.0 (UNSHACKLED OPTICAL EDITION) Starting...")
     
     await fetch_tml_database()
     
@@ -1715,7 +1722,7 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V113.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
+                    # V114.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
