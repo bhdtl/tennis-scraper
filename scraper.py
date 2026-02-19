@@ -1457,7 +1457,7 @@ async def run_pipeline():
                     log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
                     await asyncio.sleep(5)
                     
-                log("⏳ Scrolle, klappe Matches auf und verarbeite top-down Text-Stream...")
+                log("⏳ Scrolle, klappe versteckte Matches auf und verarbeite Text-Stream...")
                 
                 for scroll_step in range(20):
                     try:
