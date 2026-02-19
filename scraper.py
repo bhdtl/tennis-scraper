@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V113.0 - OMNI-DIRECTIONAL & TEMPORAL ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V114.0 - OMNI-DIRECTIONAL & TEMPORAL ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -263,14 +263,12 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
 def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
     if old_o1 == 0 or old_o2 == 0: return False 
     
-    # V113.0: Odds Swap Detection (Bookmaker hat Seiten getauscht -> Kein Spike!)
     if abs(new_o1 - old_o2) < 0.15 and abs(new_o2 - old_o1) < 0.15:
         return False
         
     change_p1 = abs(new_o1 - old_o1) / old_o1
     change_p2 = abs(new_o2 - old_o2) / old_o2
     
-    # V113.0: Toleranz erhöht auf 60%, um Volatilität (wie bei Kopriva) zuzulassen
     if change_p1 > 0.60 or change_p2 > 0.60:
         if old_o1 < 1.10 or old_o2 < 1.10: return False
         return True
@@ -547,7 +545,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V113.0 OMNI-DIRECTIONAL TEMPORAL ENGINE)
+# 6.5 1WIN SOTA MASTER FEED (V114.0 OMNI-DIRECTIONAL TEMPORAL ENGINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -557,18 +555,21 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
         for m in matches:
             try:
                 val = float(m)
-                if 1.01 < val < 50.0:
+                # L8 Fix: Erweitere das Limit für krasse Mismatches auf 150.0
+                if 1.0 < val <= 150.0:
                     floats.append(val)
             except: pass
             
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     for i in range(len(floats)):
-        for j in range(i+1, min(i+4, len(floats))):
+        # L8 Fix: Erweitere den Index Range, falls 1win Sponsorentexte zwischen die Quoten haut
+        for j in range(i+1, min(i+6, len(floats))):
             o1, o2 = floats[i], floats[j]
             try:
                 implied = (1/o1) + (1/o2)
-                if 1.02 <= implied <= 1.15:
+                # L8 Fix: Erlaube größere Margins für Heavy Juice Märkte
+                if 1.01 <= implied <= 1.20:
                     diff = abs(implied - 1.055)
                     if abs(o1 - o2) < 0.05: diff += 0.03
                     if diff < best_diff:
@@ -578,11 +579,11 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     return best_pair
 
 def extract_time_context(lines_slice: List[str]) -> str:
-    """V113.0: Zieht Datum & Uhrzeit aus der Umgebung"""
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
         r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
-        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b'
+        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b',
+        r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b'
     ]
     time_patterns = [r'\b\d{1,2}:\d{2}\b']
     
@@ -603,10 +604,10 @@ def extract_time_context(lines_slice: List[str]) -> str:
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V113.0 OMNI-DIRECTIONAL ENGINE. 
-    Sucht Player 2 in derselben Zeile UND in den nächsten Zeilen (fixt Doha).
+    V114.0 OMNI-DIRECTIONAL ENGINE. 
+    State Machine Lockout Fix für Doha/Qatar & Expanded Spatial Search.
     """
-    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V113.0)...")
+    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V114.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -661,14 +662,18 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 for i, line in enumerate(lines):
                     line_norm = normalize_text(line).lower()
                     
-                    # 1. State Machine: Header Filter
-                    # V113.0: Erlaube Zahlen im Namen (ATP 250 Doha)
+                    # 1. State Machine: Header Filter (V114.0 DOHA FIX)
+                    # L8 Fix: Aggressivere Whitelist, die Geo-Marker und fehlende "ATP" Tags abfängt.
                     if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-                        if any(kw in line_norm for kw in ['wta', 'women', 'itf', 'challenger', 'doubles', 'doppel']):
+                        if any(kw in line_norm for kw in ['wta', 'women', 'itf', 'challenger', 'doubles', 'doppel', 'srl', 'simulated']):
+                            if not is_invalid_block:
+                                log(f"🔎 State-Machine: 🚫 BLOCKED Tournament erkannt -> {line}")
                             is_invalid_block = True
                             current_tour = line
                             continue
-                        elif any(kw in line_norm for kw in ['atp', 'open', 'masters', 'tour', 'classic', 'championship', 'cup']):
+                        elif any(kw in line_norm for kw in ['atp', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
+                            if is_invalid_block:
+                                log(f"🔎 State-Machine: ✅ ALLOWED Tournament erkannt (Reset Lockout) -> {line}")
                             is_invalid_block = False
                             current_tour = line
                             continue
@@ -684,9 +689,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 break 
                                 
                     if p1_found_real:
-                        # 3. Omni-Directional Search: Schau in der AKTUELLEN und den nächsten 3 Zeilen nach P2!
+                        # 3. Omni-Directional Search: L8 Fix (Erhöht auf 6 Zeilen)
                         p2_found_real = None
-                        search_slice = lines[i:min(i+4, len(lines))]
+                        search_slice = lines[i:min(i+6, len(lines))]
                         combined_text_norm = normalize_text(" ".join(search_slice)).lower()
                         
                         for p_norm, p_real in sorted_db_names:
@@ -699,7 +704,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             match_key = tuple(sorted([p1_found_real, p2_found_real]))
                             
                             if match_key not in seen_matches:
-                                odds_slice = lines[i:min(i+15, len(lines))]
+                                # L8 Fix: Such-Radius für Odds auf 20 Lines erweitert
+                                odds_slice = lines[i:min(i+20, len(lines))]
                                 o1, o2 = extract_odds_from_lines(odds_slice)
                                 
                                 time_context_slice = lines[max(0, i-4):min(i+4, len(lines))]
@@ -729,7 +735,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V113.0) isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V114.0) isoliert.")
     return parsed_matches
 
 
@@ -1424,7 +1430,7 @@ class QuantumGamesSimulator:
         }
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V113.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
+    log(f"🚀 Neural Scout V114.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
     
     await fetch_tml_database()
     
@@ -1552,6 +1558,10 @@ async def run_pipeline():
                         
                         stored_op1 = to_float(existing_match.get('opening_odds1'), 0)
                         stored_op2 = to_float(existing_match.get('opening_odds2'), 0)
+                        
+                        def is_valid_opening_odd(o1, o2):
+                            return o1 > 1.01 and o2 > 1.01
+                            
                         if not is_valid_opening_odd(stored_op1, stored_op2) and is_valid_opening_odd(m['odds1'], m['odds2']):
                              update_data["opening_odds1"] = m['odds1']
                              update_data["opening_odds2"] = m['odds2']
@@ -1715,7 +1725,7 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V113.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
+                    # V114.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
