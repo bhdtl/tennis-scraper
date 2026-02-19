@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V114.0 - OMNI-DIRECTIONAL & TEMPORAL ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V115.0 - SOTA SCROLL & ANTI-CANNIBALIZATION ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -542,10 +542,8 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
             return response.json()['choices'][0]['message']['content']
         except: return None
 
-call_gemini = call_groq 
-
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V114.0 OMNI-DIRECTIONAL TEMPORAL ENGINE)
+# 6.5 1WIN SOTA MASTER FEED (V115.0 SPA SCROLL & ANTI-CANNIBALIZATION)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -555,7 +553,6 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
         for m in matches:
             try:
                 val = float(m)
-                # L8 Fix: Erweitere das Limit für krasse Mismatches auf 150.0
                 if 1.0 < val <= 150.0:
                     floats.append(val)
             except: pass
@@ -563,12 +560,10 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     for i in range(len(floats)):
-        # L8 Fix: Erweitere den Index Range, falls 1win Sponsorentexte zwischen die Quoten haut
         for j in range(i+1, min(i+6, len(floats))):
             o1, o2 = floats[i], floats[j]
             try:
                 implied = (1/o1) + (1/o2)
-                # L8 Fix: Erlaube größere Margins für Heavy Juice Märkte
                 if 1.01 <= implied <= 1.20:
                     diff = abs(implied - 1.055)
                     if abs(o1 - o2) < 0.05: diff += 0.03
@@ -603,11 +598,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    """
-    V114.0 OMNI-DIRECTIONAL ENGINE. 
-    State Machine Lockout Fix für Doha/Qatar & Expanded Spatial Search.
-    """
-    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V114.0)...")
+    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V115.0 - SOTA SCROLL)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -638,20 +629,24 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Scrolle, klappe versteckte Matches auf und verarbeite Text-Stream...")
+        log("⏳ Scrolle physisch (Hardware-Level), um SPA-Container zu triggern...")
         
-        for scroll_step in range(20):
+        for scroll_step in range(25):
             try:
+                # L8 Fix: SPA-gerechtes Hardware-Scrolling (Umgeht den window.scrollBy Loop-Bug)
+                await page.mouse.wheel(delta_x=0, delta_y=2500)
+                await page.keyboard.press("PageDown")
+                
                 await page.evaluate("""
-                    let buttons = document.querySelectorAll('div, button');
+                    let buttons = document.querySelectorAll('div, button, span');
                     for(let b of buttons) {
                         let txt = b.innerText ? b.innerText.toLowerCase() : '';
-                        if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0 && b.clientWidth > 0) {
+                        if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0) {
                             try { b.click(); } catch(e) {}
                         }
                     }
                 """)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5) # Mehr Zeit für Netzwerkanfragen beim Scrollen
                 
                 text_dump = await page.evaluate("document.body.innerText")
                 lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
@@ -662,16 +657,18 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 for i, line in enumerate(lines):
                     line_norm = normalize_text(line).lower()
                     
-                    # 1. State Machine: Header Filter (V114.0 DOHA FIX)
-                    # L8 Fix: Aggressivere Whitelist, die Geo-Marker und fehlende "ATP" Tags abfängt.
+                    # L8 Fix: Strikte Word Boundaries (\b) verhindern den "Mena" Bug!
+                    blocked_pattern = r'\b(wta|women|itf|challenger|doubles|doppel|srl|simulated)\b'
+                    allowed_pattern = r'\b(atp|open|masters|tour|classic|championship|cup|men|singles|doha|qatar|dubai|rotterdam|rio|los cabos|acapulco)\b'
+                    
                     if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-                        if any(kw in line_norm for kw in ['wta', 'women', 'itf', 'challenger', 'doubles', 'doppel', 'srl', 'simulated']):
+                        if re.search(blocked_pattern, line_norm):
                             if not is_invalid_block:
                                 log(f"🔎 State-Machine: 🚫 BLOCKED Tournament erkannt -> {line}")
                             is_invalid_block = True
                             current_tour = line
                             continue
-                        elif any(kw in line_norm for kw in ['atp', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
+                        elif re.search(allowed_pattern, line_norm):
                             if is_invalid_block:
                                 log(f"🔎 State-Machine: ✅ ALLOWED Tournament erkannt (Reset Lockout) -> {line}")
                             is_invalid_block = False
@@ -680,7 +677,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             
                     if is_invalid_block: continue
 
-                    # 2. Strict Boundary Search für Player 1
                     p1_found_real = None
                     for p_norm, p_real in sorted_db_names:
                         if len(p_norm) > 3:
@@ -689,9 +685,16 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 break 
                                 
                     if p1_found_real:
-                        # 3. Omni-Directional Search: L8 Fix (Erhöht auf 6 Zeilen)
+                        # L8 Fix: Anti-Cannibalization Logic ("Etcheverry vs Martin" Fix)
                         p2_found_real = None
-                        search_slice = lines[i:min(i+6, len(lines))]
+                        
+                        # Prüfe, ob sie in der exakt selben Zeile stehen (z.B. "Etcheverry - Gaubas")
+                        if '-' in line_norm or 'vs' in line_norm:
+                            search_slice = lines[i:min(i+6, len(lines))]
+                        else:
+                            # Zwinge P2 in die nachfolgenden Zeilen, um Middle-Name-Matching zu verhindern!
+                            search_slice = lines[i+1:min(i+6, len(lines))]
+                            
                         combined_text_norm = normalize_text(" ".join(search_slice)).lower()
                         
                         for p_norm, p_real in sorted_db_names:
@@ -704,7 +707,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             match_key = tuple(sorted([p1_found_real, p2_found_real]))
                             
                             if match_key not in seen_matches:
-                                # L8 Fix: Such-Radius für Odds auf 20 Lines erweitert
                                 odds_slice = lines[i:min(i+20, len(lines))]
                                 o1, o2 = extract_odds_from_lines(odds_slice)
                                 
@@ -724,9 +726,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                         "over_under_line": None, "over_odds": 0, "under_odds": 0,
                                         "actual_winner": None, "score": ""
                                     })
-                
-                await page.evaluate("window.scrollBy(0, 1000)")
-                
+                                    
             except Exception as scroll_e: 
                 continue
                 
@@ -735,7 +735,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V114.0) isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V115.0) isoliert.")
     return parsed_matches
 
 
@@ -1430,7 +1430,7 @@ class QuantumGamesSimulator:
         }
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V114.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
+    log(f"🚀 Neural Scout V115.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
     
     await fetch_tml_database()
     
@@ -1725,7 +1725,7 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V114.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
+                    # V115.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
