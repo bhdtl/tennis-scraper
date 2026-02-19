@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V111.0 - VERTICAL PROXIMITY & STRICT BOUNDS)...")
+log("🔌 Initialisiere Neural Scout (V112.0 - TEMPORAL CONTEXT & FUZZY HEADER)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -540,7 +540,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V111.0 VERTICAL PROXIMITY ENGINE)
+# 6.5 1WIN SOTA MASTER FEED (V112.0 TEMPORAL FUZZY ENGINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     """Sucht in einem vertikalen Text-Slice nach der besten physikalischen Marge"""
@@ -571,12 +571,37 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
             except: pass
     return best_pair
 
+def extract_time_context(lines_slice: List[str]) -> str:
+    """V112.0: Sucht nach Datums- und Uhrzeitformaten im Text-Block"""
+    # Regex für "19 Feb", "19.02", "Today 14:30", "Tomorrow"
+    date_patterns = [
+        r'\b\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b',
+        r'\b\d{1,2}[\./]\d{1,2}\b',
+        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b'
+    ]
+    time_patterns = [r'\b\d{1,2}:\d{2}\b']
+    
+    found_date = ""
+    found_time = "00:00"
+    
+    for l in lines_slice:
+        for dp in date_patterns:
+            m = re.search(dp, l, re.IGNORECASE)
+            if m: found_date = m.group(0)
+        for tp in time_patterns:
+            m = re.search(tp, l)
+            if m: found_time = m.group(0)
+            
+    if found_date:
+        return f"{found_date} {found_time}"
+    return found_time
+
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V111.0 VERTICAL PROXIMITY ENGINE. 
-    Killt Halluzinationen durch strenge Bound-Regex (\b) und 2-Line-Limits.
+    V112.0 TEMPORAL FUZZY ENGINE. 
+    Versteht Datum/Uhrzeit und ignoriert ATP-Zahlen im Header (wie ATP 250 Doha).
     """
-    log("🚀 [1WIN GHOST] Starte Vertical Proximity Engine (V111.0)...")
+    log("🚀 [1WIN GHOST] Starte Temporal Fuzzy Engine (V112.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -593,7 +618,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last:
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    # V111.0: Sortiere nach Länge absteigend! So wird "Etcheverry" vor "Martin" gefunden.
     sorted_db_names = sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True)
 
     parsed_matches = []
@@ -632,9 +656,10 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 for i, line in enumerate(lines):
                     line_norm = normalize_text(line).lower()
                     
-                    # 1. State Machine: Ist es ein Header? (kurz, keine Zahlen)
-                    if len(line) > 3 and len(line) < 60 and not re.search(r'\d{2,}', line):
-                        # Blockiere WTA, Doppel und Challenger rigoros!
+                    # 1. State Machine: Ist es ein Header?
+                    # V112.0: Erlaube Zahlen im Namen (ATP 250), aber blockiere reine Quoten-Zeilen
+                    if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
+                        
                         if any(kw in line_norm for kw in ['wta', 'women', 'itf', 'challenger', 'doubles', 'doppel']):
                             is_invalid_block = True
                             current_tour = line
@@ -650,13 +675,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     p1_found_real = None
                     for p_norm, p_real in sorted_db_names:
                         if len(p_norm) > 3:
-                            # \b stellt sicher, dass wir "jovic" nicht in "lajovic" finden
                             if re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
                                 p1_found_real = p_real
-                                break # Bricht ab nach dem ersten (längsten) Treffer! "Martin" wird bei "Etcheverry" ignoriert.
+                                break 
                                 
                     if p1_found_real:
-                        # 3. Strict Vertical Proximity: Player 2 MUSS in den nächsten 2 Zeilen kommen
+                        # 3. Strict Vertical Proximity
                         p2_found_real = None
                         search_slice = lines[i+1:min(i+3, len(lines))]
                         
@@ -667,15 +691,19 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                     if p_real != p1_found_real:
                                         p2_found_real = p_real
                                         break
-                            if p2_found_real: break # Gefunden! Abbrechen.
+                            if p2_found_real: break 
                                 
                         if p2_found_real:
                             match_key = tuple(sorted([p1_found_real, p2_found_real]))
                             
                             if match_key not in seen_matches:
-                                # Wir haben das Match! Jetzt die Quoten filtern
+                                # 4. Quoten extrahieren
                                 odds_slice = lines[i+1:min(i+15, len(lines))]
                                 o1, o2 = extract_odds_from_lines(odds_slice)
+                                
+                                # 5. V112.0: Zeit/Datum Kontext extrahieren (2 Zeilen drüber bis 2 Zeilen drunter)
+                                time_context_slice = lines[max(0, i-2):min(i+3, len(lines))]
+                                extracted_time = extract_time_context(time_context_slice)
                                 
                                 if o1 > 0 and o2 > 0:
                                     seen_matches.add(match_key)
@@ -683,7 +711,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                         "p1_raw": p1_found_real,
                                         "p2_raw": p2_found_real,
                                         "tour": clean_tournament_name(current_tour),
-                                        "time": "00:00",
+                                        "time": extracted_time, # V112.0 Time Inject
                                         "odds1": o1,
                                         "odds2": o2,
                                         "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
@@ -701,7 +729,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V111.0) isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V112.0) isoliert.")
     return parsed_matches
 
 
@@ -1396,7 +1424,7 @@ class QuantumGamesSimulator:
         }
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V111.0 (VERTICAL PROXIMITY EDITION) Starting...")
+    log(f"🚀 Neural Scout V112.0 (TEMPORAL CONTEXT EDITION) Starting...")
     
     await fetch_tml_database()
     
@@ -1510,6 +1538,9 @@ async def run_pipeline():
                         update_data = {}
                         update_data["odds1"] = m['odds1']
                         update_data["odds2"] = m['odds2']
+                        # V112.0: Update Time if found
+                        if m['time'] and m['time'] != "00:00":
+                            update_data["match_time"] = m['time']
                         
                         if m.get('handicap_line') is not None:
                             update_data['handicap_line'] = m['handicap_line']
@@ -1610,7 +1641,7 @@ async def run_pipeline():
                             hist_is_value = is_value_active; hist_pick_player = value_pick_player
 
                         else:
-                            log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2} | T: {matched_tour_name} ({surf})")
+                            log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2} | T: {matched_tour_name} ({surf}) | Time: {m['time']}")
                             
                             f1_data = p1_form_v2
                             f2_data = p2_form_v2
@@ -1643,13 +1674,18 @@ async def run_pipeline():
                             ai_text_final = f"{ai_text_base} {value_tag} {games_tag}"
                             if style_stats_p1 and style_stats_p1['verdict'] != "Neutral": ai_text_final += f" (Note: {n1} {style_stats_p1['verdict']})"
                         
+                            # Formatiere die gefundene Zeit sicher
+                            final_time_str = f"{target_date.strftime('%Y-%m-%d')}T00:00:00Z"
+                            if m['time'] and m['time'] != "00:00":
+                                final_time_str = m['time']
+
                             data = {
                                 "player1_name": n1, "player2_name": n2, "tournament": matched_tour_name,
                                 "ai_fair_odds1": fair1, "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final,
                                 "games_prediction": sim_result, 
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                                "match_time": f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z",
+                                "match_time": final_time_str,
                                 "odds1": m['odds1'],
                                 "odds2": m['odds2']
                             }
@@ -1681,7 +1717,6 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V111.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
