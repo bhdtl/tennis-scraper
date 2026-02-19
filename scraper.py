@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V104.0 - EARLY FILTERING & PAYLOAD DUMPER)...")
+log("🔌 Initialisiere Neural Scout (V105.0 - SLIDING WINDOW EXTRACTOR & DEEP FLATTENING)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,90 +514,131 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V104.0 EARLY FILTER & DUMPER)
+# 6.5 1WIN SOTA MASTER FEED (V105.0 SWE - SLIDING WINDOW EXTRACTOR)
 # =================================================================
 def find_best_odds(m: Dict) -> tuple[float, float]:
-    valid_pairs = []
+    """
+    V105.0 SWE (Sliding Window Extractor)
+    Zerstört Dict-of-Dicts Obfuskation. Extrahiert kontinuierlich Arrays an Floats 
+    aus dem gesamten Node und nutzt Mathematik (Marge) um den Match Winner zu finden.
+    """
+    odds_keys = {'c', 'cf', 'coef', 'coefficient', 'v', 'val', 'value', 'price', 'odd', 'odds', 'k', 'w1', 'w2', 'p', 'rate', 'odds_decimal'}
     
-    def get_floats(d: dict):
-        floats = []
-        for k, v in d.items():
-            try:
-                val = float(v)
-                if 1.01 <= val <= 100.0:
-                    floats.append(val)
-            except: pass
-        return floats
-
-    def deep_search(obj):
+    def extract_by_keys(obj):
+        res = []
         if isinstance(obj, dict):
-            for k1, k2 in [('w1', 'w2'), ('team1', 'team2'), ('S1', 'S2'), ('s1', 's2'), ('k1', 'k2'), ('coef1', 'coef2')]:
-                if k1 in obj and k2 in obj:
+            found_odd = False
+            for k, val in obj.items():
+                if str(k).lower() in odds_keys:
                     try:
-                        val1 = float(obj[k1])
-                        val2 = float(obj[k2])
-                        if 1.01 < val1 < 100.0 and 1.01 < val2 < 100.0:
-                            valid_pairs.append((val1, val2))
+                        f_val = float(val)
+                        if 1.01 < f_val < 100.0:
+                            res.append(f_val)
+                            found_odd = True
                     except: pass
-                    
-            for k, v in obj.items():
-                deep_search(v)
-                
+            
+            # Falls dieses Dict selbst keine Quoten hat, tiefer graben
+            if not found_odd:
+                for k, val in obj.items():
+                    res.extend(extract_by_keys(val))
         elif isinstance(obj, list):
-            if len(obj) == 2 and isinstance(obj[0], dict) and isinstance(obj[1], dict):
-                f1 = get_floats(obj[0])
-                f2 = get_floats(obj[1])
-                for val1 in f1:
-                    for val2 in f2:
-                        valid_pairs.append((val1, val2))
-            if len(obj) == 2:
-                try:
-                    val1 = float(obj[0])
-                    val2 = float(obj[1])
-                    if 1.01 < val1 < 100.0 and 1.01 < val2 < 100.0:
-                        valid_pairs.append((val1, val2))
-                except: pass
             for item in obj:
-                deep_search(item)
+                res.extend(extract_by_keys(item))
+        return res
 
-    deep_search(m)
+    extracted = extract_by_keys(m)
     
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
-    for o1, o2 in valid_pairs:
-        margin = (1/o1) + (1/o2)
-        if 1.02 <= margin <= 1.12:
-            diff = abs(margin - 1.055)
-            if abs(o1 - o2) < 0.05: diff += 0.03 
-            if diff < best_diff:
-                best_diff = diff
-                best_pair = (o1, o2)
+    # 1. Sliding Window über isolierte Keys
+    for i in range(len(extracted) - 1):
+        o1 = extracted[i]
+        o2 = extracted[i+1]
+        try:
+            implied = (1/o1) + (1/o2)
+            # Tennis Match Winner Marge ist i.d.R 1.02 bis 1.12
+            if 1.02 <= implied <= 1.12:
+                diff = abs(implied - 1.055)
+                # Handicaps sind oft symmetrisch (z.B. 1.85 / 1.85). Wir bestrafen das.
+                if abs(o1 - o2) < 0.05: 
+                    diff += 0.03
+                
+                if diff < best_diff:
+                    best_diff = diff
+                    best_pair = (o1, o2)
+        except: pass
+                
+    if best_pair != (0.0, 0.0):
+        return best_pair
+
+    # 2. FALLBACK: Blind Float Extraction (Für extrem verschlüsselte Payloads)
+    def extract_all_floats(obj):
+        res = []
+        if isinstance(obj, dict):
+            for k, val in obj.items():
+                res.extend(extract_all_floats(val))
+        elif isinstance(obj, list):
+            for item in obj:
+                res.extend(extract_all_floats(item))
+        elif isinstance(obj, (int, float, str)):
+            try:
+                f_val = float(obj)
+                # Striktere Bounds für blinde Suche
+                if 1.01 < f_val < 50.0 and '.' in str(obj):
+                    res.append(f_val)
+            except: pass
+        return res
+
+    extracted_blind = extract_all_floats(m)
+    for i in range(len(extracted_blind) - 1):
+        o1 = extracted_blind[i]
+        o2 = extracted_blind[i+1]
+        try:
+            implied = (1/o1) + (1/o2)
+            if 1.02 <= implied <= 1.12:
+                diff = abs(implied - 1.055)
+                if abs(o1 - o2) < 0.05: diff += 0.03
+                if diff < best_diff:
+                    best_diff = diff
+                    best_pair = (o1, o2)
+        except: pass
                 
     return best_pair
 
 async def fetch_1win_markets_via_interception(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V104.0 - DB Filter & Dumper)...")
+    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V105.0 - SWE Architecture)...")
     
     matches_meta = {} 
     matches_raw_nodes = {} 
     
-    # V104.0: Baue ein schnelles Set aller DB-Nachnamen für EARLY DROPS
     db_last_names = {normalize_db_name(p.get('last_name', '')) for p in db_players if p.get('last_name')}
     
     def extract_id(obj: dict) -> Optional[str]:
-        for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId']:
-            if k in obj and str(obj[k]).isdigit(): return str(obj[k])
+        for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId', 'MatchId', 'EventID']:
+            if k in obj:
+                val = str(obj[k])
+                if val.isdigit(): return val
         return None
 
     def traverse_and_store(obj):
         if isinstance(obj, dict):
             obj_id = extract_id(obj)
+            
+            # Nested ID Fallback (z.B. {"match": {"id": 123}})
+            if not obj_id and 'match' in obj and isinstance(obj['match'], dict):
+                obj_id = extract_id(obj['match'])
+            if not obj_id and 'event' in obj and isinstance(obj['event'], dict):
+                obj_id = extract_id(obj['event'])
+                
             if obj_id:
                 if obj_id not in matches_raw_nodes: matches_raw_nodes[obj_id] = []
                 matches_raw_nodes[obj_id].append(obj)
                 
                 name_val = obj.get('name', '') or obj.get('eventName', '')
+                if not name_val and 'match' in obj and isinstance(obj['match'], dict):
+                    name_val = obj['match'].get('name', '')
+                    
                 if isinstance(name_val, str) and ' - ' in name_val:
                     if '/' not in name_val and '&' not in name_val and '+' not in name_val and ' / ' not in name_val:
                         parts = name_val.split(' - ')
@@ -625,7 +666,7 @@ async def fetch_1win_markets_via_interception(browser: Browser, db_players: List
     async def handle_response(response):
         if response.request.resource_type in ["fetch", "xhr"]:
             url = response.url
-            if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events"]):
+            if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events", "lines", "markets"]):
                 try:
                     text = await response.text()
                     if "{" in text and "}" in text: traverse_and_store(json.loads(text))
@@ -679,12 +720,11 @@ async def fetch_1win_markets_via_interception(browser: Browser, db_players: List
     for obj_id, meta in matches_meta.items():
         if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower(): continue
         
-        # V104.0 EARLY DROP: Ist einer der Spieler in der DB?
         p1_norm = normalize_db_name(get_last_name(meta['p1']))
         p2_norm = normalize_db_name(get_last_name(meta['p2']))
         
         if p1_norm not in db_last_names and p2_norm not in db_last_names:
-            continue # Silent Drop. Kein Log-Spam für irrelevante Matches!
+            continue
             
         nodes = matches_raw_nodes.get(obj_id, [])
         best_o1, best_o2 = 0.0, 0.0
@@ -706,14 +746,6 @@ async def fetch_1win_markets_via_interception(browser: Browser, db_players: List
             success_count += 1
         else:
             log(f"   ⚠️ FEHLENDE QUOTEN für DB-Match: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
-            # V104.0 THE ARCHITECT'S PROBE: Schreibe den Payload in eine Datei zur Analyse!
-            try:
-                filename = f"debug_1win_{obj_id}.json"
-                with open(filename, "w", encoding="utf-8") as f:
-                    json.dump(nodes, f, indent=4)
-                log(f"   🛠️ DEBUG FILE ERSTELLT: {filename} - Bitte den Inhalt dieser Datei an den Architect senden!")
-            except Exception as dump_e:
-                log(f"   ❌ Konnte Debug-File nicht schreiben: {dump_e}")
 
     log(f"✅ [1WIN GHOST] {success_count} relevante DB-Matches mit Quoten korreliert.")
     return unique_matches
@@ -1408,7 +1440,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V104.0 (TARGETED DUMPER EDITION) Starting...")
+    log(f"🚀 Neural Scout V105.0 (SWE GOD-MODE EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1432,26 +1464,25 @@ async def run_pipeline():
                 return False
 
             players_to_update = [p for p in players if needs_surface_update(p)]
-            log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
-            
-            for p_data in players_to_update:
-                p_name = p_data['last_name']
-                p_hist = await fetch_player_history_extended(p_name, limit=80)
-                
-                p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                
-                try:
-                    supabase.table('players').update({
-                        'surface_ratings': p_profile,
-                        'form_rating': p_form
-                    }).eq('id', p_data['id']).execute()
-                except Exception as e:
-                    log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
-                
-                await asyncio.sleep(0.05) 
-                
-            log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
+            if players_to_update:
+                log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
+                for p_data in players_to_update:
+                    p_name = p_data['last_name']
+                    p_hist = await fetch_player_history_extended(p_name, limit=80)
+                    
+                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                    p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                    
+                    try:
+                        supabase.table('players').update({
+                            'surface_ratings': p_profile,
+                            'form_rating': p_form
+                        }).eq('id', p_data['id']).execute()
+                    except Exception as e:
+                        log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
+                    
+                    await asyncio.sleep(0.05) 
+                log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
             
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
@@ -1459,7 +1490,7 @@ async def run_pipeline():
             matches = await fetch_1win_markets_via_interception(browser, players)
             
             if not matches:
-                log("❌ Keine Matches vom 1win Feed erhalten. Beende Zyklus.")
+                log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
                 return
                 
             log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
