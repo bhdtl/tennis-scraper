@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V107.0 - OPTICAL DOM RECONNAISSANCE)...")
+log("🔌 Initialisiere Neural Scout (V108.0 - SPATIAL TEXT STREAM ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,14 +514,44 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V107.0 OPTICAL DOM RECONNAISSANCE)
+# 6.5 1WIN SOTA MASTER FEED (V108.0 SPATIAL STREAM ENGINE)
 # =================================================================
-async def fetch_1win_markets_optical_dom(browser: Browser, db_players: List[Dict]) -> List[Dict]:
+def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
+    """Sucht in einem vertikalen Text-Slice nach der besten physikalischen Marge"""
+    floats = []
+    for l in lines_slice:
+        cl = l.replace(',', '.').strip()
+        matches = re.findall(r'\b\d+\.\d{2,3}\b', cl)
+        for m in matches:
+            try:
+                val = float(m)
+                if 1.01 < val < 50.0:
+                    floats.append(val)
+            except: pass
+            
+    best_pair = (0.0, 0.0)
+    best_diff = 999.0
+    for i in range(len(floats)):
+        for j in range(i+1, min(i+4, len(floats))):
+            o1, o2 = floats[i], floats[j]
+            try:
+                implied = (1/o1) + (1/o2)
+                if 1.02 <= implied <= 1.15:
+                    diff = abs(implied - 1.055)
+                    if abs(o1 - o2) < 0.05: diff += 0.03
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_pair = (o1, o2)
+            except: pass
+    return best_pair
+
+async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V107.0 OPTICAL DOM ENGINE. Bypasses Redux state normalization by scraping the 
-    rendered pixels/text directly from the visible DOM during scrolling.
+    V108.0 SPATIAL STREAM ENGINE. 
+    Liest den DOM als vertikalen Stream und verbindet Turniere, Spieler und Quoten 
+    rein durch visuelle Nähe und State-Machine-Kontext.
     """
-    log("🚀 [1WIN GHOST] Starte Optical DOM Reconnaissance Engine (V107.0)...")
+    log("🚀 [1WIN GHOST] Starte Hierarchical Spatial Stream Engine (V108.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -532,7 +562,14 @@ async def fetch_1win_markets_optical_dom(browser: Browser, db_players: List[Dict
     await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
     page = await context.new_page()
 
-    all_raw_cards = set()
+    db_name_map = {}
+    for p in db_players:
+        real_last = p.get('last_name', '')
+        if real_last:
+            db_name_map[normalize_db_name(real_last)] = real_last
+
+    parsed_matches = []
+    seen_matches = set()
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
@@ -543,105 +580,93 @@ async def fetch_1win_markets_optical_dom(browser: Browser, db_players: List[Dict
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Scrolle und extrahiere visuell (Optical Scanning)...")
-        # Scroll down incrementally and capture DOM nodes to bypass Virtual List culling
-        for _ in range(15):
+        log("⏳ Scrolle, klappe versteckte Matches auf und verarbeite Text-Stream...")
+        
+        for scroll_step in range(20):
             try:
-                cards = await page.evaluate('''() => {
-                    let res = [];
-                    let elements = document.querySelectorAll('div, a');
-                    for(let el of elements) {
-                        let txt = el.innerText || "";
-                        let lines = txt.split('\\n').map(s => s.trim()).filter(s => s.length > 0);
-                        // A standard match container has between 3 and 40 lines of text
-                        if (lines.length >= 3 && lines.length <= 40) {
-                            // It must contain decimal values (odds)
-                            let odds = lines.filter(l => /^\\d+\\.\\d{2,3}$/.test(l));
-                            if (odds.length >= 2) {
-                                res.push(lines.join(' | '));
-                            }
+                # Klicke auf alle "Show more" / "Expand" / "Alle anzeigen" Buttons, um virtuelle Listen zu zwingen
+                await page.evaluate("""
+                    let buttons = document.querySelectorAll('div, button');
+                    for(let b of buttons) {
+                        let txt = b.innerText ? b.innerText.toLowerCase() : '';
+                        if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0 && b.clientWidth > 0) {
+                            try { b.click(); } catch(e) {}
                         }
                     }
-                    return res;
-                }''')
-                for c in cards: all_raw_cards.add(c)
+                """)
+                await asyncio.sleep(1.0)
+                
+                # Extrahiere den GESAMTEN sichtbaren Text auf dem Bildschirm exakt in Lese-Reihenfolge
+                text_dump = await page.evaluate("document.body.innerText")
+                lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
+                
+                current_tour = "Unknown"
+                tour_keywords = ['atp', 'wta', 'challenger', 'itf', 'open', 'masters', 'cup', 'tour', 'grand slam']
+                
+                for i, line in enumerate(lines):
+                    line_norm = normalize_text(line).lower()
+                    
+                    # 1. State Machine: Ist dies ein Turnier-Header?
+                    if any(kw in line_norm for kw in tour_keywords):
+                        # Turniere sind meist keine Zahlenreihen und nicht extrem lang
+                        if len(line) < 60 and not re.match(r'^[\d\.,\s]+$', line):
+                            current_tour = line
+                            continue
+                            
+                    # 2. State Machine: Spielersuche
+                    p1_found_real = None
+                    for p_norm, p_real in db_name_map.items():
+                        if len(p_norm) > 3 and p_norm in line_norm:
+                            p1_found_real = p_real
+                            break
+                            
+                    if p1_found_real:
+                        # Suche Spieler 2 in der aktuellen und den nächsten 4 Zeilen
+                        p2_found_real = None
+                        search_slice = lines[i:min(i+5, len(lines))]
+                        combined_text_norm = normalize_text(" ".join(search_slice)).lower()
+                        
+                        for p_norm, p_real in db_name_map.items():
+                            if len(p_norm) > 3 and p_norm in combined_text_norm and p_real != p1_found_real:
+                                p2_found_real = p_real
+                                break
+                                
+                        if p2_found_real:
+                            match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                            
+                            # Nur neue Matches verarbeiten
+                            if match_key not in seen_matches:
+                                # Wir haben das Match! Jetzt die Quoten aus den nächsten 15 Zeilen filtern
+                                odds_slice = lines[i:min(i+15, len(lines))]
+                                o1, o2 = extract_odds_from_lines(odds_slice)
+                                
+                                if o1 > 0 and o2 > 0:
+                                    seen_matches.add(match_key)
+                                    parsed_matches.append({
+                                        "p1_raw": p1_found_real,
+                                        "p2_raw": p2_found_real,
+                                        "tour": clean_tournament_name(current_tour),
+                                        "time": "00:00",
+                                        "odds1": o1,
+                                        "odds2": o2,
+                                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                                        "actual_winner": None, "score": ""
+                                    })
+                
+                # Scroll weiter für den nächsten virtuellen Render-Block
                 await page.evaluate("window.scrollBy(0, 1000)")
-                await asyncio.sleep(1.5)
-            except Exception: 
+                
+            except Exception as scroll_e: 
                 continue
                 
     except Exception as e:
         log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
     finally:
         await context.close()
-        
-    parsed_matches = []
-    
-    # Map for fast Last Name -> Full Last Name matching
-    db_name_map = {}
-    for p in db_players:
-        real_last = p.get('last_name', '')
-        if real_last:
-            db_name_map[normalize_db_name(real_last)] = real_last
 
-    log(f"👁️ Optischer Scan abgeschlossen. {len(all_raw_cards)} Text-Knoten analysieren...")
-
-    for card_text in all_raw_cards:
-        text_lower = card_text.lower()
-        
-        found_players = []
-        for db_norm, db_real in db_name_map.items():
-            if len(db_norm) > 3 and db_norm in text_lower:
-                found_players.append((text_lower.find(db_norm), db_real))
-                
-        # If we found at least 2 database players in this visual block, it's a target match!
-        if len(found_players) >= 2:
-            # Sort by visual index to ensure S1 aligns with Player 1
-            found_players.sort(key=lambda x: x[0])
-            p1_name = found_players[0][1]
-            p2_name = found_players[1][1]
-            
-            lines = card_text.split(' | ')
-            odds = []
-            for line in lines:
-                if re.match(r'^\d+\.\d{2,3}$', line):
-                    try:
-                        val = float(line)
-                        if 1.01 < val < 50.0: 
-                            odds.append(val)
-                    except: pass
-                        
-            if len(odds) >= 2:
-                o1, o2 = odds[0], odds[1]
-                
-                # Math Filter: If it's a date like "15.02", the implied prob will be garbage. 
-                # This perfectly filters valid odds from UI noise!
-                implied = (1/o1) + (1/o2)
-                if 1.02 <= implied <= 1.15:
-                    parsed_matches.append({
-                        "p1_raw": p1_name,
-                        "p2_raw": p2_name,
-                        "tour": "1win (Optical Scan)",
-                        "time": "00:00",
-                        "odds1": o1,
-                        "odds2": o2,
-                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                        "actual_winner": None, "score": ""
-                    })
-
-    # Remove duplicates caused by Virtual List continuous scanning
-    unique_matches = []
-    seen = set()
-    for m in parsed_matches:
-        # Create a unified key regardless of order
-        key = tuple(sorted([m['p1_raw'], m['p2_raw']]))
-        if key not in seen:
-            seen.add(key)
-            unique_matches.append(m)
-
-    log(f"✅ [1WIN GHOST] {len(unique_matches)} relevante DB-Matches via Optical Reconnaissance isoliert.")
-    return unique_matches
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} relevante DB-Matches inklusive exakter Turniernamen isoliert.")
+    return parsed_matches
 
 
 # =================================================================
@@ -1333,7 +1358,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V107.0 (OPTICAL RECONNAISSANCE EDITION) Starting...")
+    log(f"🚀 Neural Scout V108.0 (SPATIAL TEXT STREAM EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1376,7 +1401,140 @@ async def run_pipeline():
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
-            matches = await fetch_1win_markets_optical_dom(browser, players)
+            # --- V108.0 SPATIAL STREAM EXTRACTION ---
+            log("🚀 [1WIN GHOST] Starte Hierarchical Spatial Stream Engine (V108.0)...")
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                java_script_enabled=True
+            )
+            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
+            page = await context.new_page()
+
+            db_name_map = {}
+            for db_p in players:
+                real_last = db_p.get('last_name', '')
+                if real_last:
+                    db_name_map[normalize_db_name(real_last)] = real_last
+
+            parsed_matches = []
+            seen_matches = set()
+
+            def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
+                floats = []
+                for l in lines_slice:
+                    cl = l.replace(',', '.').strip()
+                    matches = re.findall(r'\b\d+\.\d{2,3}\b', cl)
+                    for m_odd in matches:
+                        try:
+                            val = float(m_odd)
+                            if 1.01 < val < 50.0:
+                                floats.append(val)
+                        except: pass
+                
+                best_pair = (0.0, 0.0)
+                best_diff = 999.0
+                for f_idx in range(len(floats)):
+                    for s_idx in range(f_idx+1, min(f_idx+4, len(floats))):
+                        o1, o2 = floats[f_idx], floats[s_idx]
+                        try:
+                            implied = (1/o1) + (1/o2)
+                            if 1.02 <= implied <= 1.15:
+                                diff = abs(implied - 1.055)
+                                if abs(o1 - o2) < 0.05: diff += 0.03
+                                if diff < best_diff:
+                                    best_diff = diff
+                                    best_pair = (o1, o2)
+                        except: pass
+                return best_pair
+
+            try:
+                log("🌍 Navigiere im Stealth-Modus zu 1win...")
+                await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
+                
+                page_title = await page.title()
+                if "Just a moment" in page_title or "Cloudflare" in page_title:
+                    log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
+                    await asyncio.sleep(5)
+                    
+                log("⏳ Scrolle, klappe Matches auf und verarbeite top-down Text-Stream...")
+                
+                for scroll_step in range(20):
+                    try:
+                        await page.evaluate("""
+                            let buttons = document.querySelectorAll('div, button');
+                            for(let b of buttons) {
+                                let txt = b.innerText ? b.innerText.toLowerCase() : '';
+                                if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0 && b.clientWidth > 0) {
+                                    try { b.click(); } catch(e) {}
+                                }
+                            }
+                        """)
+                        await asyncio.sleep(1.0)
+                        
+                        text_dump = await page.evaluate("document.body.innerText")
+                        lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
+                        
+                        current_tour = "Unknown"
+                        tour_keywords = ['atp', 'wta', 'challenger', 'itf', 'open', 'masters', 'cup', 'tour', 'grand slam']
+                        
+                        for i, line in enumerate(lines):
+                            line_norm = normalize_text(line).lower()
+                            
+                            if any(kw in line_norm for kw in tour_keywords):
+                                if len(line) < 60 and not re.match(r'^[\d\.,\s]+$', line):
+                                    current_tour = line
+                                    continue
+                                    
+                            p1_found_real = None
+                            for p_norm, p_real in db_name_map.items():
+                                if len(p_norm) > 3 and p_norm in line_norm:
+                                    p1_found_real = p_real
+                                    break
+                                    
+                            if p1_found_real:
+                                p2_found_real = None
+                                search_slice = lines[i:min(i+5, len(lines))]
+                                combined_text_norm = normalize_text(" ".join(search_slice)).lower()
+                                
+                                for p_norm, p_real in db_name_map.items():
+                                    if len(p_norm) > 3 and p_norm in combined_text_norm and p_real != p1_found_real:
+                                        p2_found_real = p_real
+                                        break
+                                        
+                                if p2_found_real:
+                                    match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                                    
+                                    if match_key not in seen_matches:
+                                        odds_slice = lines[i:min(i+15, len(lines))]
+                                        o1, o2 = extract_odds_from_lines(odds_slice)
+                                        
+                                        if o1 > 0 and o2 > 0:
+                                            seen_matches.add(match_key)
+                                            parsed_matches.append({
+                                                "p1_raw": p1_found_real,
+                                                "p2_raw": p2_found_real,
+                                                "tour": clean_tournament_name(current_tour),
+                                                "time": "00:00",
+                                                "odds1": o1,
+                                                "odds2": o2,
+                                                "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                                                "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                                                "actual_winner": None, "score": ""
+                                            })
+                        
+                        await page.evaluate("window.scrollBy(0, 1000)")
+                        
+                    except Exception as scroll_e: 
+                        continue
+                        
+            except Exception as e:
+                log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
+            finally:
+                await context.close()
+
+            log(f"✅ [1WIN GHOST] {len(parsed_matches)} relevante DB-Matches inklusive exakter Turniernamen isoliert.")
+            matches = parsed_matches
             
             if not matches:
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
