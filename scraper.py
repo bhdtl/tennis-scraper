@@ -14,6 +14,7 @@ import csv
 import io
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
+import urllib.parse
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Page
@@ -33,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V115.0 - SOTA SCROLL & ANTI-CANNIBALIZATION ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V117.0 - ZERO DEP RAG EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -52,11 +53,9 @@ MODEL_NAME = 'llama-3.1-8b-instant'
 # Global Caches
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
-SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
 WEATHER_CACHE: Dict[str, Any] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
-TML_MATCH_CACHE: List[Dict] = [] 
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -64,29 +63,6 @@ CITY_TO_DB_STRING = {
     "Melbourne": "Rod Laver Arena"
 }
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
-
-# =================================================================
-# 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
-# =================================================================
-async def fetch_tml_database():
-    log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
-    loaded_matches = 0
-    async with httpx.AsyncClient() as client:
-        try:
-            tml_api_url = "https://stats.tennismylife.org/api/data-files"
-            res = await client.get(tml_api_url, timeout=15.0)
-            if res.status_code == 200:
-                files = res.json().get('files', [])
-                for f in files:
-                    if f['name'] in ['2025.csv', '2026.csv', 'ongoing_tourneys.csv']:
-                        csv_res = await client.get(f['url'], timeout=30.0)
-                        reader = csv.DictReader(io.StringIO(csv_res.text))
-                        for row in reader:
-                            TML_MATCH_CACHE.append(row)
-                            loaded_matches += 1
-            log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
-        except Exception as e:
-            log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
 
 # =================================================================
 # 2. HELPER FUNCTIONS
@@ -275,7 +251,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
+# 3. MOMENTUM V2 ENGINE
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -529,10 +505,10 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a tennis analyst. Return ONLY valid JSON."},
+            {"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.1,
+        "temperature": 0.0,
         "response_format": {"type": "json_object"}
     }
     async with httpx.AsyncClient() as client:
@@ -543,7 +519,95 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
         except: return None
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V115.0 SPA SCROLL & ANTI-CANNIBALIZATION)
+# L8 SOTA: THE RAG AI AUDITOR (Replaces TennisExplorer)
+# =================================================================
+async def duckduckgo_html_search(query: str) -> str:
+    """Führt einen lautlosen Scrape auf DDG aus, um Echtzeit-Sportergebnisse zu bekommen."""
+    url = "https://html.duckduckgo.com/html/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    data = {"q": query}
+    try:
+        async with httpx.AsyncClient() as client:
+            res = await client.post(url, headers=headers, data=data, timeout=15.0)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            snippets = [a.get_text(strip=True) for a in soup.find_all('a', class_='result__snippet')]
+            return " | ".join(snippets[:5]) 
+    except Exception as e:
+        return ""
+
+async def update_past_results_via_ai():
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V117.0)...")
+    pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
+    if not pending or not isinstance(pending, list): return
+    
+    for m in pending:
+        try:
+            # Check only matches older than 5 hours to avoid live-match confusion
+            mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00'))
+            if datetime.now(timezone.utc) - mt < timedelta(hours=5): continue
+        except: pass
+
+        p1, p2 = m.get('player1_name'), m.get('player2_name')
+        if not p1 or not p2: continue
+
+        query = f"{p1} vs {p2} tennis match result score {datetime.now().year}"
+        log(f"   🔍 AI Search Agent queries DDG for: {p1} vs {p2}...")
+        
+        search_context = await duckduckgo_html_search(query)
+        if len(search_context) < 10: continue 
+        
+        prompt = f"""
+        TASK: Extract the tennis match result from the provided web search snippets.
+        MATCH: {p1} vs {p2}
+        
+        WEB SEARCH SNIPPETS:
+        "{search_context}"
+        
+        RULES:
+        1. Identify if the match is finished.
+        2. Identify the winner (must be exactly '{p1}' or '{p2}').
+        3. Identify the final score (e.g., "6-4 6-2").
+        4. If the snippets don't explicitly mention the final result for this exact match, return "status": "unknown".
+        
+        OUTPUT JSON ONLY:
+        {{
+            "status": "finished" or "unknown",
+            "winner": "Name",
+            "score": "Score string"
+        }}
+        """
+        
+        ai_res = await call_groq(prompt)
+        if ai_res:
+            try:
+                data = json.loads(ai_res)
+                if data.get('status') == 'finished' and data.get('winner') and data.get('score'):
+                    winner = data['winner']
+                    score = data['score']
+                    
+                    log(f"      🤖 RAG AUDITOR FOUND: {p1} vs {p2} -> Winner: {winner} ({score})")
+                    supabase.table("market_odds").update({
+                        "actual_winner_name": winner,
+                        "score": score
+                    }).eq("id", m['id']).execute()
+                    
+                    log(f"🔄 Triggering Real-Time Profile Refresh for {p1} & {p2}")
+                    for p_name in [p1, p2]:
+                        p_hist = await fetch_player_history_extended(p_name, limit=80)
+                        p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                        p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                        
+                        supabase.table('players').update({
+                            'surface_ratings': p_profile,
+                            'form_rating': p_form 
+                        }).ilike('last_name', f"%{p_name}%").execute()
+            except: pass
+        await asyncio.sleep(1.0) # Rate limit protection
+
+# =================================================================
+# 6.5 1WIN SOTA MASTER FEED (V117.0 MICRO-SCROLL ACCUMULATOR)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -598,7 +662,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Omni-Directional Engine (V115.0 - SOTA SCROLL)...")
+    log("🚀 [1WIN GHOST] Starte Micro-Scroll Accumulator Engine (V117.0 Doha Fix)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -619,6 +683,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
 
     parsed_matches = []
     seen_matches = set()
+    all_raw_text_blocks = [] 
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
@@ -629,14 +694,10 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Scrolle physisch (Hardware-Level), um SPA-Container zu triggern...")
+        log("⏳ Führe Micro-Scrolling durch, um Virtualized React DOM zu capturen...")
         
-        for scroll_step in range(25):
+        for scroll_step in range(30):
             try:
-                # L8 Fix: SPA-gerechtes Hardware-Scrolling (Umgeht den window.scrollBy Loop-Bug)
-                await page.mouse.wheel(delta_x=0, delta_y=2500)
-                await page.keyboard.press("PageDown")
-                
                 await page.evaluate("""
                     let buttons = document.querySelectorAll('div, button, span');
                     for(let b of buttons) {
@@ -646,87 +707,15 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                         }
                     }
                 """)
-                await asyncio.sleep(1.5) # Mehr Zeit für Netzwerkanfragen beim Scrollen
                 
+                # Text akkumulieren bevor er beim Scrollen aus dem DOM verschwindet!
                 text_dump = await page.evaluate("document.body.innerText")
-                lines = [l.strip() for l in text_dump.split('\n') if l.strip()]
+                all_raw_text_blocks.append(text_dump)
                 
-                current_tour = "Unknown"
-                is_invalid_block = False
-
-                for i, line in enumerate(lines):
-                    line_norm = normalize_text(line).lower()
-                    
-                    # L8 Fix: Strikte Word Boundaries (\b) verhindern den "Mena" Bug!
-                    blocked_pattern = r'\b(wta|women|itf|challenger|doubles|doppel|srl|simulated)\b'
-                    allowed_pattern = r'\b(atp|open|masters|tour|classic|championship|cup|men|singles|doha|qatar|dubai|rotterdam|rio|los cabos|acapulco)\b'
-                    
-                    if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-                        if re.search(blocked_pattern, line_norm):
-                            if not is_invalid_block:
-                                log(f"🔎 State-Machine: 🚫 BLOCKED Tournament erkannt -> {line}")
-                            is_invalid_block = True
-                            current_tour = line
-                            continue
-                        elif re.search(allowed_pattern, line_norm):
-                            if is_invalid_block:
-                                log(f"🔎 State-Machine: ✅ ALLOWED Tournament erkannt (Reset Lockout) -> {line}")
-                            is_invalid_block = False
-                            current_tour = line
-                            continue
-                            
-                    if is_invalid_block: continue
-
-                    p1_found_real = None
-                    for p_norm, p_real in sorted_db_names:
-                        if len(p_norm) > 3:
-                            if re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
-                                p1_found_real = p_real
-                                break 
-                                
-                    if p1_found_real:
-                        # L8 Fix: Anti-Cannibalization Logic ("Etcheverry vs Martin" Fix)
-                        p2_found_real = None
-                        
-                        # Prüfe, ob sie in der exakt selben Zeile stehen (z.B. "Etcheverry - Gaubas")
-                        if '-' in line_norm or 'vs' in line_norm:
-                            search_slice = lines[i:min(i+6, len(lines))]
-                        else:
-                            # Zwinge P2 in die nachfolgenden Zeilen, um Middle-Name-Matching zu verhindern!
-                            search_slice = lines[i+1:min(i+6, len(lines))]
-                            
-                        combined_text_norm = normalize_text(" ".join(search_slice)).lower()
-                        
-                        for p_norm, p_real in sorted_db_names:
-                            if len(p_norm) > 3 and re.search(rf'\b{re.escape(p_norm)}\b', combined_text_norm):
-                                if p_real != p1_found_real:
-                                    p2_found_real = p_real
-                                    break
-                                
-                        if p2_found_real:
-                            match_key = tuple(sorted([p1_found_real, p2_found_real]))
-                            
-                            if match_key not in seen_matches:
-                                odds_slice = lines[i:min(i+20, len(lines))]
-                                o1, o2 = extract_odds_from_lines(odds_slice)
-                                
-                                time_context_slice = lines[max(0, i-4):min(i+4, len(lines))]
-                                extracted_time = extract_time_context(time_context_slice)
-                                
-                                if o1 > 0 and o2 > 0:
-                                    seen_matches.add(match_key)
-                                    parsed_matches.append({
-                                        "p1_raw": p1_found_real,
-                                        "p2_raw": p2_found_real,
-                                        "tour": clean_tournament_name(current_tour),
-                                        "time": extracted_time, 
-                                        "odds1": o1,
-                                        "odds2": o2,
-                                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                                        "actual_winner": None, "score": ""
-                                    })
-                                    
+                # Sehr kleiner Scroll, um keine Box zu überspringen (Doha Fix)
+                await page.mouse.wheel(delta_x=0, delta_y=600)
+                await asyncio.sleep(0.5) 
+                
             except Exception as scroll_e: 
                 continue
                 
@@ -735,7 +724,71 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally:
         await context.close()
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere ATP-Matches (V115.0) isoliert.")
+    log("🧩 Verarbeite kombinierten DOM-State...")
+    
+    combined_lines = []
+    for block in all_raw_text_blocks:
+        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        combined_lines.extend(lines)
+
+    current_tour = "Unknown"
+    for i, line in enumerate(combined_lines):
+        line_norm = normalize_text(line).lower()
+        
+        if len(line) > 3 and len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
+            if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
+                current_tour = line
+        
+        p1_found_real = None
+        for p_norm, p_real in sorted_db_names:
+            if len(p_norm) > 3 and re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
+                p1_found_real = p_real
+                break 
+                
+        if p1_found_real:
+            p2_found_real = None
+            
+            if '-' in line_norm or 'vs' in line_norm:
+                search_slice = combined_lines[i:min(i+6, len(combined_lines))]
+            else:
+                search_slice = combined_lines[i+1:min(i+6, len(combined_lines))]
+                
+            combined_text_norm = normalize_text(" ".join(search_slice)).lower()
+            
+            for p_norm, p_real in sorted_db_names:
+                if len(p_norm) > 3 and re.search(rf'\b{re.escape(p_norm)}\b', combined_text_norm):
+                    if p_real != p1_found_real:
+                        p2_found_real = p_real
+                        break
+                    
+            if p2_found_real:
+                match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                
+                if match_key not in seen_matches:
+                    odds_slice = combined_lines[i:min(i+20, len(combined_lines))]
+                    o1, o2 = extract_odds_from_lines(odds_slice)
+                    
+                    time_context_slice = combined_lines[max(0, i-4):min(i+4, len(combined_lines))]
+                    extracted_time = extract_time_context(time_context_slice)
+                    
+                    if o1 > 0 and o2 > 0:
+                        seen_matches.add(match_key)
+                        parsed_matches.append({
+                            "p1_raw": p1_found_real,
+                            "p2_raw": p2_found_real,
+                            "tour": clean_tournament_name(current_tour),
+                            "time": extracted_time, 
+                            "odds1": o1,
+                            "odds2": o2,
+                            "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                            "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                            "actual_winner": None, "score": ""
+                        })
+            elif "-" not in line_norm and "vs" not in line_norm:
+                # Debug Info, falls ein Spieler gefunden wurde, der Gegner aber in deiner DB fehlt
+                log(f"   👁️ [GHOST DETECTED] Spieler gefunden: {p1_found_real}, aber kein bekannter Gegner in den nächsten Zeilen!")
+
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
     return parsed_matches
 
 
@@ -864,48 +917,6 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
         return status
     except: return "Unknown"
 
-async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
-    if not relative_url: return 0.5
-    cache_key = f"{relative_url}_{surface}"
-    if cache_key in SURFACE_STATS_CACHE: return SURFACE_STATS_CACHE[cache_key]
-    if not relative_url.startswith("/"): relative_url = f"/{relative_url}"
-    url = f"https://www.tennisexplorer.com{relative_url}?annual=all&t={int(time.time())}"
-    page = await browser.new_page()
-    try:
-        await page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        content = await page.content()
-        soup = BeautifulSoup(content, 'html.parser')
-        target_header = "Hard"
-        if "clay" in surface.lower(): target_header = "Clay"
-        elif "grass" in surface.lower(): target_header = "Grass"
-        elif "indoor" in surface.lower(): target_header = "Indoors"
-        tables = soup.find_all('table', class_='result')
-        total_matches = 0; total_wins = 0
-        for table in tables:
-            headers = [h.get_text(strip=True) for h in table.find_all('th')]
-            if "Summary" in headers and target_header in headers:
-                try:
-                    col_idx = headers.index(target_header)
-                    for row in table.find_all('tr'):
-                        if "Summary" in row.get_text():
-                            cols = row.find_all(['td', 'th'])
-                            if len(cols) > col_idx:
-                                stats_text = cols[col_idx].get_text(strip=True)
-                                if "/" in stats_text:
-                                    w, l = map(int, stats_text.split('/'))
-                                    total_matches = w + l
-                                    total_wins = w
-                                    break
-                except: pass
-                break
-        if total_matches > 0:
-            rate = total_wins / total_matches
-            SURFACE_STATS_CACHE[cache_key] = rate
-            return rate
-    except: pass
-    finally: await page.close()
-    return 0.5
-
 async def fetch_elo_ratings(browser: Browser):
     log("📊 Lade Elo Ratings...")
     urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
@@ -1012,14 +1023,11 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
     m1 = to_float(ai_meta.get('p1_tactical_score', 5)); m2 = to_float(ai_meta.get('p2_tactical_score', 5))
     prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
     
-    p1_tml_aces = sum(float(r.get('w_ace', 0) or 0) for r in TML_MATCH_CACHE if r.get('winner_name', '').endswith(n1))
-    p2_tml_aces = sum(float(r.get('w_ace', 0) or 0) for r in TML_MATCH_CACHE if r.get('winner_name', '').endswith(n2))
-    
-    def get_offense(s, tml_boost): 
-        base = s.get('serve', 50) + s.get('power', 50)
-        return base + (min(tml_boost, 100) * 0.1) 
+    # L8 Fix: TML entfernt. Pure DB-Offensiv-Power Calculation
+    def get_offense(s): 
+        return s.get('serve', 50) + s.get('power', 50)
 
-    c1_score = get_offense(s1, p1_tml_aces); c2_score = get_offense(s2, p2_tml_aces)
+    c1_score = get_offense(s1); c2_score = get_offense(s2)
     
     prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
     prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
@@ -1241,98 +1249,6 @@ def safe_get_ai_data(res_text: Optional[str]) -> Dict[str, Any]:
         return ensure_dict(data)
     except: return default
 
-async def update_past_results(browser: Browser):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores (V95.0)...")
-    pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    if not pending or not isinstance(pending, list): return
-    safe_to_check = list(pending)
-
-    for day_off in range(0, 3): 
-        t_date = datetime.now() - timedelta(days=day_off)
-        page = await browser.new_page()
-        try:
-            url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            soup = BeautifulSoup(await page.content(), 'html.parser')
-            table = soup.find('table', class_='result')
-            if not table: continue
-            
-            rows = table.find_all('tr')
-            for row in rows:
-                if 'flags' in str(row) or 'head' in str(row): continue
-                
-                row_text = row.get_text(separator=" ", strip=True).lower()
-                row_norm = normalize_text(row_text).lower()
-
-                for pm in list(safe_to_check):
-                    p1_norm = normalize_db_name(pm['player1_name'])
-                    p2_norm = normalize_db_name(pm['player2_name'])
-                    if p1_norm in row_norm and p2_norm in row_norm:
-                        pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
-                        all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
-                        valid_sets = []
-                        for m in all_matches:
-                            if "ret" in m or "w.o" in m: valid_sets.append(m)
-                            elif "-" in m:
-                                try:
-                                    l, r = map(int, m.split('(')[0].split('-'))
-                                    if (l >= 6 or r >= 6) or (l+r >= 6): 
-                                        valid_sets.append(m)
-                                except: pass
-                        score_cleaned = " ".join(valid_sets).strip()
-
-                        score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
-                        p1_sets = 0; p2_sets = 0
-                        idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
-                        p1_is_left = idx_p1 < idx_p2
-                        
-                        for s in score_matches:
-                            try:
-                                sl = int(s[0]); sr = int(s[1])
-                                if sl > sr: 
-                                    if p1_is_left: p1_sets += 1
-                                    else: p2_sets += 1
-                                elif sr > sl: 
-                                    if p1_is_left: p2_sets += 1
-                                    else: p1_sets += 1
-                            except: pass
-                        
-                        is_ret = "ret." in row_text or "w.o." in row_text
-                        sets_needed = 2
-                        if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()): sets_needed = 3
-                        
-                        winner = None
-                        if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
-                            if is_ret:
-                                if p1_is_left: winner = pm['player1_name']
-                                else: winner = pm['player2_name']
-                            else:
-                                if p1_sets > p2_sets: winner = pm['player1_name']
-                                elif p2_sets > p1_sets: winner = pm['player2_name']
-                            
-                            if winner:
-                                log(f"      🔍 AUDITOR FOUND: {score_cleaned} -> Winner: {winner}")
-                                supabase.table("market_odds").update({
-                                    "actual_winner_name": winner,
-                                    "score": score_cleaned
-                                }).eq("id", pm['id']).execute()
-                                
-                                log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
-                                for p_name in [pm['player1_name'], pm['player2_name']]:
-                                    p_hist = await fetch_player_history_extended(p_name, limit=80)
-                                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                                    p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                                    
-                                    supabase.table('players').update({
-                                        'surface_ratings': p_profile,
-                                        'form_rating': p_form 
-                                    }).ilike('last_name', f"%{p_name}%").execute()
-
-                        safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
-                        break
-        except: pass
-        finally: await page.close()
-
 # =================================================================
 # 10. QUANTUM GAMES SIMULATOR (CALIBRATED V83.1)
 # =================================================================
@@ -1430,14 +1346,14 @@ class QuantumGamesSimulator:
         }
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V115.0 (OMNI-DIRECTIONAL TEMPORAL EDITION) Starting...")
-    
-    await fetch_tml_database()
+    log(f"🚀 Neural Scout V117.0 (ZERO DEP EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await update_past_results(browser)
+            # L8 Fix: Nutze jetzt den neuen AI-Driven RAG Auditor (Kein TennisExplorer mehr)
+            await update_past_results_via_ai()
+            
             await fetch_elo_ratings(browser)
             await build_country_city_map(browser)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
@@ -1725,7 +1641,7 @@ async def run_pipeline():
                             
                             db_match_id = final_match_id
 
-                    # V115.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
+                    # V117.0 HIGH-FIDELITY ODDS MOVEMENT TRACKER
                     if db_match_id:
                         should_log_history = False
                         if not existing_match: 
@@ -1763,7 +1679,7 @@ async def run_pipeline():
 
                 except Exception as e: log(f"⚠️ Match Error: {e}")
             
-            log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches analysiert (Verworfene Random/ITF-Matches: {skipped_db_count}).")
+            log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches analysiert (Verworfene Random-Matches: {skipped_db_count}).")
 
         finally: await browser.close()
     
