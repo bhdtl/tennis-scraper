@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V122.0 - HYPER OPTIMIZED CPU EDITION)...")
+log("🔌 Initialisiere Neural Scout (V123.0 - ANTI-FRANKENSTEIN STRICT BOUNDARY EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -332,7 +332,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
+# 3. MOMENTUM V2 ENGINE
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -643,7 +643,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
             return None
 
 # =================================================================
-# L8 SOTA: THE RAG AI AUDITOR (Replaces TennisExplorer Regex)
+# L8 SOTA: THE RAG AI AUDITOR
 # =================================================================
 async def duckduckgo_html_search(query: str) -> str:
     url = "https://html.duckduckgo.com/html/"
@@ -663,7 +663,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V122.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V123.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -741,7 +741,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V122.0 HYPER OPTIMIZED CPU PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V123.0 ANTI-FRANKENSTEIN PARSING)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -759,19 +759,19 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
-    for x in range(len(floats)):
-        for y in range(x+1, min(x+8, len(floats))):
-            o1 = floats[x]
-            o2 = floats[y]
-            try:
-                implied = (1/o1) + (1/o2)
-                if 1.01 <= implied <= 1.25: 
-                    diff = abs(implied - 1.055)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_pair = (o1, o2)
-            except: 
-                pass
+    # L8 Fix: Erzwinge DIREKT benachbarte Quoten (x und x+1). Verhindert Handicap/Over-Under Crossing!
+    for x in range(len(floats) - 1):
+        o1 = floats[x]
+        o2 = floats[x+1]
+        try:
+            implied = (1/o1) + (1/o2)
+            if 1.015 <= implied <= 1.25: 
+                diff = abs(implied - 1.055)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_pair = (o1, o2)
+        except: 
+            pass
                 
     return best_pair
 
@@ -803,7 +803,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Hyper-Optimized CPU Spatial Engine (V122.0)...")
+    log("🚀 [1WIN GHOST] Starte Anti-Frankenstein Spatial Engine (V123.0 CPU Optimized)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -820,8 +820,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    # L8 CPU FIX: Wir kompilieren die Regex-Muster EIN EINZIGES MAL VORHER!
-    # Das verhindert das 10-Minuten-Aufhängen durch "Regex Cache Thrashing".
     log("⚙️ Kompiliere Regex-Muster für Extreme-Speed Parsing...")
     compiled_player_patterns = []
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
@@ -872,7 +870,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 Verarbeite {len(all_raw_text_blocks)} DOM-Blöcke (Blitzschnelles Pre-Compiled Parsing)...")
+    log(f"🧩 Verarbeite {len(all_raw_text_blocks)} DOM-Blöcke (Strikte 5-Zeilen Anti-Frankenstein Logik)...")
     
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
@@ -889,7 +887,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             is_player_line = False
             p1_found_real = None
             
-            # L8 Fix: Nutze den vorkompilierten Regex, rennt in Millisekunden durch!
             for pattern, p_real in compiled_player_patterns:
                 if pattern.search(line_norm):
                     p1_found_real = p_real
@@ -913,9 +910,15 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 p2_found_real = p_real
                                 break
                 else:
-                    search_slice = lines[i+1:min(i+25, len(lines))]
+                    # L8 Fix: STRICT BOUNDARY. Suchradius P2 auf maximal 6 Zeilen beschränkt!
+                    search_slice = lines[i+1:min(i+7, len(lines))]
                     for j, s_line in enumerate(search_slice):
                         s_line_norm = normalize_text(s_line).lower()
+                        
+                        # ANTI-FRANKENSTEIN: Wenn wir Wettquoten treffen, ist das Match-Block zu Ende!
+                        if re.match(r'^\d{1,2}\.\d{2}$', s_line_norm.replace(',', '.')):
+                            break 
+                            
                         for pattern, p_real in compiled_player_patterns:
                             if pattern.search(s_line_norm):
                                 if p_real != p1_found_real:
@@ -929,7 +932,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     match_key = tuple(sorted([p1_found_real, p2_found_real]))
                     
                     if match_key not in seen_matches:
-                        odds_slice = lines[p2_index:min(p2_index+40, len(lines))]
+                        odds_slice = lines[p2_index:min(p2_index+20, len(lines))]
                         o1, o2 = extract_odds_from_lines(odds_slice)
                         
                         time_context_slice = lines[max(0, i-4):min(i+4, len(lines))]
@@ -948,7 +951,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 "over_under_line": None, "over_odds": 0, "under_odds": 0,
                                 "actual_winner": None, "score": ""
                             })
-                            # L8 Fix: Verhindert Loops, ohne gültige Nachbar-Matches zu killen
+                            # L8 Fix: Überspringe sauber zum nächsten Block
                             skip_until_index = p2_index + 1
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
@@ -1607,7 +1610,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V122.0 (HYPER OPTIMIZED CPU EDITION) Starting...")
+    log(f"🚀 Neural Scout V123.0 (ANTI-FRANKENSTEIN EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
