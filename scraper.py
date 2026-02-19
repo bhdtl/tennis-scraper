@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V123.0 - ANTI-FRANKENSTEIN STRICT BOUNDARY EDITION)...")
+log("🔌 Initialisiere Neural Scout (V124.0 - GRID-PROOF VOLUME EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -332,7 +332,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE
+# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -663,7 +663,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V123.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V124.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -741,7 +741,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V123.0 ANTI-FRANKENSTEIN PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V124.0 FIRST-STRIKE MONEYLINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -756,24 +756,21 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
             except: 
                 pass
             
-    best_pair = (0.0, 0.0)
-    best_diff = 999.0
-    
-    # L8 Fix: Erzwinge DIREKT benachbarte Quoten (x und x+1). Verhindert Handicap/Over-Under Crossing!
-    for x in range(len(floats) - 1):
-        o1 = floats[x]
-        o2 = floats[x+1]
-        try:
-            implied = (1/o1) + (1/o2)
-            if 1.015 <= implied <= 1.25: 
-                diff = abs(implied - 1.055)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_pair = (o1, o2)
-        except: 
-            pass
+    # L8 Fix: FIRST-STRIKE Logic. Da die Moneyline immer oben links steht, 
+    # ist das ERSTE valide Zahlenpaar, das wir finden, zu 100% der Sieger-Markt.
+    for x in range(len(floats)):
+        for y in range(x+1, min(x+8, len(floats))):
+            o1 = floats[x]
+            o2 = floats[y]
+            try:
+                implied = (1/o1) + (1/o2)
+                # Strikte Bookie-Marge (2% bis 15%)
+                if 1.02 <= implied <= 1.15: 
+                    return (o1, o2)  # SOFORT ABBRECHEN UND ZURÜCKGEBEN! Verhindert Handicap-Vermischung.
+            except: 
+                pass
                 
-    return best_pair
+    return (0.0, 0.0)
 
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -803,7 +800,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Anti-Frankenstein Spatial Engine (V123.0 CPU Optimized)...")
+    log("🚀 [1WIN GHOST] Starte Grid-Proof Spatial Engine (V124.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -870,7 +867,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 Verarbeite {len(all_raw_text_blocks)} DOM-Blöcke (Strikte 5-Zeilen Anti-Frankenstein Logik)...")
+    log(f"🧩 Verarbeite {len(all_raw_text_blocks)} DOM-Blöcke (Intelligente 10-Zeilen Logik)...")
     
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
@@ -910,15 +907,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 p2_found_real = p_real
                                 break
                 else:
-                    # L8 Fix: STRICT BOUNDARY. Suchradius P2 auf maximal 6 Zeilen beschränkt!
-                    search_slice = lines[i+1:min(i+7, len(lines))]
+                    # L8 Fix: GOLDILOCKS-RADIUS (10 Zeilen). Perfekt um UI-Müll zu schlagen, 
+                    # aber kurz genug um nicht ins nächste Match zu rutschen!
+                    search_slice = lines[i+1:min(i+11, len(lines))]
                     for j, s_line in enumerate(search_slice):
                         s_line_norm = normalize_text(s_line).lower()
                         
-                        # ANTI-FRANKENSTEIN: Wenn wir Wettquoten treffen, ist das Match-Block zu Ende!
-                        if re.match(r'^\d{1,2}\.\d{2}$', s_line_norm.replace(',', '.')):
-                            break 
-                            
                         for pattern, p_real in compiled_player_patterns:
                             if pattern.search(s_line_norm):
                                 if p_real != p1_found_real:
@@ -951,7 +945,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 "over_under_line": None, "over_odds": 0, "under_odds": 0,
                                 "actual_winner": None, "score": ""
                             })
-                            # L8 Fix: Überspringe sauber zum nächsten Block
+                            # L8 Fix: Wenn P1, P2 und Quoten gefunden wurden, springe sicher weiter.
                             skip_until_index = p2_index + 1
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
@@ -1610,7 +1604,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V123.0 (ANTI-FRANKENSTEIN EDITION) Starting...")
+    log(f"🚀 Neural Scout V124.0 (GRID-PROOF VOLUME EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
