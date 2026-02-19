@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V121.0 - MAX VOLUME SPATIAL EDITION)...")
+log("🔌 Initialisiere Neural Scout (V122.0 - HYPER OPTIMIZED CPU EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -308,7 +308,6 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 > 100 or o2 > 100: 
         return False 
     implied_prob = (1/o1) + (1/o2)
-    # L8 Fix: Toleranz auf 1.25 erweitert, um asiatische/kleinere Bookie-Märkte mit viel Juice aufzufangen.
     if implied_prob < 0.92: 
         return False 
     if implied_prob > 1.25: 
@@ -333,7 +332,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE
+# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -644,7 +643,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
             return None
 
 # =================================================================
-# L8 SOTA: THE RAG AI AUDITOR
+# L8 SOTA: THE RAG AI AUDITOR (Replaces TennisExplorer Regex)
 # =================================================================
 async def duckduckgo_html_search(query: str) -> str:
     url = "https://html.duckduckgo.com/html/"
@@ -664,7 +663,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V121.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V122.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -742,7 +741,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V121.0 WIDE-NET SPATIAL PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V122.0 HYPER OPTIMIZED CPU PARSING)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -766,7 +765,6 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
             o2 = floats[y]
             try:
                 implied = (1/o1) + (1/o2)
-                # L8 Fix: Toleranz von bis zu 25% Marge erlaubt (1.25), um alle Bookie-Varianten zu fressen.
                 if 1.01 <= implied <= 1.25: 
                     diff = abs(implied - 1.055)
                     if diff < best_diff:
@@ -805,7 +803,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Wide-Net Spatial Engine (V121.0 Doha & Volume Fix)...")
+    log("🚀 [1WIN GHOST] Starte Hyper-Optimized CPU Spatial Engine (V122.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -822,8 +820,14 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    sorted_db_names = sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True)
-    
+    # L8 CPU FIX: Wir kompilieren die Regex-Muster EIN EINZIGES MAL VORHER!
+    # Das verhindert das 10-Minuten-Aufhängen durch "Regex Cache Thrashing".
+    log("⚙️ Kompiliere Regex-Muster für Extreme-Speed Parsing...")
+    compiled_player_patterns = []
+    for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
+        if len(p_norm) > 2:
+            compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
+            
     parsed_matches = []
     seen_matches = set()
     all_raw_text_blocks = [] 
@@ -837,13 +841,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Deep-Scan Scrolling durch (verhindert DOM-Tearing bei React)...")
+        log("⏳ Führe Centered-Scrolling durch, um Virtualized React DOM zu capturen...")
         
         await page.mouse.move(960, 540)
         await asyncio.sleep(1)
         
-        # L8 Fix: 80 Iterationen, um garantiert JEDES Turnier auf der Seite zu laden
-        for scroll_step in range(80):
+        for scroll_step in range(80): 
             try:
                 await page.evaluate("""
                     let buttons = document.querySelectorAll('div, button, span');
@@ -858,7 +861,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                # Sehr kleines Scrolling, damit Elemente sicher im sichtbaren Bereich registriert werden
                 await page.mouse.wheel(delta_x=0, delta_y=400)
                 await asyncio.sleep(0.4) 
                 
@@ -870,11 +872,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log("🧩 Verarbeite DOM-Blöcke (Extreme-Wide-Net Parsing)...")
+    log(f"🧩 Verarbeite {len(all_raw_text_blocks)} DOM-Blöcke (Blitzschnelles Pre-Compiled Parsing)...")
     
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
         current_tour = "Unknown"
+        
         skip_until_index = 0
 
         for i, line in enumerate(lines):
@@ -886,8 +889,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             is_player_line = False
             p1_found_real = None
             
-            for p_norm, p_real in sorted_db_names:
-                if len(p_norm) > 2 and re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
+            # L8 Fix: Nutze den vorkompilierten Regex, rennt in Millisekunden durch!
+            for pattern, p_real in compiled_player_patterns:
+                if pattern.search(line_norm):
                     p1_found_real = p_real
                     is_player_line = True
                     break 
@@ -903,8 +907,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 p2_index = i
                 
                 if '-' in line_norm or 'vs' in line_norm or '/' in line_norm:
-                    for p_norm, p_real in sorted_db_names:
-                        if len(p_norm) > 2 and re.search(rf'\b{re.escape(p_norm)}\b', line_norm):
+                    for pattern, p_real in compiled_player_patterns:
+                        if pattern.search(line_norm):
                             if p_real != p1_found_real:
                                 p2_found_real = p_real
                                 break
@@ -912,8 +916,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     search_slice = lines[i+1:min(i+25, len(lines))]
                     for j, s_line in enumerate(search_slice):
                         s_line_norm = normalize_text(s_line).lower()
-                        for p_norm, p_real in sorted_db_names:
-                            if len(p_norm) > 2 and re.search(rf'\b{re.escape(p_norm)}\b', s_line_norm):
+                        for pattern, p_real in compiled_player_patterns:
+                            if pattern.search(s_line_norm):
                                 if p_real != p1_found_real:
                                     p2_found_real = p_real
                                     p2_index = i + 1 + j
@@ -944,17 +948,14 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 "over_under_line": None, "over_odds": 0, "under_odds": 0,
                                 "actual_winner": None, "score": ""
                             })
-                            # L8 Fix: Überspringe nur EXAKT bis zum P2. Das "+10" ignorierte gültige Folgematches.
+                            # L8 Fix: Verhindert Loops, ohne gültige Nachbar-Matches zu killen
                             skip_until_index = p2_index + 1
-                else:
-                    if i < len(lines) - 25:
-                        pass
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
     return parsed_matches
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE
+# 7. DATA FETCHING & ORACLE (LEGACY FUNCTIONS KEPT FOR 1:1 COMPLETENESS)
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -990,6 +991,7 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
         return []
 
 async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surface: str) -> float:
+    # INFO: Funktion ist hier zur 1:1 Vollständigkeit. Wird nicht mehr aktiv aufgerufen.
     if not relative_url: 
         return 0.5
     cache_key = f"{relative_url}_{surface}"
@@ -1051,6 +1053,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     return 0.5
 
 async def update_past_results(browser: Browser):
+    # INFO: Alte Regex-Funktion ist hier für 1:1 Vollständigkeit. Wurde durch update_past_results_via_ai ersetzt.
     pass
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
@@ -1344,6 +1347,50 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
 # =================================================================
 # 9. PIPELINE UTILS
 # =================================================================
+async def build_country_city_map(browser: Browser):
+    if COUNTRY_TO_CITY_MAP: 
+        return
+    url = "https://www.unitedcup.com/en/scores/group-standings"
+    page = await browser.new_page()
+    try:
+        await page.goto(url, timeout=20000, wait_until="networkidle")
+        text_content = await page.inner_text("body")
+        prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
+        res = await call_groq(prompt)
+        if res:
+            try:
+                data = json.loads(res.replace("json", "").replace("```", "").strip())
+                COUNTRY_TO_CITY_MAP.update(ensure_dict(data))
+            except: 
+                pass
+    except: 
+        pass
+    finally: 
+        await page.close()
+
+async def resolve_united_cup_via_country(p1):
+    if not COUNTRY_TO_CITY_MAP: 
+        return None
+        
+    cache_key = f"COUNTRY_{p1}"
+    
+    if cache_key in TOURNAMENT_LOC_CACHE: 
+        country = TOURNAMENT_LOC_CACHE[cache_key]
+    else:
+        res = await call_groq(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
+        try:
+            data = json.loads(res.replace("json", "").replace("```", "").strip())
+            data = ensure_dict(data)
+            country = data.get("country", "Unknown")
+        except: 
+            country = "Unknown"
+        TOURNAMENT_LOC_CACHE[cache_key] = country
+        
+    if country in COUNTRY_TO_CITY_MAP: 
+        return CITY_TO_DB_STRING.get(COUNTRY_TO_CITY_MAP[country])
+        
+    return None
+
 async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_country):
     if scraped_name in TOURNAMENT_LOC_CACHE: 
         return TOURNAMENT_LOC_CACHE[scraped_name]
@@ -1560,7 +1607,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V121.0 (MAX VOLUME EDITION) Starting...")
+    log(f"🚀 Neural Scout V122.0 (HYPER OPTIMIZED CPU EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
