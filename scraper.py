@@ -31,7 +31,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V106.0 - CONTEXT-AWARE REDUX TRAVERSAL)...")
+log("🔌 Initialisiere Neural Scout (V107.0 - OPTICAL DOM RECONNAISSANCE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -514,159 +514,15 @@ async def call_groq(prompt: str, model: str = MODEL_NAME) -> Optional[str]:
 call_gemini = call_groq 
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V106.0 CONTEXT-AWARE REDUX TRAVERSAL)
+# 6.5 1WIN SOTA MASTER FEED (V107.0 OPTICAL DOM RECONNAISSANCE)
 # =================================================================
-def find_best_odds(nodes: List[Any]) -> tuple[float, float]:
+async def fetch_1win_markets_optical_dom(browser: Browser, db_players: List[Dict]) -> List[Dict]:
     """
-    V106.0 SWE (Sliding Window Extractor) - Lookahead 4
-    Kombiniert alle flachen Floats eines ID-Kontexts und sucht die beste Marge.
+    V107.0 OPTICAL DOM ENGINE. Bypasses Redux state normalization by scraping the 
+    rendered pixels/text directly from the visible DOM during scrolling.
     """
-    valid_pairs = []
-
-    def extract_all_floats(obj):
-        res = []
-        if isinstance(obj, dict):
-            for k, val in obj.items():
-                res.extend(extract_all_floats(val))
-        elif isinstance(obj, list):
-            for item in obj:
-                res.extend(extract_all_floats(item))
-        elif isinstance(obj, (int, float, str)):
-            try:
-                f_val = float(obj)
-                # Strenge Typ-Kontrolle: Muss eine Float-Zahl mit Punkt sein (verhindert IDs als Quoten)
-                if 1.01 < f_val < 50.0 and '.' in str(obj):
-                    res.append(f_val)
-            except: pass
-        return res
-
-    for node in nodes:
-        floats = extract_all_floats(node)
-        
-        # Sliding window mit Lookahead von 4 (überspringt Handicaps/Draws dazwischen)
-        for i in range(len(floats)):
-            for j in range(i+1, min(i+4, len(floats))):
-                o1 = floats[i]
-                o2 = floats[j]
-                try:
-                    implied = (1/o1) + (1/o2)
-                    if 1.02 <= implied <= 1.12:
-                        valid_pairs.append((o1, o2))
-                except: pass
-
-    best_pair = (0.0, 0.0)
-    best_diff = 999.0
+    log("🚀 [1WIN GHOST] Starte Optical DOM Reconnaissance Engine (V107.0)...")
     
-    for o1, o2 in valid_pairs:
-        margin = (1/o1) + (1/o2)
-        diff = abs(margin - 1.055)
-        # Symmetrische Quoten (Handicaps) hart bestrafen
-        if abs(o1 - o2) < 0.05: diff += 0.03 
-        
-        if diff < best_diff:
-            best_diff = diff
-            best_pair = (o1, o2)
-            
-    return best_pair
-
-async def fetch_1win_markets_via_interception(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte State-Reconstruction Engine (V106.0 - Redux Context Propagation)...")
-    
-    matches_meta = {} 
-    matches_raw_nodes = {} 
-    
-    db_last_names = {normalize_db_name(p.get('last_name', '')) for p in db_players if p.get('last_name')}
-
-    def traverse_and_store(obj, current_id=None):
-        obj_id = current_id
-        
-        if isinstance(obj, dict):
-            # 1. Hat das Dict selbst eine ID Eigenschaft?
-            for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId', 'MatchId', 'EventID', 'match_id']:
-                if k in obj and str(obj[k]).isdigit() and len(str(obj[k])) > 5:
-                    obj_id = str(obj[k])
-                    break
-                    
-            # Fallback für Nested-Match-Objects
-            if not obj_id and 'match' in obj and isinstance(obj['match'], dict):
-                m_id = obj['match'].get('id')
-                if m_id and str(m_id).isdigit(): obj_id = str(m_id)
-                
-            if obj_id:
-                if obj_id not in matches_raw_nodes: matches_raw_nodes[obj_id] = []
-                matches_raw_nodes[obj_id].append(obj)
-                
-                name_val = obj.get('name', '') or obj.get('eventName', '')
-                if not name_val and 'match' in obj and isinstance(obj['match'], dict):
-                    name_val = obj['match'].get('name', '')
-                    
-                if isinstance(name_val, str) and ' - ' in name_val:
-                    if '/' not in name_val and '&' not in name_val and '+' not in name_val and ' / ' not in name_val:
-                        parts = name_val.split(' - ')
-                        if len(parts) >= 2:
-                            tour_obj = obj.get('tournament', {})
-                            tour_name = "Unknown"
-                            if isinstance(tour_obj, dict): tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
-                            elif isinstance(tour_obj, str): tour_name = tour_obj
-                            
-                            start_time_ts = obj.get('startAt', 0)
-                            start_time_str = "00:00"
-                            if start_time_ts > 0: start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
-                                
-                            if obj_id not in matches_meta:
-                                matches_meta[obj_id] = {
-                                    "p1": parts[0].strip(),
-                                    "p2": parts[1].strip(),
-                                    "tour": clean_tournament_name(tour_name),
-                                    "time": start_time_str
-                                }
-
-            # Gehe tiefer in die Struktur, propagiere die ID weiter (Redux Normalization Bypass)
-            for k, v in obj.items():
-                next_id = obj_id
-                # Wenn der Key eine Ziffernfolge ist, setzen wir diesen als neuen ID Kontext!
-                if str(k).isdigit() and len(str(k)) > 5:
-                    next_id = str(k)
-                traverse_and_store(v, current_id=next_id)
-                
-        elif isinstance(obj, list):
-            list_id = obj_id
-            # Arrays in WebSockets haben oft die ID als Array-Element `["update", 33019468, {...}]`
-            for item in obj:
-                if isinstance(item, (int, str)) and str(item).isdigit() and len(str(item)) > 5:
-                    list_id = str(item)
-                    break
-            
-            if list_id and list_id != obj_id:
-                if list_id not in matches_raw_nodes: matches_raw_nodes[list_id] = []
-                matches_raw_nodes[list_id].append(obj)
-                
-            for item in obj: 
-                traverse_and_store(item, current_id=list_id)
-
-    async def handle_response(response):
-        if response.request.resource_type in ["fetch", "xhr"]:
-            url = response.url
-            if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events", "lines", "markets"]):
-                try:
-                    text = await response.text()
-                    if "{" in text and "}" in text: traverse_and_store(json.loads(text))
-                except: pass
-
-    async def handle_ws(ws):
-        async def on_frame_received(frame):
-            try:
-                text = frame.text
-                if text and "{" in text:
-                    clean_text = re.sub(r'^\d+', '', text)
-                    if clean_text.startswith('['): traverse_and_store(json.loads(clean_text))
-                    else:
-                        for match in re.findall(r'\{.*\}', text):
-                            try: traverse_and_store(json.loads(match))
-                            except: pass
-            except: pass
-        ws.on("framereceived", on_frame_received)
-        
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         viewport={"width": 1920, "height": 1080},
@@ -675,56 +531,116 @@ async def fetch_1win_markets_via_interception(browser: Browser, db_players: List
     
     await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
     page = await context.new_page()
-    page.on("response", handle_response)
-    page.on("websocket", handle_ws)
+
+    all_raw_cards = set()
 
     try:
         log("🌍 Navigiere im Stealth-Modus zu 1win...")
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
+        
         page_title = await page.title()
         if "Just a moment" in page_title or "Cloudflare" in page_title:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Scrolle durch die Seite für State-Reconstruction (15x Safe-Scroll)...")
+        log("⏳ Scrolle und extrahiere visuell (Optical Scanning)...")
+        # Scroll down incrementally and capture DOM nodes to bypass Virtual List culling
         for _ in range(15):
             try:
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                cards = await page.evaluate('''() => {
+                    let res = [];
+                    let elements = document.querySelectorAll('div, a');
+                    for(let el of elements) {
+                        let txt = el.innerText || "";
+                        let lines = txt.split('\\n').map(s => s.trim()).filter(s => s.length > 0);
+                        // A standard match container has between 3 and 40 lines of text
+                        if (lines.length >= 3 && lines.length <= 40) {
+                            // It must contain decimal values (odds)
+                            let odds = lines.filter(l => /^\\d+\\.\\d{2,3}$/.test(l));
+                            if (odds.length >= 2) {
+                                res.push(lines.join(' | '));
+                            }
+                        }
+                    }
+                    return res;
+                }''')
+                for c in cards: all_raw_cards.add(c)
+                await page.evaluate("window.scrollBy(0, 1000)")
                 await asyncio.sleep(1.5)
-            except Exception as scroll_e: continue
-    except Exception as e: log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
-    finally: await context.close()
+            except Exception: 
+                continue
+                
+    except Exception as e:
+        log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
+    finally:
+        await context.close()
         
-    unique_matches = []
-    success_count = 0
+    parsed_matches = []
     
-    for obj_id, meta in matches_meta.items():
-        if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower(): continue
-        
-        p1_norm = normalize_db_name(get_last_name(meta['p1']))
-        p2_norm = normalize_db_name(get_last_name(meta['p2']))
-        
-        if p1_norm not in db_last_names and p2_norm not in db_last_names:
-            continue
-            
-        nodes = matches_raw_nodes.get(obj_id, [])
-        
-        # V106.0: Übergib alle Nodes dieses Kontexts gesammelt an die SWE Matrix
-        o1, o2 = find_best_odds(nodes)
-        
-        if o1 > 0 and o2 > 0:
-            unique_matches.append({
-                "p1_raw": meta['p1'], "p2_raw": meta['p2'], "tour": meta['tour'], "time": meta['time'],
-                "odds1": o1, "odds2": o2,
-                "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                "actual_winner": None, "score": ""
-            })
-            success_count += 1
-        else:
-            log(f"   ⚠️ FEHLENDE QUOTEN für DB-Match: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
+    # Map for fast Last Name -> Full Last Name matching
+    db_name_map = {}
+    for p in db_players:
+        real_last = p.get('last_name', '')
+        if real_last:
+            db_name_map[normalize_db_name(real_last)] = real_last
 
-    log(f"✅ [1WIN GHOST] {success_count} relevante DB-Matches mit Quoten korreliert.")
+    log(f"👁️ Optischer Scan abgeschlossen. {len(all_raw_cards)} Text-Knoten analysieren...")
+
+    for card_text in all_raw_cards:
+        text_lower = card_text.lower()
+        
+        found_players = []
+        for db_norm, db_real in db_name_map.items():
+            if len(db_norm) > 3 and db_norm in text_lower:
+                found_players.append((text_lower.find(db_norm), db_real))
+                
+        # If we found at least 2 database players in this visual block, it's a target match!
+        if len(found_players) >= 2:
+            # Sort by visual index to ensure S1 aligns with Player 1
+            found_players.sort(key=lambda x: x[0])
+            p1_name = found_players[0][1]
+            p2_name = found_players[1][1]
+            
+            lines = card_text.split(' | ')
+            odds = []
+            for line in lines:
+                if re.match(r'^\d+\.\d{2,3}$', line):
+                    try:
+                        val = float(line)
+                        if 1.01 < val < 50.0: 
+                            odds.append(val)
+                    except: pass
+                        
+            if len(odds) >= 2:
+                o1, o2 = odds[0], odds[1]
+                
+                # Math Filter: If it's a date like "15.02", the implied prob will be garbage. 
+                # This perfectly filters valid odds from UI noise!
+                implied = (1/o1) + (1/o2)
+                if 1.02 <= implied <= 1.15:
+                    parsed_matches.append({
+                        "p1_raw": p1_name,
+                        "p2_raw": p2_name,
+                        "tour": "1win (Optical Scan)",
+                        "time": "00:00",
+                        "odds1": o1,
+                        "odds2": o2,
+                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                        "actual_winner": None, "score": ""
+                    })
+
+    # Remove duplicates caused by Virtual List continuous scanning
+    unique_matches = []
+    seen = set()
+    for m in parsed_matches:
+        # Create a unified key regardless of order
+        key = tuple(sorted([m['p1_raw'], m['p2_raw']]))
+        if key not in seen:
+            seen.add(key)
+            unique_matches.append(m)
+
+    log(f"✅ [1WIN GHOST] {len(unique_matches)} relevante DB-Matches via Optical Reconnaissance isoliert.")
     return unique_matches
 
 
@@ -1417,7 +1333,7 @@ def is_valid_opening_odd(o1: float, o2: float) -> bool:
     return True
 
 async def run_pipeline():
-    log(f"🚀 Neural Scout V106.0 (CONTEXT-AWARE REDUX EDITION) Starting...")
+    log(f"🚀 Neural Scout V107.0 (OPTICAL RECONNAISSANCE EDITION) Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -1429,7 +1345,6 @@ async def run_pipeline():
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
             log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
-            
             def needs_surface_update(p_data):
                 sr = p_data.get('surface_ratings')
                 if not sr: return True
@@ -1446,10 +1361,8 @@ async def run_pipeline():
                 for p_data in players_to_update:
                     p_name = p_data['last_name']
                     p_hist = await fetch_player_history_extended(p_name, limit=80)
-                    
                     p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
                     p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                    
                     try:
                         supabase.table('players').update({
                             'surface_ratings': p_profile,
@@ -1457,210 +1370,24 @@ async def run_pipeline():
                         }).eq('id', p_data['id']).execute()
                     except Exception as e:
                         log(f"🚨 [GLOBAL PROFILER ERROR] Update fehlgeschlagen für {p_name}: {e}")
-                    
                     await asyncio.sleep(0.05) 
                 log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
             
             target_date = datetime.now()
             METADATA_CACHE.update(await scrape_oracle_metadata(browser, target_date))
             
-            # V106.0: Redux Context Propagation Tracker
-            matches_meta = {} 
-            matches_raw_nodes = {} 
+            matches = await fetch_1win_markets_optical_dom(browser, players)
             
-            db_last_names = {normalize_db_name(p.get('last_name', '')) for p in players if p.get('last_name')}
-
-            def traverse_and_store(obj, current_id=None):
-                obj_id = current_id
-                
-                if isinstance(obj, dict):
-                    for k in ['id', 'matchId', 'eventId', 'gameId', 'EventId', 'MatchId', 'EventID', 'match_id']:
-                        if k in obj and str(obj[k]).isdigit() and len(str(obj[k])) > 5:
-                            obj_id = str(obj[k])
-                            break
-                            
-                    if not obj_id and 'match' in obj and isinstance(obj['match'], dict):
-                        m_id = obj['match'].get('id')
-                        if m_id and str(m_id).isdigit(): obj_id = str(m_id)
-                        
-                    if obj_id:
-                        if obj_id not in matches_raw_nodes: matches_raw_nodes[obj_id] = []
-                        matches_raw_nodes[obj_id].append(obj)
-                        
-                        name_val = obj.get('name', '') or obj.get('eventName', '')
-                        if not name_val and 'match' in obj and isinstance(obj['match'], dict):
-                            name_val = obj['match'].get('name', '')
-                            
-                        if isinstance(name_val, str) and ' - ' in name_val:
-                            if '/' not in name_val and '&' not in name_val and '+' not in name_val and ' / ' not in name_val:
-                                parts = name_val.split(' - ')
-                                if len(parts) >= 2:
-                                    tour_obj = obj.get('tournament', {})
-                                    tour_name = "Unknown"
-                                    if isinstance(tour_obj, dict): tour_name = tour_obj.get('slug', tour_obj.get('name', 'Unknown'))
-                                    elif isinstance(tour_obj, str): tour_name = tour_obj
-                                    
-                                    start_time_ts = obj.get('startAt', 0)
-                                    start_time_str = "00:00"
-                                    if start_time_ts > 0: start_time_str = datetime.fromtimestamp(start_time_ts).strftime('%H:%M')
-                                        
-                                    if obj_id not in matches_meta:
-                                        matches_meta[obj_id] = {
-                                            "p1": parts[0].strip(),
-                                            "p2": parts[1].strip(),
-                                            "tour": clean_tournament_name(tour_name),
-                                            "time": start_time_str
-                                        }
-
-                    for k, v in obj.items():
-                        next_id = obj_id
-                        if str(k).isdigit() and len(str(k)) > 5:
-                            next_id = str(k)
-                        traverse_and_store(v, current_id=next_id)
-                        
-                elif isinstance(obj, list):
-                    list_id = obj_id
-                    for item in obj:
-                        if isinstance(item, (int, str)) and str(item).isdigit() and len(str(item)) > 5:
-                            list_id = str(item)
-                            break
-                    
-                    if list_id and list_id != obj_id:
-                        if list_id not in matches_raw_nodes: matches_raw_nodes[list_id] = []
-                        matches_raw_nodes[list_id].append(obj)
-                        
-                    for item in obj: 
-                        traverse_and_store(item, current_id=list_id)
-
-            async def handle_response(response):
-                if response.request.resource_type in ["fetch", "xhr"]:
-                    url = response.url
-                    if any(x in url for x in ["top-parser", "sports", "matches", "1win", "category", "events", "lines", "markets"]):
-                        try:
-                            text = await response.text()
-                            if "{" in text and "}" in text: traverse_and_store(json.loads(text))
-                        except: pass
-
-            async def handle_ws(ws):
-                async def on_frame_received(frame):
-                    try:
-                        text = frame.text
-                        if text and "{" in text:
-                            clean_text = re.sub(r'^\d+', '', text)
-                            if clean_text.startswith('['): traverse_and_store(json.loads(clean_text))
-                            else:
-                                for match in re.findall(r'\{.*\}', text):
-                                    try: traverse_and_store(json.loads(match))
-                                    except: pass
-                    except: pass
-                ws.on("framereceived", on_frame_received)
-                
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                viewport={"width": 1920, "height": 1080},
-                java_script_enabled=True
-            )
-            
-            await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
-            page = await context.new_page()
-            page.on("response", handle_response)
-            page.on("websocket", handle_ws)
-
-            try:
-                log("🌍 Navigiere im Stealth-Modus zu 1win...")
-                await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
-                page_title = await page.title()
-                if "Just a moment" in page_title or "Cloudflare" in page_title:
-                    log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
-                    await asyncio.sleep(5)
-                    
-                log("⏳ Scrolle durch die Seite für State-Reconstruction (15x Safe-Scroll)...")
-                for _ in range(15):
-                    try:
-                        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        await asyncio.sleep(1.5)
-                    except Exception as scroll_e: continue
-            except Exception as e: log(f"⚠️ [1WIN GHOST] Timeout/Fehler beim Laden: {e}")
-            finally: await context.close()
-                
-            unique_matches = []
-            success_count = 0
-            
-            def find_best_odds(nodes: List[Any]) -> tuple[float, float]:
-                valid_pairs = []
-                def extract_all_floats(obj):
-                    res = []
-                    if isinstance(obj, dict):
-                        for k, val in obj.items():
-                            res.extend(extract_all_floats(val))
-                    elif isinstance(obj, list):
-                        for item in obj:
-                            res.extend(extract_all_floats(item))
-                    elif isinstance(obj, (int, float, str)):
-                        try:
-                            f_val = float(obj)
-                            if 1.01 < f_val < 50.0 and '.' in str(obj):
-                                res.append(f_val)
-                        except: pass
-                    return res
-
-                for node in nodes:
-                    floats = extract_all_floats(node)
-                    for i in range(len(floats)):
-                        for j in range(i+1, min(i+4, len(floats))):
-                            o1 = floats[i]
-                            o2 = floats[j]
-                            try:
-                                implied = (1/o1) + (1/o2)
-                                if 1.02 <= implied <= 1.12:
-                                    valid_pairs.append((o1, o2))
-                            except: pass
-
-                best_pair = (0.0, 0.0)
-                best_diff = 999.0
-                for o1, o2 in valid_pairs:
-                    margin = (1/o1) + (1/o2)
-                    diff = abs(margin - 1.055)
-                    if abs(o1 - o2) < 0.05: diff += 0.03 
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_pair = (o1, o2)
-                return best_pair
-
-            for obj_id, meta in matches_meta.items():
-                if "doubles" in meta['tour'].lower() or "doppel" in meta['tour'].lower(): continue
-                
-                p1_norm = normalize_db_name(get_last_name(meta['p1']))
-                p2_norm = normalize_db_name(get_last_name(meta['p2']))
-                
-                if p1_norm not in db_last_names and p2_norm not in db_last_names:
-                    continue
-                    
-                nodes = matches_raw_nodes.get(obj_id, [])
-                o1, o2 = find_best_odds(nodes)
-                
-                if o1 > 0 and o2 > 0:
-                    unique_matches.append({
-                        "p1_raw": meta['p1'], "p2_raw": meta['p2'], "tour": meta['tour'], "time": meta['time'],
-                        "odds1": o1, "odds2": o2,
-                        "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                        "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                        "actual_winner": None, "score": ""
-                    })
-                    success_count += 1
-                else:
-                    log(f"   ⚠️ FEHLENDE QUOTEN für DB-Match: {meta['p1']} vs {meta['p2']} (ID: {obj_id})")
-
-            if not unique_matches:
+            if not matches:
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
                 return
                 
-            log(f"🔍 Starte Oracle Enrichment für {success_count} relevante DB-Matches...")
+            log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
             
             db_matched_count = 0
             skipped_db_count = 0
             
-            for m in unique_matches:
+            for m in matches:
                 try:
                     await asyncio.sleep(0.5) 
                     
@@ -1674,9 +1401,7 @@ async def run_pipeline():
                     n1 = p1_obj['last_name']; n2 = p2_obj['last_name']
                     
                     if n1 == n2: continue
-                    if p1_obj.get('tour') != p2_obj.get('tour'):
-                        if "united cup" not in m['tour'].lower(): continue 
-                        
+                    
                     db_matched_count += 1
                         
                     if m['odds1'] <= 0 or m['odds2'] <= 0:
