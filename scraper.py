@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V137.0 - DEEP-DOM EXCAVATOR)...")
+log("🔌 Initialisiere Neural Scout (V138.0 - PRECISION SCALPEL EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -312,8 +312,8 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     implied_prob = (1/o1) + (1/o2)
     if implied_prob < 0.92: 
         return False 
-    # L8 Fix: Massive Challenger Vig Toleranz (bis zu 50% Marge)
-    if implied_prob > 1.50: 
+    # L8 Fix: 1.40 ist der perfekte Sweetspot für Challenger Vig, ohne Müll mitzuziehen.
+    if implied_prob > 1.40: 
         return False
     return True
 
@@ -741,13 +741,14 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V137.0 DEEP-DOM EXCAVATOR)
+# 6.5 1WIN SOTA MASTER FEED (V138.0 PRECISION SCALPEL)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
     for l in lines_slice:
         cl = l.replace(',', '.').strip()
-        matches = re.findall(r'\b\d+(?:\.\d{1,3})?\b', cl)
+        # L8 Fix: Strenger Regex ZURÜCK! Verhindert das Einsaugen von Scores/Set-Zahlen.
+        matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
         for m in matches:
             try:
                 val = float(m)
@@ -760,13 +761,12 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_diff = 999.0
     
     for x in range(len(floats)):
-        for y in range(x+1, min(x+12, len(floats))):
+        for y in range(x+1, min(x+15, len(floats))):
             o1 = floats[x]
             o2 = floats[y]
             try:
                 implied = (1/o1) + (1/o2)
-                # L8 Fix: Toleranz bis zu 1.50 (50% Marge) um kriminelle Challenger-Vigs zu überleben!
-                if 1.01 <= implied <= 1.50: 
+                if 1.01 <= implied <= 1.40: 
                     diff = abs(implied - 1.06) 
                     if abs(o1 - o2) < 0.05:
                         diff += 0.03
@@ -807,7 +807,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Deep-DOM Excavator (V137.0)...")
+    log("🚀 [1WIN GHOST] Starte Precision Scalpel Parser (V138.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -824,15 +824,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Adaptive-Regex-Muster (Fuzzy Boundaries)...")
+    log("⚙️ Kompiliere Strict-Regex-Muster (Safeguard)...")
     compiled_player_patterns = []
     
-    # L8 Fix: Adaptive Word Boundaries
-    # Bei Namen > 4 Buchstaben droppen wir \b komplett. Fängt "J.Sinner", "C.Alcaraz", "DeMinaur" auf.
+    # L8 Fix: Word Boundaries \b sind ZURÜCK, um False-Positives komplett zu töten.
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(p_norm) >= 5:
-            compiled_player_patterns.append((re.compile(re.escape(p_norm)), p_real))
-        elif len(p_norm) >= 2:
+        if len(p_norm) >= 2:
             compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
             
     parsed_matches = []
@@ -848,20 +845,19 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Aktiviere DOM-Nuke: Öffne alle versteckten Turniere und Challenger-Draws...")
+        log("⏳ Aktiviere Safe DOM-Extraction (Slow Scroll)...")
         await page.mouse.move(960, 540)
-        await asyncio.sleep(1)
+        await asyncio.sleep(1.5)
         
         for scroll_step in range(120): 
             try:
-                # L8 Fix: Aggressiver Clicker für Accordions & Headers (Nicht nur 'more' buttons)
+                # L8 Fix: Der Navigation-Nuke ist behoben. Wir klicken NUR auf echte "More" Buttons, KEINE Navigation-Links.
                 await page.evaluate("""
-                    let elements = document.querySelectorAll('div, button, span, a');
+                    let elements = document.querySelectorAll('div, button, span');
                     for(let el of elements) {
                         if(el.clientHeight > 0) {
-                            let txt = el.innerText ? el.innerText.toLowerCase() : '';
-                            if(txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle') || 
-                               txt.includes('atp') || txt.includes('wta') || txt.includes('challenger') || txt.includes('itf')) {
+                            let txt = el.innerText ? el.innerText.toLowerCase().trim() : '';
+                            if((txt === 'more' || txt === 'show more' || txt === 'anzeigen' || txt === 'alle') && txt.length < 15) {
                                 try { el.click(); } catch(e) {}
                             }
                         }
@@ -871,8 +867,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                await page.mouse.wheel(delta_x=0, delta_y=300)
-                await asyncio.sleep(0.5) 
+                await page.mouse.wheel(delta_x=0, delta_y=400)
+                # Höherer Sleep (0.8s) erlaubt der SPA die Netzwerkanfragen für Challenger-Draws abzuschließen!
+                await asyncio.sleep(0.8) 
                 
             except Exception as scroll_e: 
                 continue
@@ -898,7 +895,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     i = 0
     while i < len(unified_lines):
         line = unified_lines[i]
-        clean_line = re.sub(r'[().*+?]', ' ', line)
+        
+        # L8 Fix: THE MAGIC SANITIZER
+        # Ersetzt Punkte und Striche durch Leerzeichen. Aus "A.De Minaur" wird "A De Minaur".
+        # Dadurch schlägt die strikte \b Boundary an, OHNE dass wir False Positives riskieren!
+        clean_line = re.sub(r'[().*+?,-]', ' ', line)
         line_norm = normalize_text(clean_line).lower()
         
         if not line_norm:
@@ -929,10 +930,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     break
                     
             if not p2_found_real:
+                # Suchfenster auf 15 Zeilen erweitert
                 search_depth = min(15, len(unified_lines) - i) 
                 for j in range(1, search_depth):
                     s_line = unified_lines[i+j]
-                    clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
+                    clean_s_line = re.sub(r'[().*+?,-]', ' ', s_line)
                     s_line_norm = normalize_text(clean_s_line).lower()
                     
                     for pattern, p_real in compiled_player_patterns:
@@ -1626,7 +1628,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V137.0 (DEEP-DOM EXCAVATOR EDITION) Starting...")
+    log(f"🚀 Neural Scout V138.0 (PRECISION SCALPEL EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
