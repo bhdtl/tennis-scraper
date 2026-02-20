@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V128.0 - CONSUMED ODDS ALGORITHM EDITION)...")
+log("🔌 Initialisiere Neural Scout (V129.0 - MAXIMUM YIELD EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -665,7 +665,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V128.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V129.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -743,8 +743,45 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V128.0 CONSUMED ODDS ALGORITHM)
+# 6.5 1WIN SOTA MASTER FEED (V129.0 MAX VOLUME ALGORITHM)
 # =================================================================
+def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
+    floats = []
+    for l in lines_slice:
+        cl = l.replace(',', '.').strip()
+        matches = re.findall(r'\b\d+\.\d{2,3}\b', cl)
+        for m in matches:
+            try:
+                val = float(m)
+                if 1.0 < val <= 150.0:
+                    floats.append(val)
+            except: 
+                pass
+            
+    best_pair = (0.0, 0.0)
+    best_diff = 999.0
+    
+    # L8 Fix: "Best-Fit mit Anti-Handicap-Strafe". Scannt alle Quoten im Block.
+    for x in range(len(floats)):
+        for y in range(x+1, min(x+8, len(floats))):
+            o1 = floats[x]
+            o2 = floats[y]
+            try:
+                implied = (1/o1) + (1/o2)
+                if 1.015 <= implied <= 1.25: 
+                    diff = abs(implied - 1.055)
+                    # Strafe für identische Handicap/Over-Under Quoten (z.B. 1.85 / 1.85)
+                    if abs(o1 - o2) < 0.05: 
+                        diff += 0.05
+                    
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_pair = (o1, o2)
+            except: 
+                pass
+                
+    return best_pair
+
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
@@ -773,7 +810,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Consumed Odds Engine (V128.0 - Max Volume)...")
+    log("🚀 [1WIN GHOST] Starte Maximum Yield Spatial Engine (V129.0 Scroll Fix)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -809,12 +846,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Centered-Scrolling durch...")
+        log("⏳ Führe Document-Level Scrolling durch, um ALLE Sub-Container zu triggern...")
         
-        await page.mouse.move(960, 540)
-        await asyncio.sleep(1)
-        
-        for scroll_step in range(80): 
+        for scroll_step in range(100): # L8 Fix: 100 Scrolls für extremes Volumen 
             try:
                 await page.evaluate("""
                     let buttons = document.querySelectorAll('div, button, span');
@@ -829,7 +863,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                await page.mouse.wheel(delta_x=0, delta_y=400)
+                # L8 Fix: Skript zwingt das GESAMTE Fenster zum Scrollen, nicht nur ein Div!
+                await page.evaluate("window.scrollBy(0, 500);")
                 await asyncio.sleep(0.4) 
                 
             except Exception as scroll_e: 
@@ -875,8 +910,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             p2_found_real = None
             p2_index = i
             
-            # L8 Fix: P2 muss sich innerhalb der nächsten 8 Zeilen befinden (Verhindert Frankensteins)
-            search_slice = unified_lines[i+1 : min(i+9, len(unified_lines))]
+            # Suchradius für Gegner: 10 Zeilen (Genug für Flaggen, kurz genug gegen Frankensteins)
+            search_slice = unified_lines[i+1 : min(i+11, len(unified_lines))]
             for j, s_line in enumerate(search_slice):
                 s_line_norm = normalize_text(s_line).lower()
                 for pattern, p_real in compiled_player_patterns:
@@ -893,11 +928,10 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 
                 if match_key not in seen_matches:
                     
-                    # L8 Fix: The Consumed Odds Engine
                     o1, o2 = 0.0, 0.0
                     odds_found = False
                     
-                    # Scanne bis zu 60 Zeilen nach unten (durchbricht jedes Grid-Layout)
+                    # Scanne tief nach Quoten
                     for x in range(p2_index, min(p2_index + 60, len(unified_lines))):
                         if x in used_odds_indices: 
                             continue
@@ -905,11 +939,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                         line_x = unified_lines[x].replace(',', '.')
                         floats_x = [float(m) for m in re.findall(r'\b\d+\.\d{2,3}\b', line_x) if 1.0 < float(m) <= 150.0]
                         
-                        # Fall A: Beide Quoten stehen in der exakt selben Zeile (Liste)
                         if len(floats_x) >= 2:
                             for fi in range(len(floats_x)-1):
                                 temp_o1, temp_o2 = floats_x[fi], floats_x[fi+1]
-                                if 1.015 <= (1/temp_o1) + (1/temp_o2) <= 1.25:
+                                implied = (1/temp_o1) + (1/temp_o2)
+                                if 1.015 <= implied <= 1.25 and abs(temp_o1 - temp_o2) > 0.05:
                                     o1, o2 = temp_o1, temp_o2
                                     used_odds_indices.add(x)
                                     odds_found = True
@@ -920,7 +954,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                         if not floats_x: 
                             continue
                         
-                        # Fall B: Quoten stehen untereinander (Grid-Layout)
                         for y in range(x+1, min(x+8, len(unified_lines))):
                             if y in used_odds_indices: 
                                 continue
@@ -932,7 +965,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             
                             temp_o1 = floats_x[-1]
                             temp_o2 = floats_y[0]
-                            if 1.015 <= (1/temp_o1) + (1/temp_o2) <= 1.25:
+                            implied = (1/temp_o1) + (1/temp_o2)
+                            if 1.015 <= implied <= 1.25 and abs(temp_o1 - temp_o2) > 0.05:
                                 o1, o2 = temp_o1, temp_o2
                                 used_odds_indices.add(x)
                                 used_odds_indices.add(y)
@@ -1613,7 +1647,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V128.0 (CONSUMED ODDS EDITION) Starting...")
+    log(f"🚀 Neural Scout V129.0 (MAXIMUM YIELD EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
