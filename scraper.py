@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V138.0 - PRECISION SCALPEL EDITION)...")
+log("🔌 Initialisiere Neural Scout (V139.0 - GEOMETRIC ANCHOR EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -153,52 +153,43 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
+# L8 FIX: Completely overhauled fuzzy token matcher to handle commas and reversed names.
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None:
         report_ids = set()
     if not scraped_name_raw or not db_players: 
         return None
         
-    clean_scrape = clean_player_name(scraped_name_raw)
-    parts = clean_scrape.split()
-    scrape_last = ""
-    scrape_initial = ""
+    clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
+    scrape_tokens = [t for t in clean_scrape.split() if len(t) > 0]
     
-    if len(parts) >= 2:
-        last_token = parts[-1].replace('.', '')
-        if len(last_token) == 1 and last_token.isalpha():
-            scrape_initial = last_token.lower()
-            scrape_last = " ".join(parts[:-1]) 
-        else:
-            scrape_last = parts[-1]
-            if parts[0]:
-                scrape_initial = parts[0][0].lower()
-    else:
-        scrape_last = clean_scrape
-
-    target_last = normalize_db_name(scrape_last)
     candidates = []
     
     for p in db_players:
-        db_last_raw = p.get('last_name', '')
-        db_last = normalize_db_name(db_last_raw)
+        db_last = normalize_db_name(p.get('last_name', ''))
+        db_first = normalize_db_name(p.get('first_name', ''))
+        
         match_score = 0
         
-        if db_last == target_last: 
-            match_score = 100
-        elif target_last in db_last or db_last in target_last: 
-            if len(target_last) > 3 and len(db_last) > 3: 
-                match_score = 80
-                
-        if match_score > 0:
-            db_first = p.get('first_name', '').lower()
-            if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial): 
-                    match_score += 20 
-                else: 
-                    match_score -= 50 
-            if match_score > 50: 
-                candidates.append((p, match_score))
+        # Token Overlap Logic
+        if db_last:
+            for token in scrape_tokens:
+                if db_last == token: 
+                    match_score += 60
+                elif len(token) > 4 and (token in db_last or db_last in token): 
+                    match_score += 40
+                    
+        if db_first and match_score > 0:
+            for token in scrape_tokens:
+                if db_first == token: 
+                    match_score += 30
+                elif len(token) > 3 and (token in db_first or db_first in token): 
+                    match_score += 15
+                elif len(token) == 1 and token[0] == db_first[0]: 
+                    match_score += 10 
+                    
+        if match_score >= 40: 
+            candidates.append((p, match_score))
                 
     if not candidates: 
         return None
@@ -312,8 +303,8 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     implied_prob = (1/o1) + (1/o2)
     if implied_prob < 0.92: 
         return False 
-    # L8 Fix: 1.40 ist der perfekte Sweetspot für Challenger Vig, ohne Müll mitzuziehen.
-    if implied_prob > 1.40: 
+    # Marge bei 1.45 gedeckelt, fängt alle Challenger sicher ab
+    if implied_prob > 1.45: 
         return False
     return True
 
@@ -741,44 +732,8 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V138.0 PRECISION SCALPEL)
+# 6.5 1WIN SOTA MASTER FEED (V139.0 GEOMETRIC ANCHOR)
 # =================================================================
-def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
-    floats = []
-    for l in lines_slice:
-        cl = l.replace(',', '.').strip()
-        # L8 Fix: Strenger Regex ZURÜCK! Verhindert das Einsaugen von Scores/Set-Zahlen.
-        matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
-        for m in matches:
-            try:
-                val = float(m)
-                if 1.0 < val <= 250.0:
-                    floats.append(val)
-            except: 
-                pass
-            
-    best_pair = (0.0, 0.0)
-    best_diff = 999.0
-    
-    for x in range(len(floats)):
-        for y in range(x+1, min(x+15, len(floats))):
-            o1 = floats[x]
-            o2 = floats[y]
-            try:
-                implied = (1/o1) + (1/o2)
-                if 1.01 <= implied <= 1.40: 
-                    diff = abs(implied - 1.06) 
-                    if abs(o1 - o2) < 0.05:
-                        diff += 0.03
-                    
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_pair = (o1, o2)
-            except: 
-                pass
-                
-    return best_pair
-
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
@@ -807,7 +762,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Precision Scalpel Parser (V138.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Geometric Anchor Parser (V139.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -818,20 +773,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     await context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); window.navigator.chrome = { runtime: {} };")
     page = await context.new_page()
 
-    db_name_map = {}
-    for p in db_players:
-        real_last = p.get('last_name', '')
-        if real_last: 
-            db_name_map[normalize_db_name(real_last)] = real_last
-
-    log("⚙️ Kompiliere Strict-Regex-Muster (Safeguard)...")
-    compiled_player_patterns = []
-    
-    # L8 Fix: Word Boundaries \b sind ZURÜCK, um False-Positives komplett zu töten.
-    for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(p_norm) >= 2:
-            compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
-            
     parsed_matches = []
     seen_matches = set()
     all_raw_text_blocks = [] 
@@ -845,20 +786,28 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Aktiviere Safe DOM-Extraction (Slow Scroll)...")
+        log("⏳ Aktiviere Safe Smart-Clicker (Accordions & Show More)...")
         await page.mouse.move(960, 540)
         await asyncio.sleep(1.5)
         
-        for scroll_step in range(120): 
+        for scroll_step in range(80): 
             try:
-                # L8 Fix: Der Navigation-Nuke ist behoben. Wir klicken NUR auf echte "More" Buttons, KEINE Navigation-Links.
+                # L8 Fix: Dieser Smart-Clicker öffnet zielgerichtet die Menüs (Bild 1 -> Bild 2),
+                # ohne Hauptnavigationen auszulösen. Er zielt auf divs mit SVG-Arrows oder Pointer-Cursor.
                 await page.evaluate("""
-                    let elements = document.querySelectorAll('div, button, span');
-                    for(let el of elements) {
-                        if(el.clientHeight > 0) {
-                            let txt = el.innerText ? el.innerText.toLowerCase().trim() : '';
-                            if((txt === 'more' || txt === 'show more' || txt === 'anzeigen' || txt === 'alle') && txt.length < 15) {
-                                try { el.click(); } catch(e) {}
+                    let els = Array.from(document.querySelectorAll('div, button, span'));
+                    for(let e of els) {
+                        if(e.clientHeight > 0) {
+                            let text = e.innerText ? e.innerText.trim() : '';
+                            let textLow = text.toLowerCase();
+                            
+                            if (text.length < 80 && (textLow.includes('atp') || textLow.includes('wta') || textLow.includes('itf') || textLow.includes('challenger') || textLow.includes('utr'))) {
+                                if (window.getComputedStyle(e).cursor === 'pointer' || e.querySelector('svg')) {
+                                    try { e.click(); } catch(err){}
+                                }
+                            }
+                            if (textLow === 'more' || textLow === 'show more' || textLow === 'anzeigen' || textLow === 'alle') {
+                                try { e.click(); } catch(err){}
                             }
                         }
                     }
@@ -867,9 +816,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                await page.mouse.wheel(delta_x=0, delta_y=400)
-                # Höherer Sleep (0.8s) erlaubt der SPA die Netzwerkanfragen für Challenger-Draws abzuschließen!
-                await asyncio.sleep(0.8) 
+                await page.mouse.wheel(delta_x=0, delta_y=500)
+                await asyncio.sleep(0.5) 
                 
             except Exception as scroll_e: 
                 continue
@@ -888,93 +836,75 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if not unified_lines or unified_lines[-1] != line:
                 unified_lines.append(line)
 
-    log(f"🧠 Führe 2D-Holographic Extraktion auf {len(unified_lines)} Zeilen aus...")
+    log(f"🧠 Starte Geometric Anchor Extraktion auf {len(unified_lines)} Zeilen...")
     
     current_tour = "Unknown"
     
-    i = 0
-    while i < len(unified_lines):
+    # L8 CORE FIX: GEOMETRIC ANCHOR PARSING
+    for i in range(len(unified_lines)):
         line = unified_lines[i]
+        line_norm = normalize_text(line).lower()
         
-        # L8 Fix: THE MAGIC SANITIZER
-        # Ersetzt Punkte und Striche durch Leerzeichen. Aus "A.De Minaur" wird "A De Minaur".
-        # Dadurch schlägt die strikte \b Boundary an, OHNE dass wir False Positives riskieren!
-        clean_line = re.sub(r'[().*+?,-]', ' ', line)
-        line_norm = normalize_text(clean_line).lower()
-        
-        if not line_norm:
-            i += 1
-            continue
-            
-        if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-            if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
+        # Tour-Tracking im Vorbeigehen (Turnier-Header stehen oft über den Spielen)
+        if len(line) < 100 and any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'challenger', 'itf', 'utr']):
+            if "sieger" not in line_norm and "winner" not in line_norm:
                 current_tour = line
         
-        p1_found_real = None
-        p1_pattern_used = None
-        for pattern, p_real in compiled_player_patterns:
-            if pattern.search(line_norm):
-                p1_found_real = p_real
-                p1_pattern_used = pattern
-                break
+        # ANCHOR: Das Wort "Sieger" (Bilder 2, 3, 4) definiert die Block-Struktur!
+        if line_norm == "sieger" or line_norm == "winner":
+            if i >= 2:
+                p2_raw = unified_lines[i-1]
+                p1_raw = unified_lines[i-2]
                 
-        if p1_found_real:
-            p2_found_real = None
-            p2_index = -1
-            
-            line_norm_without_p1 = p1_pattern_used.sub(' ', line_norm)
-            for pattern, p_real in compiled_player_patterns:
-                if pattern.search(line_norm_without_p1) and p_real != p1_found_real:
-                    p2_found_real = p_real
-                    p2_index = i
-                    break
+                if len(p1_raw) < 3 or len(p2_raw) < 3: 
+                    continue
+                if any(kw in p1_raw.lower() for kw in ['atp', 'wta', 'itf', 'challenger', 'sieger']): 
+                    continue
                     
-            if not p2_found_real:
-                # Suchfenster auf 15 Zeilen erweitert
-                search_depth = min(15, len(unified_lines) - i) 
-                for j in range(1, search_depth):
-                    s_line = unified_lines[i+j]
-                    clean_s_line = re.sub(r'[().*+?,-]', ' ', s_line)
-                    s_line_norm = normalize_text(clean_s_line).lower()
+                match_key = tuple(sorted([p1_raw, p2_raw]))
+                if match_key in seen_matches:
+                    continue
                     
-                    for pattern, p_real in compiled_player_patterns:
-                        if pattern.search(s_line_norm) and p_real != p1_found_real:
-                            p2_found_real = p_real
-                            p2_index = i + j
-                            break
-                    if p2_found_real:
-                        break
-                    
-            if p2_found_real:
-                match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                time_slice = unified_lines[max(0, i-5):i]
+                extracted_time = extract_time_context(time_slice)
                 
-                if match_key not in seen_matches:
+                # Quoten aus den Zeilen unterhalb des Ankers holen
+                odds_slice = unified_lines[i+1 : min(i+12, len(unified_lines))]
+                floats = []
+                for ol in odds_slice:
+                    cl = ol.replace(',', '.').strip()
+                    matches_val = re.findall(r'\b\d+\.\d{2,3}\b', cl)
+                    for m_val in matches_val:
+                        try:
+                            val = float(m_val)
+                            if 1.0 < val <= 250.0:
+                                floats.append(val)
+                        except: 
+                            pass
+                            
+                if len(floats) >= 2:
+                    o1, o2 = floats[0], floats[1]
                     
-                    odds_slice = unified_lines[p2_index : min(p2_index + 25, len(unified_lines))]
-                    o1, o2 = extract_odds_from_lines(odds_slice)
-                    
-                    if o1 > 0 and o2 > 0:
-                        seen_matches.add(match_key)
-                        
-                        time_slice = unified_lines[max(0, i-5):i]
-                        extracted_time = extract_time_context(time_slice)
-                        
-                        parsed_matches.append({
-                            "p1_raw": p1_found_real, 
-                            "p2_raw": p2_found_real,
-                            "tour": clean_tournament_name(current_tour),
-                            "time": extracted_time, 
-                            "odds1": o1, 
-                            "odds2": o2,
-                            "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                            "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                            "actual_winner": None, "score": ""
-                        })
-                        
-                        i = p2_index 
-        i += 1
+                    try:
+                        implied = (1/o1) + (1/o2)
+                        # Großzügige Toleranz für Challenger-Spiele
+                        if 1.01 <= implied <= 1.45: 
+                            seen_matches.add(match_key)
+                            parsed_matches.append({
+                                "p1_raw": p1_raw, 
+                                "p2_raw": p2_raw,
+                                "tour": clean_tournament_name(current_tour),
+                                "time": extracted_time, 
+                                "odds1": o1, 
+                                "odds2": o2,
+                                "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                                "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                                "actual_winner": None, "score": ""
+                            })
+                    except:
+                        pass
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches extrahiert.")
     return parsed_matches
 
 # =================================================================
@@ -1628,7 +1558,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V138.0 (PRECISION SCALPEL EDITION) Starting...")
+    log(f"🚀 Neural Scout V139.0 (GEOMETRIC ANCHOR EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
