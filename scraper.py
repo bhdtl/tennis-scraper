@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V128.0 - FULL SYSTEM RESTORE & TOKEN BARRIER)...")
+log("🔌 Initialisiere Neural Scout (V128.0 - CONSUMED ODDS ALGORITHM EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -153,7 +153,6 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# L8 FIX: FUNKTION WIEDERHERGESTELLT! 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None:
         report_ids = set()
@@ -335,7 +334,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
+# 3. MOMENTUM V2 ENGINE
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -744,41 +743,8 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V128.0 TOKEN ENGINE PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V128.0 CONSUMED ODDS ALGORITHM)
 # =================================================================
-def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
-    floats = []
-    for l in lines_slice:
-        cl = l.replace(',', '.').strip()
-        matches = re.findall(r'\b\d+\.\d{2,3}\b', cl)
-        for m in matches:
-            try:
-                val = float(m)
-                if 1.0 < val <= 150.0:
-                    floats.append(val)
-            except: 
-                pass
-            
-    best_pair = (0.0, 0.0)
-    best_diff = 999.0
-    
-    for x in range(len(floats)):
-        for y in range(x+1, min(x+8, len(floats))):
-            o1 = floats[x]
-            o2 = floats[y]
-            try:
-                implied = (1/o1) + (1/o2)
-                # L8 Fix: Akzeptiert Buchmacher-Margen von 1.5% bis 25% (für kleine UTR/Challenger Turniere)
-                if 1.015 <= implied <= 1.25: 
-                    diff = abs(implied - 1.055)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_pair = (o1, o2)
-            except: 
-                pass
-                
-    return best_pair
-
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
@@ -807,7 +773,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Token Engine (V128.0 - Zero Overlap & Anti-Frankenstein)...")
+    log("🚀 [1WIN GHOST] Starte Consumed Odds Engine (V128.0 - Max Volume)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -824,7 +790,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Regex-Muster für L8 Tokenizer...")
+    log("⚙️ Kompiliere Regex-Muster...")
     compiled_player_patterns = []
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
         if len(p_norm) > 2:
@@ -843,7 +809,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Centered-Scrolling durch, um Virtualized React DOM zu capturen...")
+        log("⏳ Führe Centered-Scrolling durch...")
         
         await page.mouse.move(960, 540)
         await asyncio.sleep(1)
@@ -874,91 +840,124 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 DOM Capture beendet. Starte L8 Token-Extraction auf {len(all_raw_text_blocks)} Blöcken...")
-    
-    # L8 Fix: Die TOKEN ENGINE.
-    # Wir parsen die Blöcke völlig immun gegen Überlappungen und DOM-Müll.
+    log(f"🧩 Erzeuge Unified Stream...")
+    unified_lines = []
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
+        unified_lines.extend(lines)
+
+    log(f"🧩 Führe Consumed Odds Extraktion aus...")
+    
+    current_tour = "Unknown"
+    used_odds_indices = set()
+    
+    for i, line in enumerate(unified_lines):
+        line_norm = normalize_text(line).lower()
+        if not line_norm: 
+            continue
         
-        tokens = []
-        for i, line in enumerate(lines):
-            line_norm = normalize_text(line).lower()
-            if not line_norm: continue
-            
-            is_tour = False
-            # Tokenize: Tournaments
+        is_player_line = False
+        p1_found_real = None
+        
+        for pattern, p_real in compiled_player_patterns:
+            if pattern.search(line_norm):
+                p1_found_real = p_real
+                is_player_line = True
+                break
+
+        if not is_player_line:
             if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
                  if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
-                     tokens.append(('TOUR', line, i))
-                     is_tour = True
+                     current_tour = line
+            continue
             
-            # Tokenize: Players
-            if not is_tour:
+        if p1_found_real:
+            p2_found_real = None
+            p2_index = i
+            
+            # L8 Fix: P2 muss sich innerhalb der nächsten 8 Zeilen befinden (Verhindert Frankensteins)
+            search_slice = unified_lines[i+1 : min(i+9, len(unified_lines))]
+            for j, s_line in enumerate(search_slice):
+                s_line_norm = normalize_text(s_line).lower()
                 for pattern, p_real in compiled_player_patterns:
-                    if pattern.search(line_norm):
-                        tokens.append(('PLAYER', p_real, i))
-                        break
-                        
-        current_tour = "Unknown"
-        k = 0
-        
-        # Token Evaluator: Sucht Paare und fängt Quoten ab.
-        while k < len(tokens):
-            tok_type, tok_val, idx = tokens[k]
-            
-            if tok_type == 'TOUR':
-                current_tour = tok_val
-                k += 1
-                continue
-                
-            if tok_type == 'PLAYER':
-                # Schau, ob das nächste gefundene Token ebenfalls ein Spieler ist
-                if k + 1 < len(tokens) and tokens[k+1][0] == 'PLAYER':
-                    p1_real, p1_idx = tok_val, idx
-                    p2_real, p2_idx = tokens[k+1][1], tokens[k+1][2]
+                    if pattern.search(s_line_norm):
+                        if p_real != p1_found_real:
+                            p2_found_real = p_real
+                            p2_index = i + 1 + j
+                            break
+                if p2_found_real:
+                    break
                     
-                    # Ein Match ist nur gültig, wenn es nicht derselbe Spieler ist,
-                    # und sie im DOM nicht ewig weit auseinander liegen (Maximal 30 Zeilen).
-                    if p1_real != p2_real and (p2_idx - p1_idx) <= 30:
-                        
-                        # L8 Fix: Die Barriere ist der NÄCHSTE SPIELER (nicht das Tour-Header-Token!)
-                        # Dadurch überspringen wir keine Quoten mehr, nur weil 1WIN einen Sponsor-Header dazwischen rendert.
-                        next_player_idx = len(lines)
-                        for t_type_f, t_val_f, t_idx_f in tokens[k+2:]:
-                            if t_type_f == 'PLAYER':
-                                next_player_idx = t_idx_f
-                                break
-                            
-                        # Limitiere auf maximal 60 Zeilen Suchradius, falls der Block hier aufhört
-                        odds_search_end = min(p2_idx + 60, next_player_idx)
-                        odds_slice = lines[p2_idx : odds_search_end]
-                        o1, o2 = extract_odds_from_lines(odds_slice)
-                        
-                        if o1 > 0 and o2 > 0:
-                            match_key = tuple(sorted([p1_real, p2_real]))
-                            if match_key not in seen_matches:
-                                seen_matches.add(match_key)
-                                
-                                time_slice = lines[max(0, p1_idx-5):p1_idx]
-                                extracted_time = extract_time_context(time_slice)
-                                
-                                parsed_matches.append({
-                                    "p1_raw": p1_real, "p2_raw": p2_real,
-                                    "tour": clean_tournament_name(current_tour),
-                                    "time": extracted_time, 
-                                    "odds1": o1, "odds2": o2,
-                                    "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
-                                    "over_under_line": None, "over_odds": 0, "under_odds": 0,
-                                    "actual_winner": None, "score": ""
-                                })
-                            # Beide Spieler verarbeitet -> springe 2 Tokens weiter! (Anti-Frankenstein)
-                            k += 2
+            if p2_found_real:
+                match_key = tuple(sorted([p1_found_real, p2_found_real]))
+                
+                if match_key not in seen_matches:
+                    
+                    # L8 Fix: The Consumed Odds Engine
+                    o1, o2 = 0.0, 0.0
+                    odds_found = False
+                    
+                    # Scanne bis zu 60 Zeilen nach unten (durchbricht jedes Grid-Layout)
+                    for x in range(p2_index, min(p2_index + 60, len(unified_lines))):
+                        if x in used_odds_indices: 
                             continue
-                # Kein passendes Paar gefunden -> Gehe nur 1 Token weiter
-                k += 1
-            else:
-                k += 1
+                            
+                        line_x = unified_lines[x].replace(',', '.')
+                        floats_x = [float(m) for m in re.findall(r'\b\d+\.\d{2,3}\b', line_x) if 1.0 < float(m) <= 150.0]
+                        
+                        # Fall A: Beide Quoten stehen in der exakt selben Zeile (Liste)
+                        if len(floats_x) >= 2:
+                            for fi in range(len(floats_x)-1):
+                                temp_o1, temp_o2 = floats_x[fi], floats_x[fi+1]
+                                if 1.015 <= (1/temp_o1) + (1/temp_o2) <= 1.25:
+                                    o1, o2 = temp_o1, temp_o2
+                                    used_odds_indices.add(x)
+                                    odds_found = True
+                                    break
+                        if odds_found: 
+                            break
+                        
+                        if not floats_x: 
+                            continue
+                        
+                        # Fall B: Quoten stehen untereinander (Grid-Layout)
+                        for y in range(x+1, min(x+8, len(unified_lines))):
+                            if y in used_odds_indices: 
+                                continue
+                            line_y = unified_lines[y].replace(',', '.')
+                            floats_y = [float(m) for m in re.findall(r'\b\d+\.\d{2,3}\b', line_y) if 1.0 < float(m) <= 150.0]
+                            
+                            if not floats_y: 
+                                continue
+                            
+                            temp_o1 = floats_x[-1]
+                            temp_o2 = floats_y[0]
+                            if 1.015 <= (1/temp_o1) + (1/temp_o2) <= 1.25:
+                                o1, o2 = temp_o1, temp_o2
+                                used_odds_indices.add(x)
+                                used_odds_indices.add(y)
+                                odds_found = True
+                                break
+                        if odds_found: 
+                            break
+
+                    if odds_found and o1 > 0 and o2 > 0:
+                        seen_matches.add(match_key)
+                        
+                        time_slice = unified_lines[max(0, i-5):i]
+                        extracted_time = extract_time_context(time_slice)
+                        
+                        parsed_matches.append({
+                            "p1_raw": p1_found_real, 
+                            "p2_raw": p2_found_real,
+                            "tour": clean_tournament_name(current_tour),
+                            "time": extracted_time, 
+                            "odds1": o1, 
+                            "odds2": o2,
+                            "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
+                            "over_under_line": None, "over_odds": 0, "under_odds": 0,
+                            "actual_winner": None, "score": ""
+                        })
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
     return parsed_matches
@@ -1614,7 +1613,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V128.0 (TOKEN BARRIER EDITION) Starting...")
+    log(f"🚀 Neural Scout V128.0 (CONSUMED ODDS EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
