@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V135.0 - SOTA FSM SLIDING WINDOW EDITION)...")
+log("🔌 Initialisiere Neural Scout (V136.0 - HOLOGRAPHIC PARSER EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -307,12 +307,13 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
 def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: 
         return False 
-    if o1 > 100 or o2 > 100: 
+    if o1 > 150 or o2 > 150: 
         return False 
     implied_prob = (1/o1) + (1/o2)
     if implied_prob < 0.92: 
         return False 
-    if implied_prob > 1.25: 
+    # Marge auf 1.35 erhöht für Challenger/ITF Vig!
+    if implied_prob > 1.35: 
         return False
     return True
 
@@ -743,13 +744,14 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V135.0 FSM SLIDING WINDOW PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V136.0 HOLOGRAPHIC PARSER)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
     for l in lines_slice:
         cl = l.replace(',', '.').strip()
-        matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
+        # L8 Fix: Erlaubt Quoten OHNE Punkt (z.B. "2") und lockert Regex
+        matches = re.findall(r'\b\d+(?:\.\d{1,3})?\b', cl)
         for m in matches:
             try:
                 val = float(m)
@@ -761,14 +763,16 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
+    # L8 Fix: Such-Fenster auf 10 erhöht, um Stats zwischen den Quoten zu überspringen
     for x in range(len(floats)):
-        for y in range(x+1, min(x+8, len(floats))):
+        for y in range(x+1, min(x+10, len(floats))):
             o1 = floats[x]
             o2 = floats[y]
             try:
                 implied = (1/o1) + (1/o2)
-                if 1.015 <= implied <= 1.25: 
-                    diff = abs(implied - 1.055)
+                # L8 Fix: Marge auf 1.35 erhöht (35% Vig), fängt fast alle Challenger und ITF Matches!
+                if 1.01 <= implied <= 1.35: 
+                    diff = abs(implied - 1.06) 
                     if abs(o1 - o2) < 0.05:
                         diff += 0.03
                     
@@ -808,7 +812,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA FSM Engine (V135.0 Sliding Window)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Holographic Parser (V136.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -884,12 +888,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if not unified_lines or unified_lines[-1] != line:
                 unified_lines.append(line)
 
-    log(f"🧠 Führe FSM Sliding-Window Extraktion auf {len(unified_lines)} Zeilen aus...")
+    log(f"🧠 Führe 2D-Holographic Extraktion auf {len(unified_lines)} Zeilen aus...")
     
     current_tour = "Unknown"
-    
-    # L8 FSM ALGORITHMUS
-    # Ersetzt die alte Grid/Anti-Frankenstein Logik durch eine dynamische State-Machine
     
     i = 0
     while i < len(unified_lines):
@@ -901,54 +902,56 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             i += 1
             continue
             
-        # Aktualisiere Turnier Kontext
         if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
             if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
                 current_tour = line
         
         p1_found_real = None
+        p1_pattern_used = None
         for pattern, p_real in compiled_player_patterns:
             if pattern.search(line_norm):
                 p1_found_real = p_real
+                p1_pattern_used = pattern
                 break
                 
-        # STATE 1: P1 Gefunden. Starte Lookahead für P2
         if p1_found_real:
             p2_found_real = None
             p2_index = -1
             
-            # Dynamisches Fenster: Suche bis zu 8 Zeilen nach P2 (Fängt Live-Tags und Badges ab)
-            search_depth = min(8, len(unified_lines) - i)
-            for j in range(1, search_depth):
-                s_line = unified_lines[i+j]
-                clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
-                s_line_norm = normalize_text(clean_s_line).lower()
-                
-                # Wenn wir reine Quoten-Zahlen treffen, bevor P2 gefunden ist, brich ab (Falscher Block)
-                if re.match(r'^\d{1,3}\.\d{2}$', s_line.strip()) and j > 3:
+            # L8 Fix 1: SAME-LINE CHECK. Löst das Inline "Sinner - Alcaraz" DOM Problem.
+            line_norm_without_p1 = p1_pattern_used.sub(' ', line_norm)
+            for pattern, p_real in compiled_player_patterns:
+                if pattern.search(line_norm_without_p1) and p_real != p1_found_real:
+                    p2_found_real = p_real
+                    p2_index = i
                     break
                     
-                for pattern, p_real in compiled_player_patterns:
-                    if pattern.search(s_line_norm) and p_real != p1_found_real:
-                        p2_found_real = p_real
-                        p2_index = i + j
+            # L8 Fix 2: DEEP LOOKAHEAD. Wenn P2 nicht auf derselben Zeile ist, scannen wir tief.
+            if not p2_found_real:
+                search_depth = min(12, len(unified_lines) - i) 
+                for j in range(1, search_depth):
+                    s_line = unified_lines[i+j]
+                    clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
+                    s_line_norm = normalize_text(clean_s_line).lower()
+                    
+                    for pattern, p_real in compiled_player_patterns:
+                        if pattern.search(s_line_norm) and p_real != p1_found_real:
+                            p2_found_real = p_real
+                            p2_index = i + j
+                            break
+                    if p2_found_real:
                         break
-                if p2_found_real:
-                    break
                     
-            # STATE 2: P2 Gefunden. Extrahiere Quoten.
             if p2_found_real:
                 match_key = tuple(sorted([p1_found_real, p2_found_real]))
                 
-                # Checke ob das Match in DIESEM Durchlauf schon validiert wurde
                 if match_key not in seen_matches:
                     
-                    # Quoten-Radar: Nächste 15 Zeilen ab P2.
-                    odds_slice = unified_lines[p2_index : min(p2_index + 15, len(unified_lines))]
+                    # Quoten-Radar: Bis zu 20 Zeilen tief, um Draw-Quoten (1X2) zu überspringen.
+                    odds_slice = unified_lines[p2_index : min(p2_index + 20, len(unified_lines))]
                     o1, o2 = extract_odds_from_lines(odds_slice)
                     
                     if o1 > 0 and o2 > 0:
-                        # STATE 3: Match Valide.
                         seen_matches.add(match_key)
                         
                         time_slice = unified_lines[max(0, i-5):i]
@@ -966,7 +969,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             "actual_winner": None, "score": ""
                         })
                         
-                        # Überspringe iterierten Block um Doppel-Zählungen (z.B. P2 als neues P1) zu verhindern
                         i = p2_index 
         i += 1
 
@@ -1624,7 +1626,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V135.0 (FSM SLIDING WINDOW EDITION) Starting...")
+    log(f"🚀 Neural Scout V136.0 (HOLOGRAPHIC PARSER EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
