@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V139.0 - GEOMETRIC ANCHOR EDITION)...")
+log("🔌 Initialisiere Neural Scout (V140.0 - THE PURIFIER EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -125,15 +125,6 @@ def clean_tournament_name(raw: str) -> str:
     clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
-def get_last_name(full_name: str) -> str:
-    if not full_name: 
-        return ""
-    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
-    parts = clean.split()
-    if parts:
-        return parts[-1].lower()
-    return ""
-
 def ensure_dict(data: Any) -> Dict:
     try:
         if isinstance(data, dict): 
@@ -153,16 +144,23 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# L8 FIX: Completely overhauled fuzzy token matcher to handle commas and reversed names.
+# L8 FIX: THE PURIFIER GATEKEEPER
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None:
         report_ids = set()
-    if not scraped_name_raw or not db_players: 
-        return None
-        
+    
+    # Anti-Garbage Block
+    if not scraped_name_raw or not db_players: return None
+    if len(scraped_name_raw) < 3: return None # Zu kurz, um ein echter voller Name zu sein
+    if re.search(r'\d', scraped_name_raw): return None # Namen haben keine Nummern! Tötet Set-Scores.
+    
+    bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream']
+    if any(w in scraped_name_raw.lower() for w in bad_words): return None
+
     clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
     scrape_tokens = [t for t in clean_scrape.split() if len(t) > 0]
-    
+    if not scrape_tokens: return None
+
     candidates = []
     
     for p in db_players:
@@ -170,25 +168,31 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         db_first = normalize_db_name(p.get('first_name', ''))
         
         match_score = 0
+        last_name_matched = False
         
-        # Token Overlap Logic
+        # Strikter Nachnamen-Check (Tötet den "Li" Bug)
         if db_last:
             for token in scrape_tokens:
                 if db_last == token: 
                     match_score += 60
-                elif len(token) > 4 and (token in db_last or db_last in token): 
+                    last_name_matched = True
+                # Fuzzy-Matching nur erlaubt, wenn Nachname > 3 Buchstaben lang ist!
+                elif len(db_last) > 3 and len(token) > 3 and (token in db_last or db_last in token): 
                     match_score += 40
+                    last_name_matched = True
                     
-        if db_first and match_score > 0:
+        # Vornamen-Check nur anrechnen, wenn der Nachname zu 100% gesichert ist
+        if last_name_matched and db_first:
             for token in scrape_tokens:
                 if db_first == token: 
                     match_score += 30
-                elif len(token) > 3 and (token in db_first or db_first in token): 
+                elif len(token) > 3 and len(db_first) > 3 and (token in db_first or db_first in token): 
                     match_score += 15
                 elif len(token) == 1 and token[0] == db_first[0]: 
                     match_score += 10 
                     
-        if match_score >= 40: 
+        # Mindest-Score auf 60 angehoben! Es MUSS ein solider Treffer sein.
+        if match_score >= 60: 
             candidates.append((p, match_score))
                 
     if not candidates: 
@@ -303,7 +307,6 @@ def validate_market_integrity(o1: float, o2: float) -> bool:
     implied_prob = (1/o1) + (1/o2)
     if implied_prob < 0.92: 
         return False 
-    # Marge bei 1.45 gedeckelt, fängt alle Challenger sicher ab
     if implied_prob > 1.45: 
         return False
     return True
@@ -732,7 +735,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V139.0 GEOMETRIC ANCHOR)
+# 6.5 1WIN SOTA MASTER FEED (V140.0 PURIFIER & DYNAMIC WINDOW)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -762,7 +765,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Geometric Anchor Parser (V139.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Purifier & Dynamic Window (V140.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -792,8 +795,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         
         for scroll_step in range(80): 
             try:
-                # L8 Fix: Dieser Smart-Clicker öffnet zielgerichtet die Menüs (Bild 1 -> Bild 2),
-                # ohne Hauptnavigationen auszulösen. Er zielt auf divs mit SVG-Arrows oder Pointer-Cursor.
                 await page.evaluate("""
                     let els = Array.from(document.querySelectorAll('div, button, span'));
                     for(let e of els) {
@@ -836,30 +837,44 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if not unified_lines or unified_lines[-1] != line:
                 unified_lines.append(line)
 
-    log(f"🧠 Starte Geometric Anchor Extraktion auf {len(unified_lines)} Zeilen...")
+    log(f"🧠 Starte Dynamic Anchor Extraktion auf {len(unified_lines)} Zeilen...")
     
     current_tour = "Unknown"
     
-    # L8 CORE FIX: GEOMETRIC ANCHOR PARSING
     for i in range(len(unified_lines)):
         line = unified_lines[i]
         line_norm = normalize_text(line).lower()
         
-        # Tour-Tracking im Vorbeigehen (Turnier-Header stehen oft über den Spielen)
         if len(line) < 100 and any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'challenger', 'itf', 'utr']):
             if "sieger" not in line_norm and "winner" not in line_norm:
                 current_tour = line
         
-        # ANCHOR: Das Wort "Sieger" (Bilder 2, 3, 4) definiert die Block-Struktur!
+        # ANCHOR: Das Wort "Sieger" definiert den Block.
         if line_norm == "sieger" or line_norm == "winner":
-            if i >= 2:
-                p2_raw = unified_lines[i-1]
-                p1_raw = unified_lines[i-2]
+            # L8 FIX: DYNAMIC NAME CAPTURE WINDOW
+            # Wir gucken bis zu 6 Zeilen nach oben und filtern Müll raus,
+            # so umgehen wir injizierte Badges (TV Icons, Set-Scores etc.)
+            up_slice = unified_lines[max(0, i-6):i]
+            potential_names = []
+            
+            for ul in up_slice:
+                ul_norm = normalize_text(ul).lower()
                 
-                if len(p1_raw) < 3 or len(p2_raw) < 3: 
-                    continue
-                if any(kw in p1_raw.lower() for kw in ['atp', 'wta', 'itf', 'challenger', 'sieger']): 
-                    continue
+                # Filter 1: Keine kurzen Strings
+                if len(ul) < 3: continue
+                # Filter 2: Namen haben keine Zahlen (Killer für Datum wie "08:00" oder Scores wie "15")
+                if re.search(r'\d', ul): continue
+                # Filter 3: Keine UI-Noise
+                if any(kw in ul_norm for kw in ['atp', 'wta', 'itf', 'challenger', 'utr', 'tennis', 'live', 'stream', 'tv', 'satz', 'set']): continue
+                # Filter 4: Keine Zeit-Marker
+                if "•" in ul or ":" in ul: continue
+                
+                potential_names.append(ul)
+
+            # Wir brauchen genau die zwei letzten validen Text-Blöcke vor "Sieger"
+            if len(potential_names) >= 2:
+                p2_raw = potential_names[-1]
+                p1_raw = potential_names[-2]
                     
                 match_key = tuple(sorted([p1_raw, p2_raw]))
                 if match_key in seen_matches:
@@ -868,11 +883,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 time_slice = unified_lines[max(0, i-5):i]
                 extracted_time = extract_time_context(time_slice)
                 
-                # Quoten aus den Zeilen unterhalb des Ankers holen
                 odds_slice = unified_lines[i+1 : min(i+12, len(unified_lines))]
                 floats = []
                 for ol in odds_slice:
                     cl = ol.replace(',', '.').strip()
+                    # Zieht Quoten wie "1.72" und "2.12" extrem sauber
                     matches_val = re.findall(r'\b\d+\.\d{2,3}\b', cl)
                     for m_val in matches_val:
                         try:
@@ -887,7 +902,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     
                     try:
                         implied = (1/o1) + (1/o2)
-                        # Großzügige Toleranz für Challenger-Spiele
                         if 1.01 <= implied <= 1.45: 
                             seen_matches.add(match_key)
                             parsed_matches.append({
@@ -1558,7 +1572,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V139.0 (GEOMETRIC ANCHOR EDITION) Starting...")
+    log(f"🚀 Neural Scout V140.0 (PURIFIER EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
