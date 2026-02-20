@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V130.0 - OMNI-SCROLL INJECTOR EDITION)...")
+log("🔌 Initialisiere Neural Scout (V131.0 - FUZZY-SPATIAL ENGINE EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -70,7 +70,6 @@ COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 # 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
 # =================================================================
 async def fetch_tml_database():
-    # INFO: Funktion ist intakt für Vollständigkeit, auch wenn wir sie überbrückt haben.
     log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
     loaded_matches = 0
     async with httpx.AsyncClient() as client:
@@ -335,7 +334,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
     return False
 
 # =================================================================
-# 3. MOMENTUM V2 ENGINE
+# 3. MOMENTUM V2 ENGINE (TML ENHANCED)
 # =================================================================
 class MomentumV2Engine:
     @staticmethod
@@ -666,7 +665,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V130.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V131.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -744,14 +743,12 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V130.0 OMNI-SCROLL & MAX VOLUME)
+# 6.5 1WIN SOTA MASTER FEED (V131.0 FUZZY-SPATIAL ALGORITHM)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
     for l in lines_slice:
         cl = l.replace(',', '.').strip()
-        # L8 Fix: Erlaube auch .1 Zahlen wie "1.5" (1win macht das manchmal bei asiatischen Handicap-Fehlern, 
-        # wichtig um die Liste sauber zu halten).
         matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
         for m in matches:
             try:
@@ -772,9 +769,9 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
                 implied = (1/o1) + (1/o2)
                 if 1.015 <= implied <= 1.25: 
                     diff = abs(implied - 1.055)
-                    # L8 Fix: Strafe für Handicap-Quoten, die oft sehr nah beieinander liegen (1.87 / 1.87)
+                    # Strafe für Handicap-Quoten, die oft sehr nah beieinander liegen (1.87 / 1.87)
                     if abs(o1 - o2) < 0.05:
-                        diff += 0.05
+                        diff += 0.03
                     
                     if diff < best_diff:
                         best_diff = diff
@@ -812,7 +809,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte OMNI-SCROLL Spatial Engine (V130.0 Volume Breakthrough)...")
+    log("🚀 [1WIN GHOST] Starte Fuzzy-Spatial Engine (V131.0 - Anti-Strict Regex)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -829,11 +826,19 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Regex-Muster...")
+    # L8 Fix: Wir kompilieren den Fuzzy-Regex OHNE \b Boundaries für Namen > 3 Buchstaben.
+    # Für kurze Namen (wie Wu, Li, Zhu) nutzen wir einen exakten Matcher.
+    log("⚙️ Kompiliere Fuzzy-Regex-Muster...")
     compiled_player_patterns = []
+    short_player_names = []
+    
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(p_norm) > 2:
-            compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
+        if len(p_norm) > 3:
+            # Fuzzy Pattern: Ignoriert Sonderzeichen am Rand (z.B. Mensik(Q))
+            compiled_player_patterns.append((re.compile(re.escape(p_norm)), p_real))
+        else:
+            # Strict Pattern für extrem kurze Namen, um False Positives in normalen Wörtern zu vermeiden
+            short_player_names.append((p_norm, p_real))
             
     parsed_matches = []
     seen_matches = set()
@@ -848,10 +853,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Omni-Scrolling durch (Zwingt JEDEN Container zum Scrollen)...")
+        log("⏳ Führe Omni-Scrolling durch...")
         
-        # Fokus setzen
-        await page.mouse.click(960, 540)
+        await page.mouse.move(960, 540)
         await asyncio.sleep(1)
         
         for scroll_step in range(100): 
@@ -869,10 +873,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                # L8 Fix: OMNI-SCROLL. 
-                # Zwingt den Browser via Hardware-Key zum Scrollen des fokussierten Bereichs,
-                # was JEDE Art von CSS-Overflow austrickst.
-                await page.keyboard.press("PageDown")
+                await page.mouse.wheel(delta_x=0, delta_y=400)
                 await asyncio.sleep(0.4) 
                 
             except Exception as scroll_e: 
@@ -883,10 +884,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 Erzeuge Unified Stream aus {len(all_raw_text_blocks)} Scroll-Vorgängen...")
+    log(f"🧩 Erzeuge Unified Stream...")
     unified_lines = []
     
-    # L8 Fix: Saubere Deduplizierung an den Scroll-Schnittkanten
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
         for line in lines:
@@ -896,6 +896,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     log(f"🧩 Führe Volume-Optimized Extraktion auf {len(unified_lines)} Zeilen aus...")
     
     current_tour = "Unknown"
+    used_odds_indices = set()
     
     for i, line in enumerate(unified_lines):
         line_norm = normalize_text(line).lower()
@@ -905,11 +906,24 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         is_player_line = False
         p1_found_real = None
         
+        # Fuzzy Matcher
         for pattern, p_real in compiled_player_patterns:
             if pattern.search(line_norm):
                 p1_found_real = p_real
                 is_player_line = True
                 break
+                
+        # Short Matcher (Fallback für kurze Namen wie "Wu")
+        if not is_player_line:
+            words = line_norm.split()
+            for w in words:
+                clean_w = re.sub(r'[^a-z]', '', w)
+                for s_norm, s_real in short_player_names:
+                    if clean_w == s_norm:
+                        p1_found_real = s_real
+                        is_player_line = True
+                        break
+                if is_player_line: break
 
         if not is_player_line:
             if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
@@ -921,12 +935,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             p2_found_real = None
             p2_index = i
             
-            # Suchradius für Gegner: 15 Zeilen
+            # L8 Fix: 15 Zeilen Suchradius. 
             search_slice = unified_lines[i+1 : min(i+16, len(unified_lines))]
             for j, s_line in enumerate(search_slice):
                 s_line_norm = normalize_text(s_line).lower()
                 
-                # Wenn wir auf Quoten stoßen, bevor wir P2 haben, brechen wir ab.
+                # Wenn wir auf Quoten stoßen, bevor wir P2 haben, brechen wir ab (Anti-Frankenstein).
                 if re.search(r'\b\d+\.\d{1,3}\b', s_line_norm):
                     break
                     
@@ -936,6 +950,19 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             p2_found_real = p_real
                             p2_index = i + 1 + j
                             break
+                            
+                if not p2_found_real:
+                    words = s_line_norm.split()
+                    for w in words:
+                        clean_w = re.sub(r'[^a-z]', '', w)
+                        for s_norm, s_real in short_player_names:
+                            if clean_w == s_norm:
+                                if s_real != p1_found_real:
+                                    p2_found_real = s_real
+                                    p2_index = i + 1 + j
+                                    break
+                        if p2_found_real: break
+                                    
                 if p2_found_real:
                     break
                     
@@ -943,11 +970,54 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 match_key = tuple(sorted([p1_found_real, p2_found_real]))
                 
                 if match_key not in seen_matches:
-                    # Suchradius für Quoten: 40 Zeilen nach P2
-                    odds_slice = unified_lines[p2_index : min(p2_index + 40, len(unified_lines))]
-                    o1, o2 = extract_odds_from_lines(odds_slice)
                     
-                    if o1 > 0 and o2 > 0:
+                    o1, o2 = 0.0, 0.0
+                    odds_found = False
+                    
+                    for x in range(p2_index, min(p2_index + 40, len(unified_lines))):
+                        if x in used_odds_indices: 
+                            continue
+                            
+                        line_x = unified_lines[x].replace(',', '.')
+                        floats_x = [float(m) for m in re.findall(r'\b\d+\.\d{1,3}\b', line_x) if 1.0 < float(m) <= 150.0]
+                        
+                        if len(floats_x) >= 2:
+                            for fi in range(len(floats_x)-1):
+                                temp_o1, temp_o2 = floats_x[fi], floats_x[fi+1]
+                                implied = (1/temp_o1) + (1/temp_o2)
+                                if 1.015 <= implied <= 1.25:
+                                    o1, o2 = temp_o1, temp_o2
+                                    used_odds_indices.add(x)
+                                    odds_found = True
+                                    break
+                        if odds_found: 
+                            break
+                        
+                        if not floats_x: 
+                            continue
+                        
+                        for y in range(x+1, min(x+8, len(unified_lines))):
+                            if y in used_odds_indices: 
+                                continue
+                            line_y = unified_lines[y].replace(',', '.')
+                            floats_y = [float(m) for m in re.findall(r'\b\d+\.\d{1,3}\b', line_y) if 1.0 < float(m) <= 150.0]
+                            
+                            if not floats_y: 
+                                continue
+                            
+                            temp_o1 = floats_x[-1]
+                            temp_o2 = floats_y[0]
+                            implied = (1/temp_o1) + (1/temp_o2)
+                            if 1.015 <= implied <= 1.25:
+                                o1, o2 = temp_o1, temp_o2
+                                used_odds_indices.add(x)
+                                used_odds_indices.add(y)
+                                odds_found = True
+                                break
+                        if odds_found: 
+                            break
+
+                    if odds_found and o1 > 0 and o2 > 0:
                         seen_matches.add(match_key)
                         
                         time_slice = unified_lines[max(0, i-5):i]
@@ -1619,7 +1689,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V130.0 (OMNI-SCROLL INJECTOR EDITION) Starting...")
+    log(f"🚀 Neural Scout V131.0 (FUZZY SPATIAL EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
