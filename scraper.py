@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V134.0 - GEOMETRIC GRID & ANTI-FRANKENSTEIN EDITION)...")
+log("🔌 Initialisiere Neural Scout (V135.0 - SOTA FSM SLIDING WINDOW EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -743,7 +743,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V134.0 GEOMETRIC GRID PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V135.0 FSM SLIDING WINDOW PARSING)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
@@ -761,17 +761,14 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
-    # Durchsuche die extrahierten Zahlen nach dem perfekten Bookie-Paar
     for x in range(len(floats)):
         for y in range(x+1, min(x+8, len(floats))):
             o1 = floats[x]
             o2 = floats[y]
             try:
                 implied = (1/o1) + (1/o2)
-                # Akzeptiere Marge zwischen 1.5% und 25%
                 if 1.015 <= implied <= 1.25: 
                     diff = abs(implied - 1.055)
-                    # Strafe für asiatische Handicaps (oft identisch)
                     if abs(o1 - o2) < 0.05:
                         diff += 0.03
                     
@@ -811,7 +808,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Geometric Grid Engine (V134.0 Anti-Frankenstein)...")
+    log("🚀 [1WIN GHOST] Starte SOTA FSM Engine (V135.0 Sliding Window)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -831,14 +828,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     log("⚙️ Kompiliere Strict-Regex-Muster (\b Boundaries)...")
     compiled_player_patterns = []
     
-    # WICHTIG: Erlaubt Namen >= 2 Zeichen (z.B. Wu) aber ERZWINGT Wortgrenzen. Das tötet den "Park" Sponsoren Bug.
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
         if len(p_norm) >= 2:
             compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
             
     parsed_matches = []
     seen_matches = set()
-    consumed_players = set() # L8 Fix: Die Anti-Frankenstein Waffe. Einmal erfasst = gelöscht.
     all_raw_text_blocks = [] 
 
     try:
@@ -851,7 +846,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             await asyncio.sleep(5)
             
         log("⏳ Führe Omni-Scrolling durch...")
-        
         await page.mouse.move(960, 540)
         await asyncio.sleep(1)
         
@@ -890,79 +884,72 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if not unified_lines or unified_lines[-1] != line:
                 unified_lines.append(line)
 
-    log(f"🧩 Führe Geometric-Grid Extraktion auf {len(unified_lines)} Zeilen aus...")
+    log(f"🧠 Führe FSM Sliding-Window Extraktion auf {len(unified_lines)} Zeilen aus...")
     
     current_tour = "Unknown"
     
-    for i, line in enumerate(unified_lines):
+    # L8 FSM ALGORITHMUS
+    # Ersetzt die alte Grid/Anti-Frankenstein Logik durch eine dynamische State-Machine
+    
+    i = 0
+    while i < len(unified_lines):
+        line = unified_lines[i]
         clean_line = re.sub(r'[().*+?]', ' ', line)
         line_norm = normalize_text(clean_line).lower()
-        if not line_norm: 
+        
+        if not line_norm:
+            i += 1
             continue
+            
+        # Aktualisiere Turnier Kontext
+        if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
+            if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
+                current_tour = line
         
-        is_player_line = False
         p1_found_real = None
-        
         for pattern, p_real in compiled_player_patterns:
             if pattern.search(line_norm):
-                # Wenn wir diesen Spieler schon erfolgreich in ein Match gesteckt haben, überspringe ihn.
-                if p_real not in consumed_players:
-                    p1_found_real = p_real
-                    is_player_line = True
-                    break
-
-        if not is_player_line:
-            if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
-                 if any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'classic', 'championship', 'cup', 'men', 'singles', 'doha', 'qatar', 'dubai', 'rotterdam', 'rio', 'los cabos', 'acapulco']):
-                     current_tour = line
-            continue
-            
+                p1_found_real = p_real
+                break
+                
+        # STATE 1: P1 Gefunden. Starte Lookahead für P2
         if p1_found_real:
             p2_found_real = None
-            p2_index = i
+            p2_index = -1
             
-            # L8 Fix: STRICT GEOMETRIC BOUNDARY
-            # Die Gegner MÜSSEN physisch beieinander stehen. Maximal 3 Zeilen Abstand. 
-            # Das tötet den "Korda vs Cobolli" Bug (die 10 Zeilen auseinander standen).
-            if '-' in line_norm or 'vs' in line_norm or '/' in line_norm:
-                for pattern, p_real in compiled_player_patterns:
-                    if pattern.search(line_norm):
-                        if p_real != p1_found_real and p_real not in consumed_players:
-                            p2_found_real = p_real
-                            break
-            else:
-                search_slice = unified_lines[i+1 : min(i+4, len(unified_lines))] # STRIKT 3 ZEILEN!
-                for j, s_line in enumerate(search_slice):
-                    clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
-                    s_line_norm = normalize_text(clean_s_line).lower()
+            # Dynamisches Fenster: Suche bis zu 8 Zeilen nach P2 (Fängt Live-Tags und Badges ab)
+            search_depth = min(8, len(unified_lines) - i)
+            for j in range(1, search_depth):
+                s_line = unified_lines[i+j]
+                clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
+                s_line_norm = normalize_text(clean_s_line).lower()
+                
+                # Wenn wir reine Quoten-Zahlen treffen, bevor P2 gefunden ist, brich ab (Falscher Block)
+                if re.match(r'^\d{1,3}\.\d{2}$', s_line.strip()) and j > 3:
+                    break
                     
-                    if re.search(r'\b\d+\.\d{1,3}\b', s_line_norm):
-                        break # Quoten erreicht = Block beendet.
-                        
-                    for pattern, p_real in compiled_player_patterns:
-                        if pattern.search(s_line_norm):
-                            if p_real != p1_found_real and p_real not in consumed_players:
-                                p2_found_real = p_real
-                                p2_index = i + 1 + j
-                                break
-                    if p2_found_real:
+                for pattern, p_real in compiled_player_patterns:
+                    if pattern.search(s_line_norm) and p_real != p1_found_real:
+                        p2_found_real = p_real
+                        p2_index = i + j
                         break
-                        
+                if p2_found_real:
+                    break
+                    
+            # STATE 2: P2 Gefunden. Extrahiere Quoten.
             if p2_found_real:
                 match_key = tuple(sorted([p1_found_real, p2_found_real]))
                 
+                # Checke ob das Match in DIESEM Durchlauf schon validiert wurde
                 if match_key not in seen_matches:
                     
-                    # Quoten-Radar: Nächste 15 Zeilen ab P2 (Ignoriert andere Spieler im Raster)
+                    # Quoten-Radar: Nächste 15 Zeilen ab P2.
                     odds_slice = unified_lines[p2_index : min(p2_index + 15, len(unified_lines))]
                     o1, o2 = extract_odds_from_lines(odds_slice)
                     
                     if o1 > 0 and o2 > 0:
+                        # STATE 3: Match Valide.
                         seen_matches.add(match_key)
-                        
-                        # ANTI-FRANKENSTEIN: Spieler konsumieren. Sie können in dieser Pipeline nie wieder ein Match bilden!
-                        consumed_players.add(p1_found_real)
-                        consumed_players.add(p2_found_real)
                         
                         time_slice = unified_lines[max(0, i-5):i]
                         extracted_time = extract_time_context(time_slice)
@@ -978,6 +965,10 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             "over_under_line": None, "over_odds": 0, "under_odds": 0,
                             "actual_winner": None, "score": ""
                         })
+                        
+                        # Überspringe iterierten Block um Doppel-Zählungen (z.B. P2 als neues P1) zu verhindern
+                        i = p2_index 
+        i += 1
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
     return parsed_matches
@@ -1633,7 +1624,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V134.0 (GEOMETRIC GRID EDITION) Starting...")
+    log(f"🚀 Neural Scout V135.0 (FSM SLIDING WINDOW EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
