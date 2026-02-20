@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V136.0 - HOLOGRAPHIC PARSER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V137.0 - DEEP-DOM EXCAVATOR)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -307,13 +307,13 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
 def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: 
         return False 
-    if o1 > 150 or o2 > 150: 
+    if o1 > 200 or o2 > 200: 
         return False 
     implied_prob = (1/o1) + (1/o2)
     if implied_prob < 0.92: 
         return False 
-    # Marge auf 1.35 erhöht für Challenger/ITF Vig!
-    if implied_prob > 1.35: 
+    # L8 Fix: Massive Challenger Vig Toleranz (bis zu 50% Marge)
+    if implied_prob > 1.50: 
         return False
     return True
 
@@ -666,7 +666,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V134.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -687,7 +687,6 @@ async def update_past_results_via_ai():
             continue
 
         query = f"{p1} vs {p2} tennis match result score {datetime.now().year}"
-        log(f"   🔍 AI Search Agent queries DDG for: {p1} vs {p2}...")
         
         search_context = await duckduckgo_html_search(query)
         if len(search_context) < 10: 
@@ -722,13 +721,11 @@ async def update_past_results_via_ai():
                     winner = data['winner']
                     score = data['score']
                     
-                    log(f"      🤖 RAG AUDITOR FOUND: {p1} vs {p2} -> Winner: {winner} ({score})")
                     supabase.table("market_odds").update({
                         "actual_winner_name": winner,
                         "score": score
                     }).eq("id", m['id']).execute()
                     
-                    log(f"🔄 Triggering Real-Time Profile Refresh for {p1} & {p2}")
                     for p_name in [p1, p2]:
                         p_hist = await fetch_player_history_extended(p_name, limit=80)
                         p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
@@ -744,18 +741,17 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V136.0 HOLOGRAPHIC PARSER)
+# 6.5 1WIN SOTA MASTER FEED (V137.0 DEEP-DOM EXCAVATOR)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     floats = []
     for l in lines_slice:
         cl = l.replace(',', '.').strip()
-        # L8 Fix: Erlaubt Quoten OHNE Punkt (z.B. "2") und lockert Regex
         matches = re.findall(r'\b\d+(?:\.\d{1,3})?\b', cl)
         for m in matches:
             try:
                 val = float(m)
-                if 1.0 < val <= 150.0:
+                if 1.0 < val <= 250.0:
                     floats.append(val)
             except: 
                 pass
@@ -763,15 +759,14 @@ def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
-    # L8 Fix: Such-Fenster auf 10 erhöht, um Stats zwischen den Quoten zu überspringen
     for x in range(len(floats)):
-        for y in range(x+1, min(x+10, len(floats))):
+        for y in range(x+1, min(x+12, len(floats))):
             o1 = floats[x]
             o2 = floats[y]
             try:
                 implied = (1/o1) + (1/o2)
-                # L8 Fix: Marge auf 1.35 erhöht (35% Vig), fängt fast alle Challenger und ITF Matches!
-                if 1.01 <= implied <= 1.35: 
+                # L8 Fix: Toleranz bis zu 1.50 (50% Marge) um kriminelle Challenger-Vigs zu überleben!
+                if 1.01 <= implied <= 1.50: 
                     diff = abs(implied - 1.06) 
                     if abs(o1 - o2) < 0.05:
                         diff += 0.03
@@ -812,7 +807,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Holographic Parser (V136.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Deep-DOM Excavator (V137.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -829,11 +824,15 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Strict-Regex-Muster (\b Boundaries)...")
+    log("⚙️ Kompiliere Adaptive-Regex-Muster (Fuzzy Boundaries)...")
     compiled_player_patterns = []
     
+    # L8 Fix: Adaptive Word Boundaries
+    # Bei Namen > 4 Buchstaben droppen wir \b komplett. Fängt "J.Sinner", "C.Alcaraz", "DeMinaur" auf.
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(p_norm) >= 2:
+        if len(p_norm) >= 5:
+            compiled_player_patterns.append((re.compile(re.escape(p_norm)), p_real))
+        elif len(p_norm) >= 2:
             compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
             
     parsed_matches = []
@@ -849,18 +848,22 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Omni-Scrolling durch...")
+        log("⏳ Aktiviere DOM-Nuke: Öffne alle versteckten Turniere und Challenger-Draws...")
         await page.mouse.move(960, 540)
         await asyncio.sleep(1)
         
-        for scroll_step in range(100): 
+        for scroll_step in range(120): 
             try:
+                # L8 Fix: Aggressiver Clicker für Accordions & Headers (Nicht nur 'more' buttons)
                 await page.evaluate("""
-                    let buttons = document.querySelectorAll('div, button, span');
-                    for(let b of buttons) {
-                        let txt = b.innerText ? b.innerText.toLowerCase() : '';
-                        if((txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle')) && b.clientHeight > 0) {
-                            try { b.click(); } catch(e) {}
+                    let elements = document.querySelectorAll('div, button, span, a');
+                    for(let el of elements) {
+                        if(el.clientHeight > 0) {
+                            let txt = el.innerText ? el.innerText.toLowerCase() : '';
+                            if(txt.includes('more') || txt.includes('anzeigen') || txt.includes('alle') || 
+                               txt.includes('atp') || txt.includes('wta') || txt.includes('challenger') || txt.includes('itf')) {
+                                try { el.click(); } catch(e) {}
+                            }
                         }
                     }
                 """)
@@ -868,8 +871,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                await page.mouse.wheel(delta_x=0, delta_y=400)
-                await asyncio.sleep(0.4) 
+                await page.mouse.wheel(delta_x=0, delta_y=300)
+                await asyncio.sleep(0.5) 
                 
             except Exception as scroll_e: 
                 continue
@@ -918,7 +921,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             p2_found_real = None
             p2_index = -1
             
-            # L8 Fix 1: SAME-LINE CHECK. Löst das Inline "Sinner - Alcaraz" DOM Problem.
             line_norm_without_p1 = p1_pattern_used.sub(' ', line_norm)
             for pattern, p_real in compiled_player_patterns:
                 if pattern.search(line_norm_without_p1) and p_real != p1_found_real:
@@ -926,9 +928,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     p2_index = i
                     break
                     
-            # L8 Fix 2: DEEP LOOKAHEAD. Wenn P2 nicht auf derselben Zeile ist, scannen wir tief.
             if not p2_found_real:
-                search_depth = min(12, len(unified_lines) - i) 
+                search_depth = min(15, len(unified_lines) - i) 
                 for j in range(1, search_depth):
                     s_line = unified_lines[i+j]
                     clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
@@ -947,8 +948,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 
                 if match_key not in seen_matches:
                     
-                    # Quoten-Radar: Bis zu 20 Zeilen tief, um Draw-Quoten (1X2) zu überspringen.
-                    odds_slice = unified_lines[p2_index : min(p2_index + 20, len(unified_lines))]
+                    odds_slice = unified_lines[p2_index : min(p2_index + 25, len(unified_lines))]
                     o1, o2 = extract_odds_from_lines(odds_slice)
                     
                     if o1 > 0 and o2 > 0:
@@ -1626,7 +1626,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V136.0 (HOLOGRAPHIC PARSER EDITION) Starting...")
+    log(f"🚀 Neural Scout V137.0 (DEEP-DOM EXCAVATOR EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
