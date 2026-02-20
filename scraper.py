@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V132.0 - OMNI-DIV SCROLLER & STRICT REGEX EDITION)...")
+log("🔌 Initialisiere Neural Scout (V133.0 - FLAT-STREAM MATRIX EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -665,7 +665,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V132.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V133.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -743,38 +743,37 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V132.0 OMNI-DIV SCROLLER)
+# 6.5 1WIN SOTA MASTER FEED (V133.0 FLAT-STREAM ENGINE)
 # =================================================================
 def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
-    floats = []
+    # L8 Fix: FLAT-FLOAT EXTRACTION
+    # Wir werfen die Zeilen-Logik weg und extrahieren ALLE Fließkommazahlen des Blocks in eine flache Liste.
+    all_floats = []
     for l in lines_slice:
         cl = l.replace(',', '.').strip()
-        # L8 Fix: Erlaube wieder \d{1,3}, weil 1WIN manchmal 1.5 statt 1.50 schreibt.
         matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
         for m in matches:
             try:
                 val = float(m)
                 if 1.0 < val <= 150.0:
-                    floats.append(val)
+                    all_floats.append(val)
             except: 
                 pass
             
     best_pair = (0.0, 0.0)
     best_diff = 999.0
     
-    for x in range(len(floats)):
-        for y in range(x+1, min(x+8, len(floats))):
-            o1 = floats[x]
-            o2 = floats[y]
+    # Durchsuche die flache Liste nach dem ersten validen Buchmacher-Paar.
+    # Da die Siegquoten bei 1WIN immer die ersten Quoten im DOM sind, ist das extrem präzise.
+    for i in range(len(all_floats) - 1):
+        for j in range(i+1, min(i+5, len(all_floats))):
+            o1 = all_floats[i]
+            o2 = all_floats[j]
             try:
                 implied = (1/o1) + (1/o2)
-                # L8 Fix: Toleranz von 1.5% bis 25% Marge für Challenger und UTR Spiele
-                if 1.015 <= implied <= 1.25: 
+                # Marge zwischen 1.5% und 15% (Verwirft wilde Asian-Handicaps und Fehler)
+                if 1.015 <= implied <= 1.15: 
                     diff = abs(implied - 1.055)
-                    # Strafe für Handicap-Quoten, die oft sehr nah beieinander liegen (1.87 / 1.87)
-                    if abs(o1 - o2) < 0.05:
-                        diff += 0.05
-                    
                     if diff < best_diff:
                         best_diff = diff
                         best_pair = (o1, o2)
@@ -811,7 +810,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Omni-Div Scroller & Strict Regex Engine (V132.0)...")
+    log("🚀 [1WIN GHOST] Starte Flat-Stream Matrix Engine (V133.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -828,13 +827,12 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Strict-Regex-Muster (Anti-Frankenstein)...")
+    log("⚙️ Kompiliere Strict-Regex-Muster (Mit \\b Word-Boundaries)...")
     compiled_player_patterns = []
     
-    # L8 Fix: Wir nutzen wieder \b (Word Boundaries) für exakte Matches, 
-    # ABER wir reinigen die Zeile vorher von Sonderzeichen wie "(Q)" oder "J.".
+    # L8 Fix: Wir nutzen WIEDER \b für absolute Präzision, aber das Limit ist runter auf >= 2
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
-        if len(p_norm) > 2:
+        if len(p_norm) >= 2:
             compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
             
     parsed_matches = []
@@ -854,7 +852,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         
         for scroll_step in range(100): 
             try:
-                # 1. Klicke auf alle "More" Buttons
                 await page.evaluate("""
                     let buttons = document.querySelectorAll('div, button, span');
                     for(let b of buttons) {
@@ -865,12 +862,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     }
                 """)
                 
-                # 2. Speichere den aktuellen DOM-Status
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                # L8 Fix: OMNI-DIV SCROLLER!
-                # Dieses Script sucht alle scrollbaren Divs und schiebt sie nach unten. Das bricht die CSS Overflow Falle.
                 await page.evaluate("""
                     var scrollables = document.querySelectorAll('*');
                     for (var i = 0; i < scrollables.length; i++) {
@@ -891,22 +885,21 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 Erzeuge Unified Stream...")
-    unified_lines = []
+    log(f"🧩 Erzeuge Puren Flat-Stream OHNE Deduplizierung (Rettet Grid-Layout Quoten)...")
     
+    # L8 Fix: KEINE Deduplizierung mehr! Wir hängen einfach alles aneinander.
+    # Dadurch bleiben Quoten wie "1.87 \n 1.87" erhalten und verschmelzen nicht!
+    unified_lines = []
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
-        for line in lines:
-            if not unified_lines or unified_lines[-1] != line:
-                unified_lines.append(line)
+        unified_lines.extend(lines)
 
-    log(f"🧩 Führe Anti-Frankenstein Extraktion auf {len(unified_lines)} Zeilen aus...")
+    log(f"🧩 Stream mit {len(unified_lines)} Zeilen bereit. Führe Extraktion aus...")
     
     current_tour = "Unknown"
-    used_odds_indices = set()
     
     for i, line in enumerate(unified_lines):
-        # L8 Fix: Reinige die Zeile von 1WIN's UI-Müll (z.B. Punkte nach Initialen oder Klammern für Qualifier)
+        # L8 Fix: Sonderzeichen-Bereinigung, damit \b (Word Boundaries) bei Namen wie "(Q)Mensik" trotzdem greifen
         clean_line = re.sub(r'[().*+?]', ' ', line)
         line_norm = normalize_text(clean_line).lower()
         if not line_norm: 
@@ -915,7 +908,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         is_player_line = False
         p1_found_real = None
         
-        # Striktes Pattern Matching mit \b
         for pattern, p_real in compiled_player_patterns:
             if pattern.search(line_norm):
                 p1_found_real = p_real
@@ -932,87 +924,33 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             p2_found_real = None
             p2_index = i
             
-            # L8 Fix: STRICT DELIMITER REQUIREMENT (Keine Clarke vs. Park Mutationen mehr!)
-            # Wir fordern, dass ein "-" oder "vs" in der Nähe ist, um Spieler als Paar zu validieren.
-            if '-' in line_norm or 'vs' in line_norm or '/' in line_norm:
+            # L8 Fix: Suchradius für Gegner ist 15 Zeilen. 
+            # Aber wir unterbrechen die Suche NICHT mehr, wenn wir Zahlen (Uhrzeiten etc.) finden!
+            search_slice = unified_lines[i+1 : min(i+16, len(unified_lines))]
+            for j, s_line in enumerate(search_slice):
+                clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
+                s_line_norm = normalize_text(clean_s_line).lower()
+                    
                 for pattern, p_real in compiled_player_patterns:
-                    if pattern.search(line_norm):
+                    if pattern.search(s_line_norm):
                         if p_real != p1_found_real:
                             p2_found_real = p_real
+                            p2_index = i + 1 + j
                             break
-            else:
-                # Suchradius für P2: Maximal 15 Zeilen, aber wir brechen sofort ab, wenn Quoten kommen.
-                search_slice = unified_lines[i+1 : min(i+16, len(unified_lines))]
-                for j, s_line in enumerate(search_slice):
-                    clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
-                    s_line_norm = normalize_text(clean_s_line).lower()
-                    
-                    # Wenn wir Quoten sehen (Zahlen mit Komma/Punkt), ist das Match-Block zu Ende!
-                    if re.search(r'\b\d+\.\d{1,3}\b', s_line_norm):
-                        break
-                        
-                    for pattern, p_real in compiled_player_patterns:
-                        if pattern.search(s_line_norm):
-                            if p_real != p1_found_real:
-                                p2_found_real = p_real
-                                p2_index = i + 1 + j
-                                break
-                    if p2_found_real:
-                        break
+                if p2_found_real:
+                    break
                     
             if p2_found_real:
                 match_key = tuple(sorted([p1_found_real, p2_found_real]))
                 
+                # Das Set 'seen_matches' schützt uns perfekt vor dem gigantischen Stream-Duplikaten
                 if match_key not in seen_matches:
                     
-                    o1, o2 = 0.0, 0.0
-                    odds_found = False
-                    
-                    # Suche nach Quoten in den nächsten 40 Zeilen nach P2
-                    for x in range(p2_index, min(p2_index + 40, len(unified_lines))):
-                        if x in used_odds_indices: 
-                            continue
-                            
-                        line_x = unified_lines[x].replace(',', '.')
-                        floats_x = [float(m) for m in re.findall(r'\b\d+\.\d{1,3}\b', line_x) if 1.0 < float(m) <= 150.0]
-                        
-                        if len(floats_x) >= 2:
-                            for fi in range(len(floats_x)-1):
-                                temp_o1, temp_o2 = floats_x[fi], floats_x[fi+1]
-                                implied = (1/temp_o1) + (1/temp_o2)
-                                if 1.015 <= implied <= 1.25:
-                                    o1, o2 = temp_o1, temp_o2
-                                    used_odds_indices.add(x)
-                                    odds_found = True
-                                    break
-                        if odds_found: 
-                            break
-                        
-                        if not floats_x: 
-                            continue
-                        
-                        for y in range(x+1, min(x+8, len(unified_lines))):
-                            if y in used_odds_indices: 
-                                continue
-                            line_y = unified_lines[y].replace(',', '.')
-                            floats_y = [float(m) for m in re.findall(r'\b\d+\.\d{1,3}\b', line_y) if 1.0 < float(m) <= 150.0]
-                            
-                            if not floats_y: 
-                                continue
-                            
-                            temp_o1 = floats_x[-1]
-                            temp_o2 = floats_y[0]
-                            implied = (1/temp_o1) + (1/temp_o2)
-                            if 1.015 <= implied <= 1.25:
-                                o1, o2 = temp_o1, temp_o2
-                                used_odds_indices.add(x)
-                                used_odds_indices.add(y)
-                                odds_found = True
-                                break
-                        if odds_found: 
-                            break
+                    # L8 Fix: Isoliere die nächsten 40 Zeilen und wirf sie in den Flat-Float-Extractor
+                    odds_slice = unified_lines[p2_index : min(p2_index + 40, len(unified_lines))]
+                    o1, o2 = extract_odds_from_lines(odds_slice)
 
-                    if odds_found and o1 > 0 and o2 > 0:
+                    if o1 > 0 and o2 > 0:
                         seen_matches.add(match_key)
                         
                         time_slice = unified_lines[max(0, i-5):i]
@@ -1034,7 +972,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     return parsed_matches
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE (LEGACY FUNCTIONS KEPT FOR 1:1 COMPLETENESS)
+# 7. DATA FETCHING & ORACLE
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -1684,7 +1622,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V132.0 (OMNI-DIV SCROLLER EDITION) Starting...")
+    log(f"🚀 Neural Scout V133.0 (FLAT-STREAM MATRIX EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
