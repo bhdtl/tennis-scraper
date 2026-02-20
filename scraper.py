@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V134.0 - GEOMETRIC GRID & ANTI-FRANKENSTEIN EDITION)...")
+log("🔌 Initialisiere Neural Scout (V135.0 - DYNAMIC POINTER TELEPORTATION EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -665,7 +665,7 @@ async def duckduckgo_html_search(query: str) -> str:
         return ""
 
 async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V134.0)...")
+    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine (Zero Dependency V135.0)...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     
     if not pending or not isinstance(pending, list): 
@@ -743,45 +743,46 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V134.0 GEOMETRIC GRID PARSING)
+# 6.5 1WIN SOTA MASTER FEED (V135.0 DYNAMIC POINTER TELEPORTATION)
 # =================================================================
-def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float]:
-    floats = []
-    for l in lines_slice:
+def extract_odds_from_lines(lines_slice: List[str]) -> tuple[float, float, int]:
+    # L8 Fix: Returnt nicht nur o1 und o2, sondern AUCH den Index (jump_idx) der Quote.
+    # So weiß das Skript exakt, wohin es "springen" muss.
+    float_data = []
+    for idx, l in enumerate(lines_slice):
         cl = l.replace(',', '.').strip()
         matches = re.findall(r'\b\d+\.\d{1,3}\b', cl)
         for m in matches:
             try:
                 val = float(m)
                 if 1.0 < val <= 150.0:
-                    floats.append(val)
+                    float_data.append((val, idx))
             except: 
                 pass
             
     best_pair = (0.0, 0.0)
     best_diff = 999.0
+    jump_idx = -1
     
-    # Durchsuche die extrahierten Zahlen nach dem perfekten Bookie-Paar
-    for x in range(len(floats)):
-        for y in range(x+1, min(x+8, len(floats))):
-            o1 = floats[x]
-            o2 = floats[y]
+    for x in range(len(float_data)):
+        for y in range(x+1, min(x+8, len(float_data))):
+            o1, l_idx1 = float_data[x]
+            o2, l_idx2 = float_data[y]
             try:
                 implied = (1/o1) + (1/o2)
-                # Akzeptiere Marge zwischen 1.5% und 25%
                 if 1.015 <= implied <= 1.25: 
                     diff = abs(implied - 1.055)
-                    # Strafe für asiatische Handicaps (oft identisch)
                     if abs(o1 - o2) < 0.05:
                         diff += 0.03
                     
                     if diff < best_diff:
                         best_diff = diff
                         best_pair = (o1, o2)
+                        jump_idx = max(l_idx1, l_idx2)
             except: 
                 pass
                 
-    return best_pair
+    return best_pair[0], best_pair[1], jump_idx
 
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -811,7 +812,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     return found_time
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte Geometric Grid Engine (V134.0 Anti-Frankenstein)...")
+    log("🚀 [1WIN GHOST] Starte Dynamic Pointer Teleportation (V135.0 - Volume & Accuracy MAX)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -828,17 +829,15 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         if real_last: 
             db_name_map[normalize_db_name(real_last)] = real_last
 
-    log("⚙️ Kompiliere Strict-Regex-Muster (\b Boundaries)...")
+    log("⚙️ Kompiliere Strict-Regex-Muster (Mit \\b Word-Boundaries)...")
     compiled_player_patterns = []
     
-    # WICHTIG: Erlaubt Namen >= 2 Zeichen (z.B. Wu) aber ERZWINGT Wortgrenzen. Das tötet den "Park" Sponsoren Bug.
     for p_norm, p_real in sorted(db_name_map.items(), key=lambda x: len(x[0]), reverse=True):
         if len(p_norm) >= 2:
             compiled_player_patterns.append((re.compile(rf'\b{re.escape(p_norm)}\b'), p_real))
             
     parsed_matches = []
     seen_matches = set()
-    consumed_players = set() # L8 Fix: Die Anti-Frankenstein Waffe. Einmal erfasst = gelöscht.
     all_raw_text_blocks = [] 
 
     try:
@@ -850,10 +849,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
-        log("⏳ Führe Omni-Scrolling durch...")
-        
-        await page.mouse.move(960, 540)
-        await asyncio.sleep(1)
+        log("⏳ Führe Omni-Div Scrolling durch (Zwingt JEDEN Container auf der Seite zum Scrollen)...")
         
         for scroll_step in range(100): 
             try:
@@ -870,8 +866,17 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 text_dump = await page.evaluate("document.body.innerText")
                 all_raw_text_blocks.append(text_dump)
                 
-                await page.mouse.wheel(delta_x=0, delta_y=400)
-                await asyncio.sleep(0.4) 
+                await page.evaluate("""
+                    var scrollables = document.querySelectorAll('*');
+                    for (var i = 0; i < scrollables.length; i++) {
+                        var el = scrollables[i];
+                        if (el.scrollHeight > el.clientHeight) {
+                            el.scrollTop += 600;
+                        }
+                    }
+                    window.scrollBy(0, 600);
+                """)
+                await asyncio.sleep(0.5) 
                 
             except Exception as scroll_e: 
                 continue
@@ -881,20 +886,22 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     finally: 
         await context.close()
 
-    log(f"🧩 Erzeuge Stream...")
-    unified_lines = []
+    log(f"🧩 Erzeuge Puren Flat-Stream OHNE Deduplizierung (Rettet Grid-Layout Quoten)...")
     
+    unified_lines = []
     for block in all_raw_text_blocks:
         lines = [l.strip() for l in block.split('\n') if l.strip()]
-        for line in lines:
-            if not unified_lines or unified_lines[-1] != line:
-                unified_lines.append(line)
+        unified_lines.extend(lines)
 
-    log(f"🧩 Führe Geometric-Grid Extraktion auf {len(unified_lines)} Zeilen aus...")
+    log(f"🧩 Stream mit {len(unified_lines)} Zeilen bereit. Führe Dynamic Pointer Teleportation aus...")
     
     current_tour = "Unknown"
+    skip_until_index = 0
     
     for i, line in enumerate(unified_lines):
+        if i < skip_until_index:
+            continue
+            
         clean_line = re.sub(r'[().*+?]', ' ', line)
         line_norm = normalize_text(clean_line).lower()
         if not line_norm: 
@@ -905,11 +912,9 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         
         for pattern, p_real in compiled_player_patterns:
             if pattern.search(line_norm):
-                # Wenn wir diesen Spieler schon erfolgreich in ein Match gesteckt haben, überspringe ihn.
-                if p_real not in consumed_players:
-                    p1_found_real = p_real
-                    is_player_line = True
-                    break
+                p1_found_real = p_real
+                is_player_line = True
+                break
 
         if not is_player_line:
             if 3 < len(line) < 60 and not re.match(r'^[\d\.,\s:\-]+$', line):
@@ -921,48 +926,36 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             p2_found_real = None
             p2_index = i
             
-            # L8 Fix: STRICT GEOMETRIC BOUNDARY
-            # Die Gegner MÜSSEN physisch beieinander stehen. Maximal 3 Zeilen Abstand. 
-            # Das tötet den "Korda vs Cobolli" Bug (die 10 Zeilen auseinander standen).
-            if '-' in line_norm or 'vs' in line_norm or '/' in line_norm:
-                for pattern, p_real in compiled_player_patterns:
-                    if pattern.search(line_norm):
-                        if p_real != p1_found_real and p_real not in consumed_players:
-                            p2_found_real = p_real
-                            break
-            else:
-                search_slice = unified_lines[i+1 : min(i+4, len(unified_lines))] # STRIKT 3 ZEILEN!
-                for j, s_line in enumerate(search_slice):
-                    clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
-                    s_line_norm = normalize_text(clean_s_line).lower()
+            # L8 Fix: GOLDILOCKS-RADIUS. 8 Zeilen. Weit genug für 1WIN Flags, eng genug für Anti-Frankenstein.
+            search_slice = unified_lines[i+1 : min(i+9, len(unified_lines))]
+            for j, s_line in enumerate(search_slice):
+                clean_s_line = re.sub(r'[().*+?]', ' ', s_line)
+                s_line_norm = normalize_text(clean_s_line).lower()
+                
+                # Wenn wir auf Quoten treffen, ist das Match hier definitiv abgerissen. Abbruch.
+                if re.search(r'\b\d+\.\d{1,3}\b', s_line_norm):
+                    break
                     
-                    if re.search(r'\b\d+\.\d{1,3}\b', s_line_norm):
-                        break # Quoten erreicht = Block beendet.
-                        
-                    for pattern, p_real in compiled_player_patterns:
-                        if pattern.search(s_line_norm):
-                            if p_real != p1_found_real and p_real not in consumed_players:
-                                p2_found_real = p_real
-                                p2_index = i + 1 + j
-                                break
-                    if p2_found_real:
-                        break
-                        
+                for pattern, p_real in compiled_player_patterns:
+                    if pattern.search(s_line_norm):
+                        if p_real != p1_found_real:
+                            p2_found_real = p_real
+                            p2_index = i + 1 + j
+                            break
+                if p2_found_real:
+                    break
+                    
             if p2_found_real:
                 match_key = tuple(sorted([p1_found_real, p2_found_real]))
                 
                 if match_key not in seen_matches:
                     
-                    # Quoten-Radar: Nächste 15 Zeilen ab P2 (Ignoriert andere Spieler im Raster)
-                    odds_slice = unified_lines[p2_index : min(p2_index + 15, len(unified_lines))]
-                    o1, o2 = extract_odds_from_lines(odds_slice)
-                    
+                    # L8 Fix: Quoten isolieren (Nächste 25 Zeilen). Wir erhalten o1, o2 UND den Zeilen-Index!
+                    odds_slice = unified_lines[p2_index : min(p2_index + 25, len(unified_lines))]
+                    o1, o2, odd_jump_idx = extract_odds_from_lines(odds_slice)
+
                     if o1 > 0 and o2 > 0:
                         seen_matches.add(match_key)
-                        
-                        # ANTI-FRANKENSTEIN: Spieler konsumieren. Sie können in dieser Pipeline nie wieder ein Match bilden!
-                        consumed_players.add(p1_found_real)
-                        consumed_players.add(p2_found_real)
                         
                         time_slice = unified_lines[max(0, i-5):i]
                         extracted_time = extract_time_context(time_slice)
@@ -978,12 +971,17 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                             "over_under_line": None, "over_odds": 0, "under_odds": 0,
                             "actual_winner": None, "score": ""
                         })
+                        
+                        # L8 Fix: DYNAMIC POINTER TELEPORTATION
+                        # Wir springen exakt +1 Zeile nach der letzten eingelesenen Quote. 
+                        # Kein Frankenstein-Match möglich. Keine Endlosschleife möglich.
+                        skip_until_index = p2_index + odd_jump_idx + 1
 
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches isoliert.")
     return parsed_matches
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE (LEGACY FUNCTIONS KEPT FOR 1:1 COMPLETENESS)
+# 7. DATA FETCHING & ORACLE
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -1633,7 +1631,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V134.0 (GEOMETRIC GRID EDITION) Starting...")
+    log(f"🚀 Neural Scout V135.0 (DYNAMIC POINTER TELEPORTATION EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
