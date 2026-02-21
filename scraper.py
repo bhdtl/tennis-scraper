@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V141.0 - DATABASE SURGEON EDITION)...")
+log("🔌 Initialisiere Neural Scout (V142.0 - FINAL POLISH EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -126,6 +126,16 @@ def clean_tournament_name(raw: str) -> str:
     clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
+# L8 FIX: THE MISSING FUNCTION HAS BEEN RESTORED
+def get_last_name(full_name: str) -> str:
+    if not full_name: 
+        return ""
+    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
+    parts = clean.split()
+    if parts:
+        return parts[-1].lower()
+    return ""
+
 def ensure_dict(data: Any) -> Dict:
     try:
         if isinstance(data, dict): 
@@ -179,10 +189,10 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     match_score += 60
                     last_name_matched = True
                 elif len(db_last) >= 4 and len(token) >= 4:
-                    # L8 TRANSLITERATION FIX: Erlaubt Tippfehler (z.B. Switolina)
+                    # L8 TRANSLITERATION FIX 2.0: Switolina Threshold Adjustment
                     sim = get_similarity(db_last, token)
-                    if sim > 0.82: 
-                        match_score += 55
+                    if sim >= 0.80:  # Toleranz auf 80% gesenkt für mehr Marge bei Schreibfehlern
+                        match_score += 60  # VORHER 55 -> JETZT 60. Damit qualifiziert sich Svitolina sofort!
                         last_name_matched = True
                     elif token in db_last or db_last in token: 
                         match_score += 40
@@ -741,7 +751,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V141.0 DATABASE SURGEON)
+# 6.5 1WIN SOTA MASTER FEED (V142.0 FINAL POLISH)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -770,7 +780,6 @@ def extract_time_context(lines_slice: List[str]) -> str:
         
     return found_time
 
-# L8 FIX: Iso Time Converter für Supabase
 def parse_time_to_iso(raw_time_str: str) -> str:
     if not raw_time_str or raw_time_str == "00:00":
         return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
@@ -797,7 +806,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V141.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V142.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -910,7 +919,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 floats = []
                 for ol in odds_slice:
                     cl = ol.replace(',', '.').strip()
-                    # L8 FIX: Erlaubt Quoten mit nur EINER Nachkommastelle (z.B. "5.7" für Fils)
                     matches_val = re.findall(r'\b\d+\.\d{1,3}\b', cl) 
                     for m_val in matches_val:
                         try:
@@ -1595,7 +1603,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V141.0 (DATABASE SURGEON EDITION) Starting...")
+    log(f"🚀 Neural Scout V142.0 (FINAL POLISH EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
