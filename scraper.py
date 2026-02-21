@@ -12,7 +12,7 @@ import random
 import time
 import csv
 import io
-import difflib # L8 SOTA: Für Levenshtein-Distanz bei Namen (Svitolina vs Switolina)
+import difflib 
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V143.0 - ORIENTATION LOCK & GATEKEEPER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V144.0 - THE EXACT-BOUNDARY MATRIX)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -157,23 +157,30 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
-# L8 FIX 2.0: THE IRON GATEKEEPER
+# L8 FIX 3.0: THE COMMA-SPLIT & TOXIC LEFTOVER GATEKEEPER
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
-    if report_ids is None:
-        report_ids = set()
+    if report_ids is None: report_ids = set()
     
-    if not scraped_name_raw or not db_players: return None
-    if len(scraped_name_raw) < 3: return None 
-    if re.search(r'\d', scraped_name_raw): return None 
+    if not scraped_name_raw or len(scraped_name_raw) < 3 or re.search(r'\d', scraped_name_raw): return None 
     
     bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream', 'stats', 'tv']
     if any(w in scraped_name_raw.lower() for w in bad_words): return None
 
     clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
-    scrape_tokens = [t for t in clean_scrape.split() if len(t) > 0]
+    scrape_tokens = clean_scrape.split()
     if not scrape_tokens: return None
 
     candidates = []
+    
+    # Zwingendes Komma-Parsing (1win Standard)
+    has_comma = "," in scraped_name_raw
+    if has_comma:
+        parts = scraped_name_raw.split(',')
+        scrape_last_part = normalize_db_name(parts[0])
+        scrape_first_part = normalize_db_name(parts[1]) if len(parts) > 1 else ""
+    else:
+        scrape_last_part = clean_scrape
+        scrape_first_part = ""
     
     for p in db_players:
         db_last = normalize_db_name(p.get('last_name', ''))
@@ -182,44 +189,67 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         db_last_tokens = db_last.split()
         db_first_tokens = db_first.split()
         
-        match_score = 0
+        score = 0
         last_matched = False
         
-        # 1. NACHNAME MUSS ZUERST MATCHEN (Tötet Osaka, Kawa, Maria Bugs!)
-        for db_l in db_last_tokens:
-            for t in scrape_tokens:
-                if db_l == t:
-                    match_score += 60
-                    last_matched = True
-                    break
-                # Levenshtein Toleranz NUR für sehr lange Namen (Tötet "Kawa" in "Yukawa" false positive)
-                elif len(db_l) >= 8 and len(t) >= 8 and get_similarity(db_l, t) >= 0.80:
-                    match_score += 60
-                    last_matched = True
-                    break
-                elif len(db_l) >= 6 and len(t) >= 6 and get_similarity(db_l, t) >= 0.88:
-                    match_score += 60
-                    last_matched = True
-                    break
-            if last_matched: break
-            
-        # 2. VORNAME NUR WENN NACHNAME GESICHERT IST
-        if last_matched and db_first_tokens:
-            for db_f in db_first_tokens:
+        if has_comma:
+            # 1. EVALUIERE EXAKT DIE LINKE SEITE VOM KOMMA (Killt Sanchez Jover vs Izquierdo)
+            if db_last == scrape_last_part:
+                score += 60
+                last_matched = True
+            elif len(db_last) >= 5 and get_similarity(db_last, scrape_last_part) >= 0.80:
+                score += 60
+                last_matched = True
+            else:
+                continue # Abbruch! Wenn linke Seite nicht matcht, ist es ein komplett anderer Spieler.
+                
+            # 2. EVALUIERE RECHTE SEITE VOM KOMMA (Vorname)
+            if last_matched and db_first and scrape_first_part:
+                if db_first in scrape_first_part or scrape_first_part in db_first:
+                    score += 30
+                elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80:
+                    score += 25
+                else:
+                    # Initialen-Check
+                    sf_tokens = scrape_first_part.split()
+                    if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
+                        score += 15
+        else:
+            # NO COMMA FORMAT (Der Härte-Test)
+            # Prüfen ob db_last komplett im scraped text vorkommt
+            if all(t in scrape_tokens for t in db_last_tokens):
+                score += 60
+                last_matched = True
+            elif len(db_last) >= 6:
                 for t in scrape_tokens:
-                    if db_f == t:
-                        match_score += 30
+                    if len(t) >= 6 and get_similarity(db_last, t) >= 0.85:
+                        score += 60
+                        last_matched = True
                         break
-                    elif len(db_f) >= 6 and len(t) >= 6 and get_similarity(db_f, t) >= 0.88:
-                        match_score += 25
-                        break
-                    elif len(t) == 1 and len(db_f) > 0 and t[0] == db_f[0]:
-                        match_score += 10
-                        break
+                        
+            if last_matched:
+                # TOXIC LEFTOVER PENALTY (Verhindert Greedy-Matching)
+                toxic_leftover = False
+                for st in scrape_tokens:
+                    if len(st) > 3: # Ignoriere "de", "van" etc.
+                        explained = False
+                        for dt in db_last_tokens + db_first_tokens:
+                            if st == dt or get_similarity(st, dt) > 0.80:
+                                explained = True
+                                break
+                        if not explained:
+                            toxic_leftover = True
+                            break
+                
+                if toxic_leftover:
+                    score -= 50 # TÖTE DAS MATCH! Der Name enthält Wörter, die nicht zur DB passen.
                     
-        # 3. ABSOLUTES MINIMUM SIND 60 PUNKTE
-        if match_score >= 60: 
-            candidates.append((p, match_score))
+                if db_first and score >= 60:
+                    if any(ft in scrape_tokens for ft in db_first_tokens):
+                        score += 30
+                        
+        if score >= 60: 
+            candidates.append((p, score))
                 
     if not candidates: 
         return None
@@ -760,7 +790,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V143.0 - ORIENTATION LOCK)
+# 6.5 1WIN SOTA MASTER FEED
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -815,7 +845,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon & Orientation Lock (V143.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -928,7 +958,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 floats = []
                 for ol in odds_slice:
                     cl = ol.replace(',', '.').strip()
-                    # Schützt Quote-Floats extrem zuverlässig
                     matches_val = re.findall(r'\b\d+\.\d{1,3}\b', cl) 
                     for m_val in matches_val:
                         try:
@@ -1613,7 +1642,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V143.0 (ORIENTATION LOCK EDITION) Starting...")
+    log(f"🚀 Neural Scout V144.0 (THE EXACT-BOUNDARY MATRIX) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -1684,8 +1713,7 @@ async def run_pipeline():
                         res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                         existing_match = res2.data[0] if res2.data else None
                         
-                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP
-                        # Verhindert den "Svitolina vs Pegula" False-Positive-Spike
+                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP (Verhindert Svitolina Spike-Bug)
                         if existing_match:
                             n1, n2 = n2, n1
                             p1_obj, p2_obj = p2_obj, p1_obj
