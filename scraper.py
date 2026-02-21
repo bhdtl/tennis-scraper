@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V142.0 - FINAL POLISH EDITION)...")
+log("🔌 Initialisiere Neural Scout (V143.0 - ORIENTATION LOCK & GATEKEEPER EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -126,7 +126,6 @@ def clean_tournament_name(raw: str) -> str:
     clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
-# L8 FIX: THE MISSING FUNCTION HAS BEEN RESTORED
 def get_last_name(full_name: str) -> str:
     if not full_name: 
         return ""
@@ -155,10 +154,10 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# L8 FIX: Levenshtein/Difflib Integration (Svitolina vs Switolina, Bassilaschwili vs Basilashvili)
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
+# L8 FIX 2.0: THE IRON GATEKEEPER
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None:
         report_ids = set()
@@ -167,7 +166,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     if len(scraped_name_raw) < 3: return None 
     if re.search(r'\d', scraped_name_raw): return None 
     
-    bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream']
+    bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream', 'stats', 'tv']
     if any(w in scraped_name_raw.lower() for w in bad_words): return None
 
     clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
@@ -180,35 +179,45 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         db_last = normalize_db_name(p.get('last_name', ''))
         db_first = normalize_db_name(p.get('first_name', ''))
         
-        match_score = 0
-        last_name_matched = False
+        db_last_tokens = db_last.split()
+        db_first_tokens = db_first.split()
         
-        if db_last:
-            for token in scrape_tokens:
-                if db_last == token: 
+        match_score = 0
+        last_matched = False
+        
+        # 1. NACHNAME MUSS ZUERST MATCHEN (Tötet Osaka, Kawa, Maria Bugs!)
+        for db_l in db_last_tokens:
+            for t in scrape_tokens:
+                if db_l == t:
                     match_score += 60
-                    last_name_matched = True
-                elif len(db_last) >= 4 and len(token) >= 4:
-                    # L8 TRANSLITERATION FIX 2.0: Switolina Threshold Adjustment
-                    sim = get_similarity(db_last, token)
-                    if sim >= 0.80:  # Toleranz auf 80% gesenkt für mehr Marge bei Schreibfehlern
-                        match_score += 60  # VORHER 55 -> JETZT 60. Damit qualifiziert sich Svitolina sofort!
-                        last_name_matched = True
-                    elif token in db_last or db_last in token: 
-                        match_score += 40
-                        last_name_matched = True
+                    last_matched = True
+                    break
+                # Levenshtein Toleranz NUR für sehr lange Namen (Tötet "Kawa" in "Yukawa" false positive)
+                elif len(db_l) >= 8 and len(t) >= 8 and get_similarity(db_l, t) >= 0.80:
+                    match_score += 60
+                    last_matched = True
+                    break
+                elif len(db_l) >= 6 and len(t) >= 6 and get_similarity(db_l, t) >= 0.88:
+                    match_score += 60
+                    last_matched = True
+                    break
+            if last_matched: break
+            
+        # 2. VORNAME NUR WENN NACHNAME GESICHERT IST
+        if last_matched and db_first_tokens:
+            for db_f in db_first_tokens:
+                for t in scrape_tokens:
+                    if db_f == t:
+                        match_score += 30
+                        break
+                    elif len(db_f) >= 6 and len(t) >= 6 and get_similarity(db_f, t) >= 0.88:
+                        match_score += 25
+                        break
+                    elif len(t) == 1 and len(db_f) > 0 and t[0] == db_f[0]:
+                        match_score += 10
+                        break
                     
-        if last_name_matched and db_first:
-            for token in scrape_tokens:
-                if db_first == token: 
-                    match_score += 30
-                elif len(db_first) >= 4 and len(token) >= 4 and get_similarity(db_first, token) > 0.82:
-                    match_score += 25
-                elif len(token) > 3 and len(db_first) > 3 and (token in db_first or db_first in token): 
-                    match_score += 15
-                elif len(token) == 1 and token[0] == db_first[0]: 
-                    match_score += 10 
-                    
+        # 3. ABSOLUTES MINIMUM SIND 60 PUNKTE
         if match_score >= 60: 
             candidates.append((p, match_score))
                 
@@ -751,7 +760,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V142.0 FINAL POLISH)
+# 6.5 1WIN SOTA MASTER FEED (V143.0 - ORIENTATION LOCK)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -806,7 +815,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V142.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon & Orientation Lock (V143.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -919,6 +928,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 floats = []
                 for ol in odds_slice:
                     cl = ol.replace(',', '.').strip()
+                    # Schützt Quote-Floats extrem zuverlässig
                     matches_val = re.findall(r'\b\d+\.\d{1,3}\b', cl) 
                     for m_val in matches_val:
                         try:
@@ -1603,7 +1613,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V142.0 (FINAL POLISH EDITION) Starting...")
+    log(f"🚀 Neural Scout V143.0 (ORIENTATION LOCK EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -1669,9 +1679,17 @@ async def run_pipeline():
 
                     res1 = supabase.table("market_odds").select("*").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
                     existing_match = res1.data[0] if res1.data else None
+                    
                     if not existing_match:
                         res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                         existing_match = res2.data[0] if res2.data else None
+                        
+                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP
+                        # Verhindert den "Svitolina vs Pegula" False-Positive-Spike
+                        if existing_match:
+                            n1, n2 = n2, n1
+                            p1_obj, p2_obj = p2_obj, p1_obj
+                            m['odds1'], m['odds2'] = m['odds2'], m['odds1']
                     
                     if existing_match:
                         if is_suspicious_movement(to_float(existing_match.get('odds1'), 0), m['odds1'], to_float(existing_match.get('odds2'), 0), m['odds2']):
@@ -1690,7 +1708,6 @@ async def run_pipeline():
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
                         update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
                         if m['time'] and m['time'] != "00:00": 
-                            # L8 FIX: Iso Parse Injection
                             update_data["match_time"] = parse_time_to_iso(m['time'])
                         
                         op1 = to_float(existing_match.get('opening_odds1'), 0)
@@ -1795,7 +1812,6 @@ async def run_pipeline():
                             
                             ai_text_final = f"{ai.get('ai_text', '').replace('json', '').strip()} {value_tag} [🎲 SIM: {sim_result['predicted_line']} Games]"
                             
-                            # L8 FIX: Date string to ISO8601 Database Standard
                             final_time_str = parse_time_to_iso(m['time'])
 
                             data = {
