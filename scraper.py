@@ -12,6 +12,7 @@ import random
 import time
 import csv
 import io
+import difflib # L8 SOTA: Für Levenshtein-Distanz bei Namen (Svitolina vs Switolina)
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
@@ -34,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V140.0 - THE PURIFIER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V141.0 - DATABASE SURGEON EDITION)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -144,15 +145,17 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# L8 FIX: THE PURIFIER GATEKEEPER
+# L8 FIX: Levenshtein/Difflib Integration (Svitolina vs Switolina, Bassilaschwili vs Basilashvili)
+def get_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None:
         report_ids = set()
     
-    # Anti-Garbage Block
     if not scraped_name_raw or not db_players: return None
-    if len(scraped_name_raw) < 3: return None # Zu kurz, um ein echter voller Name zu sein
-    if re.search(r'\d', scraped_name_raw): return None # Namen haben keine Nummern! Tötet Set-Scores.
+    if len(scraped_name_raw) < 3: return None 
+    if re.search(r'\d', scraped_name_raw): return None 
     
     bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream']
     if any(w in scraped_name_raw.lower() for w in bad_words): return None
@@ -170,28 +173,32 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         match_score = 0
         last_name_matched = False
         
-        # Strikter Nachnamen-Check (Tötet den "Li" Bug)
         if db_last:
             for token in scrape_tokens:
                 if db_last == token: 
                     match_score += 60
                     last_name_matched = True
-                # Fuzzy-Matching nur erlaubt, wenn Nachname > 3 Buchstaben lang ist!
-                elif len(db_last) > 3 and len(token) > 3 and (token in db_last or db_last in token): 
-                    match_score += 40
-                    last_name_matched = True
+                elif len(db_last) >= 4 and len(token) >= 4:
+                    # L8 TRANSLITERATION FIX: Erlaubt Tippfehler (z.B. Switolina)
+                    sim = get_similarity(db_last, token)
+                    if sim > 0.82: 
+                        match_score += 55
+                        last_name_matched = True
+                    elif token in db_last or db_last in token: 
+                        match_score += 40
+                        last_name_matched = True
                     
-        # Vornamen-Check nur anrechnen, wenn der Nachname zu 100% gesichert ist
         if last_name_matched and db_first:
             for token in scrape_tokens:
                 if db_first == token: 
                     match_score += 30
+                elif len(db_first) >= 4 and len(token) >= 4 and get_similarity(db_first, token) > 0.82:
+                    match_score += 25
                 elif len(token) > 3 and len(db_first) > 3 and (token in db_first or db_first in token): 
                     match_score += 15
                 elif len(token) == 1 and token[0] == db_first[0]: 
                     match_score += 10 
                     
-        # Mindest-Score auf 60 angehoben! Es MUSS ein solider Treffer sein.
         if match_score >= 60: 
             candidates.append((p, match_score))
                 
@@ -295,7 +302,6 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
             return result
             
     except Exception as e:
-        log(f"⚠️ Weather Fetch Error ({clean_location}): {e}")
         return None
 
 # --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
@@ -735,7 +741,7 @@ async def update_past_results_via_ai():
         await asyncio.sleep(1.0)
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (V140.0 PURIFIER & DYNAMIC WINDOW)
+# 6.5 1WIN SOTA MASTER FEED (V141.0 DATABASE SURGEON)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -764,8 +770,34 @@ def extract_time_context(lines_slice: List[str]) -> str:
         
     return found_time
 
+# L8 FIX: Iso Time Converter für Supabase
+def parse_time_to_iso(raw_time_str: str) -> str:
+    if not raw_time_str or raw_time_str == "00:00":
+        return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
+        
+    try:
+        t_match = re.search(r'(\d{1,2}):(\d{2})', raw_time_str)
+        d_match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', raw_time_str)
+        
+        h, m_min = t_match.groups() if t_match else ("00", "00")
+        
+        if d_match:
+            day, month, year = d_match.groups()
+            dt = datetime(int(year), int(month), int(day), int(h), int(m_min), tzinfo=timezone.utc)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        elif t_match:
+            now = datetime.now(timezone.utc)
+            dt = now.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
+            if dt < now - timedelta(hours=3): 
+                dt += timedelta(days=1)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except:
+        pass
+        
+    return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
+
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Purifier & Dynamic Window (V140.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V141.0)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -849,29 +881,20 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if "sieger" not in line_norm and "winner" not in line_norm:
                 current_tour = line
         
-        # ANCHOR: Das Wort "Sieger" definiert den Block.
         if line_norm == "sieger" or line_norm == "winner":
-            # L8 FIX: DYNAMIC NAME CAPTURE WINDOW
-            # Wir gucken bis zu 6 Zeilen nach oben und filtern Müll raus,
-            # so umgehen wir injizierte Badges (TV Icons, Set-Scores etc.)
             up_slice = unified_lines[max(0, i-6):i]
             potential_names = []
             
             for ul in up_slice:
                 ul_norm = normalize_text(ul).lower()
                 
-                # Filter 1: Keine kurzen Strings
                 if len(ul) < 3: continue
-                # Filter 2: Namen haben keine Zahlen (Killer für Datum wie "08:00" oder Scores wie "15")
                 if re.search(r'\d', ul): continue
-                # Filter 3: Keine UI-Noise
                 if any(kw in ul_norm for kw in ['atp', 'wta', 'itf', 'challenger', 'utr', 'tennis', 'live', 'stream', 'tv', 'satz', 'set']): continue
-                # Filter 4: Keine Zeit-Marker
                 if "•" in ul or ":" in ul: continue
                 
                 potential_names.append(ul)
 
-            # Wir brauchen genau die zwei letzten validen Text-Blöcke vor "Sieger"
             if len(potential_names) >= 2:
                 p2_raw = potential_names[-1]
                 p1_raw = potential_names[-2]
@@ -887,8 +910,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 floats = []
                 for ol in odds_slice:
                     cl = ol.replace(',', '.').strip()
-                    # Zieht Quoten wie "1.72" und "2.12" extrem sauber
-                    matches_val = re.findall(r'\b\d+\.\d{2,3}\b', cl)
+                    # L8 FIX: Erlaubt Quoten mit nur EINER Nachkommastelle (z.B. "5.7" für Fils)
+                    matches_val = re.findall(r'\b\d+\.\d{1,3}\b', cl) 
                     for m_val in matches_val:
                         try:
                             val = float(m_val)
@@ -918,7 +941,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                     except:
                         pass
 
-    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches extrahiert.")
+    log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches extrahiert (Memory-Pool).")
     return parsed_matches
 
 # =================================================================
@@ -1572,7 +1595,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V140.0 (PURIFIER EDITION) Starting...")
+    log(f"🚀 Neural Scout V141.0 (DATABASE SURGEON EDITION) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -1659,7 +1682,8 @@ async def run_pipeline():
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
                         update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
                         if m['time'] and m['time'] != "00:00": 
-                            update_data["match_time"] = m['time']
+                            # L8 FIX: Iso Parse Injection
+                            update_data["match_time"] = parse_time_to_iso(m['time'])
                         
                         op1 = to_float(existing_match.get('opening_odds1'), 0)
                         op2 = to_float(existing_match.get('opening_odds2'), 0)
@@ -1668,7 +1692,11 @@ async def run_pipeline():
                             update_data["opening_odds1"] = m['odds1']
                             update_data["opening_odds2"] = m['odds2']
                             
-                        supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
+                        try:
+                            supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
+                        except Exception as up_e:
+                            log(f"❌ SUPABASE UPDATE ERROR (Locked) bei {n1} vs {n2}: {up_e}")
+                            
                         hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
                         hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
                         
@@ -1759,10 +1787,8 @@ async def run_pipeline():
                             
                             ai_text_final = f"{ai.get('ai_text', '').replace('json', '').strip()} {value_tag} [🎲 SIM: {sim_result['predicted_line']} Games]"
                             
-                            if m['time'] and m['time'] != "00:00":
-                                final_time_str = m['time']
-                            else:
-                                final_time_str = f"{datetime.now().strftime('%Y-%m-%d')}T00:00:00Z"
+                            # L8 FIX: Date string to ISO8601 Database Standard
+                            final_time_str = parse_time_to_iso(m['time'])
 
                             data = {
                                 "player1_name": n1, 
@@ -1782,17 +1808,23 @@ async def run_pipeline():
                             hist_fair2 = fair2
                             
                             if db_match_id: 
-                                supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                try:
+                                    supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                except Exception as up_e:
+                                    log(f"❌ SUPABASE UPDATE ERROR bei {n1} vs {n2}: {up_e}")
                             else:
                                 op1 = to_float(existing_match.get('opening_odds1') if existing_match else 0, 0)
                                 if op1 <= 1.01 and m['odds1'] > 1.01: 
                                     data["opening_odds1"] = m['odds1']
                                     data["opening_odds2"] = m['odds2']
                                     
-                                res_ins = supabase.table("market_odds").insert(data).execute()
-                                if res_ins.data: 
-                                    db_match_id = res_ins.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
+                                try:
+                                    res_ins = supabase.table("market_odds").insert(data).execute()
+                                    if res_ins.data: 
+                                        db_match_id = res_ins.data[0]['id']
+                                    log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
+                                except Exception as ins_e:
+                                    log(f"❌ SUPABASE INSERT ERROR bei {n1} vs {n2}: {ins_e}")
 
                     if db_match_id:
                         should_log_history = False
@@ -1824,9 +1856,9 @@ async def run_pipeline():
                                 pass
 
                 except Exception as e: 
-                    log(f"⚠️ Match Error: {e}")
+                    log(f"⚠️ Match Error bei Iteration: {e}")
             
-            log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches analysiert.")
+            log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
 
         finally: 
             await browser.close()
