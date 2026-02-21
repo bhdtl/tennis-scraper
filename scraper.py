@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -- coding: utf-8 --
 
 import asyncio
 import json
@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.0 - THE EXACT-BOUNDARY MATRIX)...")
+log("🔌 Initialisiere Neural Scout (V144.1 - EXACT-BOUNDARY MATRIX + HYBRID SETTLEMENT)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -119,8 +119,8 @@ def clean_tournament_name(raw: str) -> str:
         return "Unknown"
     clean = raw
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
-    clean = re.sub(r'<.*?>', '', clean)
-    clean = re.sub(r'S\d+.*$', '', clean) 
+    clean = re.sub(r'<.?>', '', clean)
+    clean = re.sub(r'S\d+.$', '', clean) 
     clean = re.sub(r'H2H.*$', '', clean)
     clean = re.sub(r'\b(Challenger|Men|Women|Singles|Doubles)\b', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'\s\d+$', '', clean)
@@ -193,7 +193,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         last_matched = False
         
         if has_comma:
-            # 1. EVALUIERE EXAKT DIE LINKE SEITE VOM KOMMA (Killt Sanchez Jover vs Izquierdo)
+            # 1. EVALUIERE EXAKT DIE LINKE SEITE VOM KOMMA
             if db_last == scrape_last_part:
                 score += 60
                 last_matched = True
@@ -201,7 +201,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 score += 60
                 last_matched = True
             else:
-                continue # Abbruch! Wenn linke Seite nicht matcht, ist es ein komplett anderer Spieler.
+                continue 
                 
             # 2. EVALUIERE RECHTE SEITE VOM KOMMA (Vorname)
             if last_matched and db_first and scrape_first_part:
@@ -216,7 +216,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         score += 15
         else:
             # NO COMMA FORMAT (Der Härte-Test)
-            # Prüfen ob db_last komplett im scraped text vorkommt
             if all(t in scrape_tokens for t in db_last_tokens):
                 score += 60
                 last_matched = True
@@ -228,10 +227,10 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         break
                         
             if last_matched:
-                # TOXIC LEFTOVER PENALTY (Verhindert Greedy-Matching)
+                # TOXIC LEFTOVER PENALTY
                 toxic_leftover = False
                 for st in scrape_tokens:
-                    if len(st) > 3: # Ignoriere "de", "van" etc.
+                    if len(st) > 3: 
                         explained = False
                         for dt in db_last_tokens + db_first_tokens:
                             if st == dt or get_similarity(st, dt) > 0.80:
@@ -242,7 +241,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                             break
                 
                 if toxic_leftover:
-                    score -= 50 # TÖTE DAS MATCH! Der Name enthält Wörter, die nicht zur DB passen.
+                    score -= 50 
                     
                 if db_first and score >= 60:
                     if any(ft in scrape_tokens for ft in db_first_tokens):
@@ -297,7 +296,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     if not location_name or location_name == "Unknown": 
         return None
         
-    clean_location = re.sub(r'[^a-zA-Z0-9\s,]', '', location_name).strip()
+    clean_location = re.sub(r'a-zA-Z0-9\s,', '', location_name).strip()
     if len(clean_location) > 50: 
         clean_location = clean_location[:50] 
     
@@ -499,7 +498,7 @@ class SurfaceIntelligence:
         n = name.lower()
         n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
         n = re.sub(r'\b(202[0-9])\b', '', n)
-        n = re.sub(r'[^a-z0-9]', '', n)
+        n = re.sub(r'a-z0-9', '', n)
         return n.strip()
 
     @staticmethod
@@ -695,102 +694,7 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
             return None
 
 # =================================================================
-# L8 SOTA: THE RAG AI AUDITOR
-# =================================================================
-async def duckduckgo_html_search(query: str) -> str:
-    url = "https://html.duckduckgo.com/html/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    data = {"q": query}
-    try:
-        async with httpx.AsyncClient() as client:
-            res = await client.post(url, headers=headers, data=data, timeout=15.0)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            snippets = []
-            for a in soup.find_all('a', class_='result__snippet'):
-                snippets.append(a.get_text(strip=True))
-            return " | ".join(snippets[:5]) 
-    except Exception as e:
-        return ""
-
-async def update_past_results_via_ai():
-    log("🏆 The Quantum AI Auditor: Booting RAG Search Engine...")
-    pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
-    
-    if not pending or not isinstance(pending, list): 
-        return
-    
-    for m in pending:
-        try:
-            mt = datetime.fromisoformat(m['created_at'].replace('Z', '+00:00'))
-            if datetime.now(timezone.utc) - mt < timedelta(hours=5): 
-                continue
-        except: 
-            pass
-
-        p1 = m.get('player1_name')
-        p2 = m.get('player2_name')
-        
-        if not p1 or not p2: 
-            continue
-
-        query = f"{p1} vs {p2} tennis match result score {datetime.now().year}"
-        
-        search_context = await duckduckgo_html_search(query)
-        if len(search_context) < 10: 
-            continue 
-        
-        prompt = f"""
-        TASK: Extract the tennis match result from the provided web search snippets.
-        MATCH: {p1} vs {p2}
-        
-        WEB SEARCH SNIPPETS:
-        "{search_context}"
-        
-        RULES:
-        1. Identify if the match is finished.
-        2. Identify the winner (must be exactly '{p1}' or '{p2}').
-        3. Identify the final score (e.g., "6-4 6-2").
-        4. If the snippets don't explicitly mention the final result for this exact match, return "status": "unknown".
-        
-        OUTPUT JSON ONLY:
-        {{
-            "status": "finished" or "unknown",
-            "winner": "Name",
-            "score": "Score string"
-        }}
-        """
-        
-        ai_res = await call_groq(prompt)
-        if ai_res:
-            try:
-                data = json.loads(ai_res)
-                if data.get('status') == 'finished' and data.get('winner') and data.get('score'):
-                    winner = data['winner']
-                    score = data['score']
-                    
-                    supabase.table("market_odds").update({
-                        "actual_winner_name": winner,
-                        "score": score
-                    }).eq("id", m['id']).execute()
-                    
-                    for p_name in [p1, p2]:
-                        p_hist = await fetch_player_history_extended(p_name, limit=80)
-                        p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                        p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                        
-                        supabase.table('players').update({
-                            'surface_ratings': p_profile,
-                            'form_rating': p_form 
-                        }).ilike('last_name', f"%{p_name}%").execute()
-            except: 
-                pass
-                
-        await asyncio.sleep(1.0)
-
-# =================================================================
-# 6.5 1WIN SOTA MASTER FEED
+# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
@@ -845,7 +749,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.0)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.1)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -992,7 +896,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     return parsed_matches
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE (LEGACY FUNCTIONS KEPT FOR 1:1 COMPLETENESS)
+# 7. DATA FETCHING & ORACLE (TE SETTLEMENT INTEGRATED)
 # =================================================================
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
@@ -1088,8 +992,102 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         
     return 0.5
 
+# L8 SOTA: THE RELIABLE RESULTS ENGINE (TE INTEGRATION)
 async def update_past_results(browser: Browser):
-    pass
+    log("🏆 The Auditor: Checking Real-Time Results & Scores via TE...")
+    pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
+    if not pending or not isinstance(pending, list): 
+        return
+    safe_to_check = list(pending)
+
+    for day_off in range(0, 3): 
+        t_date = datetime.now() - timedelta(days=day_off)
+        page = await browser.new_page()
+        try:
+            url = f"https://www.tennisexplorer.com/results/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+            table = soup.find('table', class_='result')
+            if not table: continue
+            
+            rows = table.find_all('tr')
+            for row in rows:
+                if 'flags' in str(row) or 'head' in str(row): continue
+                
+                row_text = row.get_text(separator=" ", strip=True).lower()
+                row_norm = normalize_text(row_text).lower()
+
+                for pm in list(safe_to_check):
+                    p1_norm = normalize_db_name(pm['player1_name'])
+                    p2_norm = normalize_db_name(pm['player2_name'])
+                    if p1_norm in row_norm and p2_norm in row_norm:
+                        pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
+                        all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
+                        valid_sets = []
+                        for m in all_matches:
+                            if "ret" in m or "w.o" in m: valid_sets.append(m)
+                            elif "-" in m:
+                                try:
+                                    l, r = map(int, m.split('(')[0].split('-'))
+                                    if (l >= 6 or r >= 6) or (l+r >= 6): 
+                                        valid_sets.append(m)
+                                except: pass
+                        score_cleaned = " ".join(valid_sets).strip()
+
+                        score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
+                        p1_sets = 0; p2_sets = 0
+                        idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
+                        p1_is_left = idx_p1 < idx_p2
+                        
+                        for s in score_matches:
+                            try:
+                                sl = int(s[0]); sr = int(s[1])
+                                if sl > sr: 
+                                    if p1_is_left: p1_sets += 1
+                                    else: p2_sets += 1
+                                elif sr > sl: 
+                                    if p1_is_left: p2_sets += 1
+                                    else: p1_sets += 1
+                            except: pass
+                        
+                        is_ret = "ret." in row_text or "w.o." in row_text
+                        sets_needed = 2
+                        if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()): sets_needed = 3
+                        
+                        winner = None
+                        if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
+                            if is_ret:
+                                if p1_is_left: winner = pm['player1_name']
+                                else: winner = pm['player2_name']
+                            else:
+                                if p1_sets > p2_sets: winner = pm['player1_name']
+                                elif p2_sets > p1_sets: winner = pm['player2_name']
+                            
+                            if winner:
+                                log(f"      🔍 AUDITOR FOUND: {score_cleaned} -> Winner: {winner}")
+                                supabase.table("market_odds").update({
+                                    "actual_winner_name": winner,
+                                    "score": score_cleaned
+                                }).eq("id", pm['id']).execute()
+                                
+                                # RE-PROFILING HOOK
+                                log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
+                                for p_name in [pm['player1_name'], pm['player2_name']]:
+                                    p_hist = await fetch_player_history_extended(p_name, limit=80)
+                                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                                    p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                                    
+                                    supabase.table('players').update({
+                                        'surface_ratings': p_profile,
+                                        'form_rating': p_form 
+                                    }).ilike('last_name', f"%{p_name}%").execute()
+
+                                safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
+                                break
+        except: 
+            pass
+        finally: 
+            await page.close()
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
@@ -1207,10 +1205,10 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        players = supabase.table("players").select("*").execute().data
-        skills = supabase.table("player_skills").select("*").execute().data
-        reports = supabase.table("scouting_reports").select("*").execute().data
-        tournaments = supabase.table("tournaments").select("*").execute().data
+        players = supabase.table("players").select("").execute().data
+        skills = supabase.table("player_skills").select("").execute().data
+        reports = supabase.table("scouting_reports").select("").execute().data
+        tournaments = supabase.table("tournaments").select("").execute().data
         
         if tournaments:
             for t in tournaments:
@@ -1642,12 +1640,13 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.0 (THE EXACT-BOUNDARY MATRIX) Starting...")
+    log(f"🚀 Neural Scout V144.1 (THE EXACT-BOUNDARY MATRIX) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            await update_past_results_via_ai()
+            # SOTA L8 FIX: TE SETTLEMENT ANSTELLE VON RAG AI
+            await update_past_results(browser)
             
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: 
@@ -1713,7 +1712,7 @@ async def run_pipeline():
                         res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                         existing_match = res2.data[0] if res2.data else None
                         
-                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP (Verhindert Svitolina Spike-Bug)
+                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP
                         if existing_match:
                             n1, n2 = n2, n1
                             p1_obj, p2_obj = p2_obj, p1_obj
@@ -1739,7 +1738,6 @@ async def run_pipeline():
                             update_data["match_time"] = parse_time_to_iso(m['time'])
                         
                         op1 = to_float(existing_match.get('opening_odds1'), 0)
-                        op2 = to_float(existing_match.get('opening_odds2'), 0)
                         
                         if op1 <= 1.01 and m['odds1'] > 1.01: 
                             update_data["opening_odds1"] = m['odds1']
@@ -1878,16 +1876,27 @@ async def run_pipeline():
                                 except Exception as ins_e:
                                     log(f"❌ SUPABASE INSERT ERROR bei {n1} vs {n2}: {ins_e}")
 
+                    # L8 SOTA FIX: CATCH-ALL ODDS MOVEMENT TRACKING
                     if db_match_id:
                         should_log_history = False
                         
-                        if not existing_match or is_signal_locked or hist_is_value: 
+                        # 1. Bedingung: Es ist ein GANZ NEUES Match (Entry Odds)
+                        if not existing_match:
                             should_log_history = True
+                            log(f"      📍 [ENTRY ODDS] Logging initial odds for {n1} vs {n2}")
+                        # 2. Bedingung: Signal Locked oder Value Pick
+                        elif is_signal_locked or hist_is_value: 
+                            should_log_history = True
+                        # 3. Bedingung: JEDE Abweichung loggen (!= anstatt >= 0.01)
                         else:
                             try:
-                                if abs(to_float(existing_match.get('odds1'), 0) - m['odds1']) >= 0.01 or abs(to_float(existing_match.get('odds2'), 0) - m['odds2']) >= 0.01: 
+                                old_o1 = to_float(existing_match.get('odds1'), 0)
+                                old_o2 = to_float(existing_match.get('odds2'), 0)
+                                
+                                # Präziser Float-Vergleich zur Verhinderung von Micro-Glitches
+                                if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
                                     should_log_history = True
-                                    log(f"      📈 [ODDS MOVEMENT] {n1} vs {n2} | P1: {to_float(existing_match.get('odds1'), 0)} -> {m['odds1']} | P2: {to_float(existing_match.get('odds2'), 0)} -> {m['odds2']}")
+                                    log(f"      📈 [ODDS MOVEMENT] {n1} vs {n2} | P1: {old_o1} -> {m['odds1']} | P2: {old_o2} -> {m['odds2']}")
                             except: 
                                 pass
                         
@@ -1904,8 +1913,8 @@ async def run_pipeline():
                             }
                             try: 
                                 supabase.table("odds_history").insert(h_data).execute()
-                            except: 
-                                pass
+                            except Exception as hist_err: 
+                                log(f"❌ HISTORY INSERT ERROR: {hist_err}")
 
                 except Exception as e: 
                     log(f"⚠️ Match Error bei Iteration: {e}")
