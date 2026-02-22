@@ -172,7 +172,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
 
     candidates = []
     
-    # Zwingendes Komma-Parsing (1win Standard)
     has_comma = "," in scraped_name_raw
     if has_comma:
         parts = scraped_name_raw.split(',')
@@ -193,7 +192,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         last_matched = False
         
         if has_comma:
-            # 1. EVALUIERE EXAKT DIE LINKE SEITE VOM KOMMA
             if db_last == scrape_last_part:
                 score += 60
                 last_matched = True
@@ -203,19 +201,16 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
             else:
                 continue 
                 
-            # 2. EVALUIERE RECHTE SEITE VOM KOMMA (Vorname)
             if last_matched and db_first and scrape_first_part:
                 if db_first in scrape_first_part or scrape_first_part in db_first:
                     score += 30
                 elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80:
                     score += 25
                 else:
-                    # Initialen-Check
                     sf_tokens = scrape_first_part.split()
                     if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
                         score += 15
         else:
-            # NO COMMA FORMAT (Der Härte-Test)
             if all(t in scrape_tokens for t in db_last_tokens):
                 score += 60
                 last_matched = True
@@ -227,7 +222,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         break
                         
             if last_matched:
-                # TOXIC LEFTOVER PENALTY
                 toxic_leftover = False
                 for st in scrape_tokens:
                     if len(st) > 3: 
@@ -1010,81 +1004,143 @@ async def update_past_results(browser: Browser):
             table = soup.find('table', class_='result')
             if not table: continue
             
-            rows = table.find_all('tr')
-            for row in rows:
-                if 'flags' in str(row) or 'head' in str(row): continue
+            def extract_row_data(r_row):
+                cells = r_row.find_all('td')
+                p_idx = -1
+                for idx, c in enumerate(cells):
+                    if c.find('a') and 'time' not in c.get('class', []):
+                        p_idx = idx
+                        break
                 
-                row_text = row.get_text(separator=" ", strip=True).lower()
-                row_norm = normalize_text(row_text).lower()
+                if p_idx != -1 and p_idx + 1 < len(cells):
+                    sets_cell = cells[p_idx + 1]
+                    sets_val = sets_cell.get_text(strip=True)
+                    
+                    if sets_val.isdigit():
+                        scores = []
+                        for k in range(1, 6):
+                            if p_idx + 1 + k >= len(cells): break
+                            sc_cell = cells[p_idx + 1 + k]
+                            
+                            raw_txt = ""
+                            for child in sc_cell.children:
+                                if child.name == 'sup': continue
+                                raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
+                            
+                            raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
+                            
+                            if raw_txt.isdigit():
+                                scores.append(raw_txt)
+                            else:
+                                break
+                        return int(sets_val), scores
+                return -1, []
 
-                for pm in list(safe_to_check):
-                    p1_norm = normalize_db_name(pm['player1_name'])
-                    p2_norm = normalize_db_name(pm['player2_name'])
-                    if p1_norm in row_norm and p2_norm in row_norm:
-                        pattern = r'(\d+-\d+(?:\(\d+\))?|ret\.|w\.o\.)'
-                        all_matches = re.findall(pattern, row_text, flags=re.IGNORECASE)
-                        valid_sets = []
-                        for m in all_matches:
-                            if "ret" in m or "w.o" in m: valid_sets.append(m)
-                            elif "-" in m:
-                                try:
-                                    l, r = map(int, m.split('(')[0].split('-'))
-                                    if (l >= 6 or r >= 6) or (l+r >= 6): 
-                                        valid_sets.append(m)
-                                except: pass
-                        score_cleaned = " ".join(valid_sets).strip()
+            rows = table.find_all('tr')
+            i = 0
+            pending_p1_raw = None
+            pending_p1_row = None
+            
+            while i < len(rows):
+                row = rows[i]
+                
+                if 'head' in row.get('class', []):
+                    pending_p1_raw = None
+                    i += 1; continue
+                
+                cols = row.find_all('td')
+                if len(cols) < 2: 
+                    i += 1; continue
+                
+                p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
+                if not p_cell: 
+                    i += 1; continue
+                
+                p_raw = clean_player_name(p_cell.get_text(strip=True))
+                
+                if pending_p1_raw:
+                    p2_raw = p_raw
+                    if '/' in pending_p1_raw or '/' in p2_raw: 
+                        pending_p1_raw = None; i += 1; continue
+                    
+                    p1_norm_te = normalize_db_name(pending_p1_raw)
+                    p2_norm_te = normalize_db_name(p2_raw)
+                    
+                    matched_pm = None
+                    is_reversed = False
+                    
+                    for pm in list(safe_to_check):
+                        db_p1 = normalize_db_name(pm['player1_name'])
+                        db_p2 = normalize_db_name(pm['player2_name'])
+                        
+                        if (db_p1 in p1_norm_te or p1_norm_te in db_p1) and (db_p2 in p2_norm_te or p2_norm_te in db_p2):
+                            matched_pm = pm
+                            break
+                        elif (db_p1 in p2_norm_te or p2_norm_te in db_p1) and (db_p2 in p1_norm_te or p1_norm_te in db_p2):
+                            matched_pm = pm
+                            is_reversed = True
+                            break
 
-                        score_matches = re.findall(r'(\d+)-(\d+)', score_cleaned)
-                        p1_sets = 0; p2_sets = 0
-                        idx_p1 = row_norm.find(p1_norm); idx_p2 = row_norm.find(p2_norm)
-                        p1_is_left = idx_p1 < idx_p2
-                        
-                        for s in score_matches:
-                            try:
-                                sl = int(s[0]); sr = int(s[1])
-                                if sl > sr: 
-                                    if p1_is_left: p1_sets += 1
-                                    else: p2_sets += 1
-                                elif sr > sl: 
-                                    if p1_is_left: p2_sets += 1
-                                    else: p1_sets += 1
-                            except: pass
-                        
-                        is_ret = "ret." in row_text or "w.o." in row_text
-                        sets_needed = 2
-                        if "open" in pm['tournament'].lower() and ("atp" in pm['tournament'].lower() or "men" in pm['tournament'].lower()): sets_needed = 3
+                    if matched_pm:
+                        s1, scores1 = extract_row_data(pending_p1_row)
+                        s2, scores2 = extract_row_data(row)
                         
                         winner = None
-                        if p1_sets >= sets_needed or p2_sets >= sets_needed or is_ret:
-                            if is_ret:
-                                if p1_is_left: winner = pm['player1_name']
-                                else: winner = pm['player2_name']
-                            else:
-                                if p1_sets > p2_sets: winner = pm['player1_name']
-                                elif p2_sets > p1_sets: winner = pm['player2_name']
+                        final_score = ""
+                        
+                        is_ret = "ret." in pending_p1_row.get_text().lower() or "ret." in row.get_text().lower() or "w.o." in pending_p1_row.get_text().lower() or "w.o." in row.get_text().lower()
+                        
+                        if s1 != -1 and s2 != -1:
+                            if s1 > s2: 
+                                winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
+                            elif s2 > s1: 
+                                winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
                             
-                            if winner:
-                                log(f"      🔍 AUDITOR FOUND: {score_cleaned} -> Winner: {winner}")
-                                supabase.table("market_odds").update({
-                                    "actual_winner_name": winner,
-                                    "score": score_cleaned
-                                }).eq("id", pm['id']).execute()
-                                
-                                # RE-PROFILING HOOK
-                                log(f"🔄 Triggering Real-Time Profile Refresh for {pm['player1_name']} & {pm['player2_name']}")
-                                for p_name in [pm['player1_name'], pm['player2_name']]:
-                                    p_hist = await fetch_player_history_extended(p_name, limit=80)
-                                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                                    p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                                    
-                                    supabase.table('players').update({
-                                        'surface_ratings': p_profile,
-                                        'form_rating': p_form 
-                                    }).ilike('last_name', f"%{p_name}%").execute()
+                            score_parts = []
+                            min_len = min(len(scores1), len(scores2))
+                            for k in range(min_len):
+                                if is_reversed:
+                                    score_parts.append(f"{scores2[k]}-{scores1[k]}")
+                                else:
+                                    score_parts.append(f"{scores1[k]}-{scores2[k]}")
+                            
+                            if score_parts:
+                                final_score = " ".join(score_parts)
+                                if is_ret: final_score += " ret."
 
-                                safe_to_check = [x for x in safe_to_check if x['id'] != pm['id']]
-                                break
-        except: 
+                        if winner:
+                            log(f"      🔍 AUDITOR FOUND: {final_score} -> Winner: {winner}")
+                            supabase.table("market_odds").update({
+                                "actual_winner_name": winner,
+                                "score": final_score
+                            }).eq("id", matched_pm['id']).execute()
+                            
+                            # RE-PROFILING HOOK
+                            log(f"🔄 Triggering Real-Time Profile Refresh for {matched_pm['player1_name']} & {matched_pm['player2_name']}")
+                            for p_name in [matched_pm['player1_name'], matched_pm['player2_name']]:
+                                p_hist = await fetch_player_history_extended(p_name, limit=80)
+                                p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
+                                p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                                
+                                supabase.table('players').update({
+                                    'surface_ratings': p_profile,
+                                    'form_rating': p_form 
+                                }).ilike('last_name', f"%{p_name}%").execute()
+
+                            safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
+
+                    pending_p1_raw = None
+                    pending_p1_row = None
+                else:
+                    first_cell = row.find('td', class_='first')
+                    if first_cell and first_cell.get('rowspan') == '2': 
+                        pending_p1_raw = p_raw
+                        pending_p1_row = row
+                    else: 
+                        pending_p1_raw = p_raw
+                        pending_p1_row = row
+                i += 1
+        except Exception as e:
             pass
         finally: 
             await page.close()
