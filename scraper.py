@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.2 - EXACT-BOUNDARY MATRIX + LIVE SKILL ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V144.3 - EXACT-BOUNDARY + FANTASY ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -86,7 +86,7 @@ async def fetch_tml_database():
                         for row in reader:
                             TML_MATCH_CACHE.append(row)
                             loaded_matches += 1
-            log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
+                log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
         except Exception as e:
             log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
 
@@ -1161,7 +1161,7 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                                     'form_rating': p_form 
                                 }).ilike('last_name', f"%{p_name_hook}%").execute()
 
-                            safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
+                        safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
                     pending_p1_raw = None
                     pending_p1_row = None
@@ -1736,19 +1736,19 @@ class LiveSkillEngine:
 
         base_shift = 0.0
         
-        # ODD-BASIERTER EV-SHIFT (Generelles Upgrade/Downgrade auf ALLE Skills)
+        # ODD-BASIERTER EV-SHIFT
         if is_winner:
             if odds <= 1.30: base_shift = 0.1
             elif odds <= 1.701: base_shift = 0.2
             elif odds <= 1.850: base_shift = 0.3
             elif odds <= 2.2501: base_shift = 0.4
-            else: base_shift = 0.6  # Krasser Upset -> Elite Boost
+            else: base_shift = 0.6
         else:
-            if odds <= 1.30: base_shift = -0.8  # Massiver Choke als schwerer Favorit
+            if odds <= 1.30: base_shift = -0.8
             elif odds <= 1.701: base_shift = -0.4
             elif odds <= 1.850: base_shift = -0.3
             elif odds <= 2.2501: base_shift = -0.2
-            else: base_shift = -0.1 # Als Außenseiter verloren -> Erwartbar
+            else: base_shift = -0.1
 
         skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
         new_skills = {}
@@ -1758,16 +1758,15 @@ class LiveSkillEngine:
 
         if not new_skills: return {}
 
-        # SCORE-BASIERTE MIKRO-JUSTIERUNGEN
         score_lower = str(score).lower()
         sets = re.findall(r'(\d+)-(\d+)', score_lower)
 
-        # 1. Glatter Sieg (Zusätzlicher Offensiv-Boost)
+        # 1. Glatter Sieg
         if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
             for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
                 if skill in new_skills: new_skills[skill] += 0.2
 
-        # 2. Harter Kampf Sieg (Krieger Boost)
+        # 2. Harter Kampf Sieg
         if is_winner and len(sets) >= 3:
             if 'mental' in new_skills: new_skills['mental'] += 0.3
             if 'stamina' in new_skills: new_skills['stamina'] += 0.3
@@ -1782,31 +1781,137 @@ class LiveSkillEngine:
         if not is_winner and lost_tiebreak:
              if 'mental' in new_skills: new_skills['mental'] -= 0.2
 
-        # 4. Physischer Einbruch (Retirement)
+        # 4. Physischer Einbruch
         if not is_winner and "ret." in score_lower:
              if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
              if 'speed' in new_skills: new_skills['speed'] -= 0.5
 
-        # OVERALL RATING NEU BERECHNEN
         new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
         new_skills['overall_rating'] = new_overall
 
-        # RUNDEN UND BEGRENZEN (max 99, min 1)
         for k, v in new_skills.items():
             new_skills[k] = max(1.0, min(99.0, round(v, 2)))
 
         return new_skills
 
 # =================================================================
+# 12. FANTASY SETTLEMENT ENGINE (THE NEW LOOP)
+# =================================================================
+class FantasySettlementEngine:
+    @staticmethod
+    def run_settlement():
+        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
+        now = datetime.now(timezone.utc)
+        
+        # 1. Check for Active weeks that need to be settled
+        res_gw = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
+        active_gws = res_gw.data or []
+        
+        for gw in active_gws:
+            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
+            end_of_week = deadline + timedelta(days=7) # Settled 1 week after draft lock
+            
+            if now > end_of_week:
+                log(f"📉 [FANTASY ENGINE] Deadline + 7 Tage erreicht. Settling Gameweek {gw['week_number']}...")
+                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
+                
+        # 2. Auto-Create next gameweek if needed
+        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
+        latest_gw = res_latest.data[0] if res_latest.data else None
+        
+        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
+            next_week_num = latest_gw['week_number'] + 1 if latest_gw else int(now.strftime("%V"))
+            next_year = latest_gw['year'] if latest_gw else now.year
+            if next_week_num > 52:
+                next_week_num = 1
+                next_year += 1
+                
+            # Next deadline is Next Monday 08:00 UTC
+            days_ahead = 0 - now.weekday()
+            if days_ahead <= 0: days_ahead += 7
+            next_monday = now + timedelta(days=days_ahead)
+            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
+            
+            new_gw = {
+                "week_number": next_week_num,
+                "year": next_year,
+                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "status": "active"
+            }
+            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
+            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
+
+    @staticmethod
+    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
+        gw_id = gw['id']
+        
+        lineups_res = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw_id).execute()
+        lineups = lineups_res.data or []
+        
+        if not lineups:
+            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
+            log(f"⏭️ [FANTASY ENGINE] Gameweek {gw['week_number']} geschlossen (Keine Aufstellungen).")
+            return
+
+        # Lade alle Matches, die in dieser Gameweek gespielt wurden
+        matches_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
+        matches = matches_res.data or []
+        
+        # Mapping von IDs zu Namen für die Suche
+        players_res = supabase.table("players").select("id, last_name, first_name").execute()
+        players_map = {p['id']: p for p in (players_res.data or [])}
+
+        for lineup in lineups:
+            total_pts = 0
+            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
+                if not pid or pid not in players_map: continue
+                p_name = players_map[pid]['last_name'].lower()
+                
+                # Finde Matches dieses Spielers
+                p_matches = [m for m in matches if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower()]
+                
+                for m in p_matches:
+                    won = p_name in str(m.get('actual_winner_name')).lower()
+                    is_p1 = p_name in str(m.get('player1_name')).lower()
+                    odds = float(m.get('odds1', 1.5)) if is_p1 else float(m.get('odds2', 1.5))
+                    
+                    if won:
+                        base = 50
+                        bonus = max(0, (odds - 1.5) * 20) # Underdog Bonus
+                        total_pts += (base + bonus)
+                    else:
+                        total_pts -= 10
+                        
+            total_pts = round(max(0, total_pts), 1)
+            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
+            
+            # Profil belohnen
+            uid = lineup['user_id']
+            xp_gain = int(total_pts * 10)
+            credits_gain = int(total_pts / 5) 
+            
+            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", uid).execute()
+            if prof_res.data:
+                old_xp = prof_res.data[0].get('total_xp', 0)
+                old_cr = prof_res.data[0].get('scouting_credits', 0)
+                supabase.table("fantasy_profiles").update({
+                    "total_xp": old_xp + xp_gain,
+                    "scouting_credits": old_cr + credits_gain
+                }).eq("user_id", uid).execute()
+        
+        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
+        log(f"✅ [FANTASY ENGINE] Gameweek {gw['week_number']} settled für {len(lineups)} Scouts. Points & Credits verteilt.")
+
+# =================================================================
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.2 (THE EXACT-BOUNDARY MATRIX + LIVE SKILLS) Starting...")
+    log(f"🚀 Neural Scout V144.3 (THE EXACT-BOUNDARY MATRIX + FANTASY ENGINE) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # 🔄 DB-LOAD VOR DEM AUDITOR (Damit update_past_results die IDs hat für das Live Skill Update)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: 
                 return
@@ -2042,20 +2147,16 @@ async def run_pipeline():
                     if db_match_id:
                         should_log_history = False
                         
-                        # 1. Bedingung: Es ist ein GANZ NEUES Match (Entry Odds)
                         if not existing_match:
                             should_log_history = True
                             log(f"      📍 [ENTRY ODDS] Logging initial odds for {n1} vs {n2}")
-                        # 2. Bedingung: Signal Locked oder Value Pick
                         elif is_signal_locked or hist_is_value: 
                             should_log_history = True
-                        # 3. Bedingung: JEDE Abweichung loggen (!= anstatt >= 0.01)
                         else:
                             try:
                                 old_o1 = to_float(existing_match.get('odds1'), 0)
                                 old_o2 = to_float(existing_match.get('odds2'), 0)
                                 
-                                # Präziser Float-Vergleich zur Verhinderung von Micro-Glitches
                                 if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
                                     should_log_history = True
                                     log(f"      📈 [ODDS MOVEMENT] {n1} vs {n2} | P1: {old_o1} -> {m['odds1']} | P2: {old_o2} -> {m['odds2']}")
@@ -2085,7 +2186,13 @@ async def run_pipeline():
 
         finally: 
             await browser.close()
-    
+            
+    # THE LOOP CLOSER: Trigger Fantasy Engine
+    try:
+        FantasySettlementEngine.run_settlement()
+    except Exception as e:
+        log(f"⚠️ FANTASY ENGINE ERROR: {e}")
+        
     log("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
