@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.1 - EXACT-BOUNDARY MATRIX + HYBRID SETTLEMENT)...")
+log("🔌 Initialisiere Neural Scout (V144.2 - EXACT-BOUNDARY MATRIX + LIVE SKILL ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -157,7 +157,6 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
-# L8 FIX 3.0: THE COMMA-SPLIT & TOXIC LEFTOVER GATEKEEPER
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None: report_ids = set()
     
@@ -987,7 +986,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
     return 0.5
 
 # L8 SOTA: THE RELIABLE RESULTS ENGINE (TE INTEGRATION)
-async def update_past_results(browser: Browser):
+async def update_past_results(browser: Browser, players: List[Dict]):
     log("🏆 The Auditor: Checking Real-Time Results & Scores via TE...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
@@ -1114,18 +1113,53 @@ async def update_past_results(browser: Browser):
                                 "actual_winner_name": winner,
                                 "score": final_score
                             }).eq("id", matched_pm['id']).execute()
+
+                            # ==========================================
+                            # LIVE SKILL & FORM UPDATE ENGINE
+                            # ==========================================
+                            log(f"🧠 Triggere Live Skill & Form Engine für das Match...")
                             
-                            # RE-PROFILING HOOK
-                            log(f"🔄 Triggering Real-Time Profile Refresh for {matched_pm['player1_name']} & {matched_pm['player2_name']}")
-                            for p_name in [matched_pm['player1_name'], matched_pm['player2_name']]:
-                                p_hist = await fetch_player_history_extended(p_name, limit=80)
-                                p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                                p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
+                            p1_name = matched_pm['player1_name']
+                            p2_name = matched_pm['player2_name']
+                            
+                            p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
+                            p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
+                            
+                            if p1_id and p2_id:
+                                try:
+                                    skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
+                                    db_skills = skills_res.data or []
+                                    
+                                    p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
+                                    p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
+                                    
+                                    odds1 = to_float(matched_pm.get('odds1', 1.85))
+                                    odds2 = to_float(matched_pm.get('odds2', 1.85))
+                                    
+                                    if p1_skills_db:
+                                        new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
+                                        if new_s1:
+                                            new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                            supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
+                                            
+                                    if p2_skills_db:
+                                        new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
+                                        if new_s2:
+                                            new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                            supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
+                                except Exception as se:
+                                    log(f"⚠️ Live Skill Update Error: {se}")
+
+                            # RE-PROFILING HOOK (Form & Surface Update)
+                            for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
+                                p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
+                                p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook)
+                                p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                                 
                                 supabase.table('players').update({
                                     'surface_ratings': p_profile,
                                     'form_rating': p_form 
-                                }).ilike('last_name', f"%{p_name}%").execute()
+                                }).ilike('last_name', f"%{p_name_hook}%").execute()
 
                             safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
@@ -1693,21 +1727,93 @@ class QuantumGamesSimulator:
         }
 
 # =================================================================
+# 11. LIVE SKILL ENGINE
+# =================================================================
+class LiveSkillEngine:
+    @staticmethod
+    def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
+        if not current_skills: return {}
+
+        base_shift = 0.0
+        
+        # ODD-BASIERTER EV-SHIFT (Generelles Upgrade/Downgrade auf ALLE Skills)
+        if is_winner:
+            if odds <= 1.30: base_shift = 0.1
+            elif odds <= 1.701: base_shift = 0.2
+            elif odds <= 1.850: base_shift = 0.3
+            elif odds <= 2.2501: base_shift = 0.4
+            else: base_shift = 0.6  # Krasser Upset -> Elite Boost
+        else:
+            if odds <= 1.30: base_shift = -0.8  # Massiver Choke als schwerer Favorit
+            elif odds <= 1.701: base_shift = -0.4
+            elif odds <= 1.850: base_shift = -0.3
+            elif odds <= 2.2501: base_shift = -0.2
+            else: base_shift = -0.1 # Als Außenseiter verloren -> Erwartbar
+
+        skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
+        new_skills = {}
+        for k in skill_fields:
+            if k in current_skills and current_skills[k] is not None:
+                new_skills[k] = float(current_skills[k]) + base_shift
+
+        if not new_skills: return {}
+
+        # SCORE-BASIERTE MIKRO-JUSTIERUNGEN
+        score_lower = str(score).lower()
+        sets = re.findall(r'(\d+)-(\d+)', score_lower)
+
+        # 1. Glatter Sieg (Zusätzlicher Offensiv-Boost)
+        if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
+            for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
+                if skill in new_skills: new_skills[skill] += 0.2
+
+        # 2. Harter Kampf Sieg (Krieger Boost)
+        if is_winner and len(sets) >= 3:
+            if 'mental' in new_skills: new_skills['mental'] += 0.3
+            if 'stamina' in new_skills: new_skills['stamina'] += 0.3
+
+        # 3. Verlorener Tiebreak Check
+        lost_tiebreak = False
+        for s in sets:
+            l, r = int(s[0]), int(s[1])
+            if is_player1 and l < r and r == 7: lost_tiebreak = True
+            if not is_player1 and r < l and l == 7: lost_tiebreak = True
+
+        if not is_winner and lost_tiebreak:
+             if 'mental' in new_skills: new_skills['mental'] -= 0.2
+
+        # 4. Physischer Einbruch (Retirement)
+        if not is_winner and "ret." in score_lower:
+             if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
+             if 'speed' in new_skills: new_skills['speed'] -= 0.5
+
+        # OVERALL RATING NEU BERECHNEN
+        new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
+        new_skills['overall_rating'] = new_overall
+
+        # RUNDEN UND BEGRENZEN (max 99, min 1)
+        for k, v in new_skills.items():
+            new_skills[k] = max(1.0, min(99.0, round(v, 2)))
+
+        return new_skills
+
+# =================================================================
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.1 (THE EXACT-BOUNDARY MATRIX) Starting...")
+    log(f"🚀 Neural Scout V144.2 (THE EXACT-BOUNDARY MATRIX + LIVE SKILLS) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # SOTA L8 FIX: TE SETTLEMENT ANSTELLE VON RAG AI
-            await update_past_results(browser)
-            
+            # 🔄 DB-LOAD VOR DEM AUDITOR (Damit update_past_results die IDs hat für das Live Skill Update)
             players, all_skills, all_reports, all_tournaments = await get_db_data()
             if not players: 
                 return
-                
+            
+            # SOTA L8 FIX: TE SETTLEMENT ANSTELLE VON RAG AI
+            await update_past_results(browser, players)
+            
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
             log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
