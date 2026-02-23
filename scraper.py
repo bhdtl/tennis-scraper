@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.3 - EXACT-BOUNDARY + FANTASY ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V144.4 - EXACT-BOUNDARY + UNIFIED CREDITS ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1884,21 +1884,38 @@ class FantasySettlementEngine:
                         total_pts -= 10
                         
             total_pts = round(max(0, total_pts), 1)
+            uid = lineup['user_id']
+            
+            # Speicher die verdienten Punkte für das Team
             supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
             
-            # Profil belohnen
-            uid = lineup['user_id']
+            # ========================================================
+            # PROFIL BELOHNEN: XP (fantasy_profiles) + CREDITS (profiles)
+            # ========================================================
             xp_gain = int(total_pts * 10)
             credits_gain = int(total_pts / 5) 
             
+            # 1. Update XP (Für das Leaderboard / Fantasy Profil)
             prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", uid).execute()
             if prof_res.data:
                 old_xp = prof_res.data[0].get('total_xp', 0)
-                old_cr = prof_res.data[0].get('scouting_credits', 0)
                 supabase.table("fantasy_profiles").update({
-                    "total_xp": old_xp + xp_gain,
-                    "scouting_credits": old_cr + credits_gain
+                    "total_xp": old_xp + xp_gain
                 }).eq("user_id", uid).execute()
+            else:
+                supabase.table("fantasy_profiles").insert({"user_id": uid, "total_xp": xp_gain}).execute()
+                
+            # 2. Update Echte Credits (Hauptprofil - 'profiles' Tabelle)
+            try:
+                main_prof_res = supabase.table("profiles").select("credits").eq("id", uid).execute()
+                if main_prof_res.data:
+                    old_credits = main_prof_res.data[0].get('credits') or 0
+                    supabase.table("profiles").update({
+                        "credits": old_credits + credits_gain
+                    }).eq("id", uid).execute()
+                    log(f"💰 {credits_gain} Echt-Credits an User {uid} (profiles) ausgeschüttet!")
+            except Exception as cred_err:
+                log(f"❌ Fehler beim Credit-Update für User {uid}: {cred_err}")
         
         supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
         log(f"✅ [FANTASY ENGINE] Gameweek {gw['week_number']} settled für {len(lineups)} Scouts. Points & Credits verteilt.")
@@ -1907,7 +1924,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.3 (THE EXACT-BOUNDARY MATRIX + FANTASY ENGINE) Starting...")
+    log(f"🚀 Neural Scout V144.4 (THE EXACT-BOUNDARY MATRIX + UNIFIED CREDITS ENGINE) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
