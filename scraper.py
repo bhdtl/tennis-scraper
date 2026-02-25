@@ -13,8 +13,7 @@ import time
 import csv
 import io
 import difflib 
-from datetime import datetime, timezone, timedelta, time as dt_time
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
 
@@ -36,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.5 - ORIGINAL PIPELINE + SOTA TIMING)...")
+log("🔌 Initialisiere Neural Scout (V144.4 - EXACT-BOUNDARY + UNIFIED CREDITS ENGINE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -422,7 +421,7 @@ class MomentumV2Engine:
                 history_log.append("W")
             else:
                 if odds < 1.30: 
-                    impact = -0.6     
+                    impact = -0.6      
                 elif odds < 1.50: 
                     impact = -0.5
                 elif odds <= 2.20: 
@@ -688,55 +687,72 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
             return None
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER + SOTA TIMING)
+# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER)
 # =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
-    """ SOTA FIX: Scannt von unten nach oben nach dem exakten 1win Muster """
-    for l in reversed(lines_slice):
-        # Ziel-Format: "19:00 • 25.02.2026"
-        m = re.search(r'\b(\d{1,2}:\d{2})\s*\W+\s*(\d{1,2}\.\d{1,2}\.\d{4})\b', l)
-        if m:
-            return f"{m.group(1)} {m.group(2)}" # Returnt: "19:00 25.02.2026"
+    full_text = " ".join(lines_slice)
+    
+    # SOTA 1win Extractor: Sucht direkt nach dem Format "17:00 • 25.2.2026" oder "17:00 . 25.2.2026"
+    sota_match = re.search(r'(\d{1,2}:\d{2})\s*[•\.\-|]\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', full_text)
+    if sota_match:
+        return f"{sota_match.group(2)} {sota_match.group(1)}"
+
+    # Fallback Old Logic
+    date_patterns = [
+        r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
+        r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
+        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b',
+        r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b'
+    ]
+    time_patterns = [r'\b\d{1,2}:\d{2}\b']
+    
+    found_date = ""
+    found_time = "00:00"
+    
+    for l in lines_slice:
+        for dp in date_patterns:
+            m = re.search(dp, l, re.IGNORECASE)
+            if m: found_date = m.group(0)
+        for tp in time_patterns:
+            m = re.search(tp, l)
+            if m: found_time = m.group(0)
             
-        # Fallback (lose in der gleichen Zeile)
-        d_m = re.search(r'\b(\d{1,2}\.\d{1,2}\.\d{4})\b', l)
-        t_m = re.search(r'\b(\d{1,2}:\d{2})\b', l)
-        if d_m and t_m:
-            return f"{t_m.group(1)} {d_m.group(1)}"
-            
-    return "00:00"
+    if found_date:
+        return f"{found_date} {found_time}"
+        
+    return found_time
 
 def parse_time_to_iso(raw_time_str: str) -> str:
-    """ SOTA FIX: Konvertiert das lokale Format absolut sicher in UTC für Supabase """
     if not raw_time_str or raw_time_str == "00:00":
         return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
         
     try:
         t_match = re.search(r'(\d{1,2}):(\d{2})', raw_time_str)
-        d_match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', raw_time_str)
+        # Erweitert auf \d{2,4} für robustere Jahre, da oft das Jahrhundert fehlt
+        d_match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{2,4})', raw_time_str)
         
         h, m_min = t_match.groups() if t_match else ("00", "00")
         
         if d_match:
             day, month, year = d_match.groups()
-            # Hier greift ZoneInfo: Das 1win Frontend läuft in Berlin/CET!
-            local_tz = ZoneInfo("Europe/Berlin")
-            dt = datetime(int(year), int(month), int(day), int(h), int(m_min), tzinfo=local_tz)
-            # Fehlerfreie Konvertierung in absolutes UTC für Supabase
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            y = int(year)
+            if y < 100: 
+                y += 2000 # Korrigiert z.B. 26 zu 2026
+            dt = datetime(y, int(month), int(day), int(h), int(m_min), tzinfo=timezone.utc)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif t_match:
-            now = datetime.now(ZoneInfo("Europe/Berlin"))
+            now = datetime.now(timezone.utc)
             dt = now.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
             if dt < now - timedelta(hours=3): 
                 dt += timedelta(days=1)
-            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except:
         pass
         
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.5 - ORIGINAL PIPELINE)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.1)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -764,7 +780,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         await page.mouse.move(960, 540)
         await asyncio.sleep(1.5)
         
-        # 1:1 DER ALTE SCROLL LOOP (Damit alle 25+ Matches kommen)
         for scroll_step in range(80): 
             try:
                 await page.evaluate("""
@@ -821,7 +836,6 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if "sieger" not in line_norm and "winner" not in line_norm:
                 current_tour = line
         
-        # 1:1 DIE ALTE EXTRAKTION
         if line_norm == "sieger" or line_norm == "winner":
             up_slice = unified_lines[max(0, i-6):i]
             potential_names = []
@@ -843,10 +857,8 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 match_key = tuple(sorted([p1_raw, p2_raw]))
                 if match_key in seen_matches:
                     continue
-                
-                # SOTA FIX: Wir erweitern NUR den Radius für das Zeit-Array (i-12),
-                # damit wir das Datum/Uhrzeit sicher abfangen. Die Namenssuche bleibt unberührt.
-                time_slice = unified_lines[max(0, i-12):i]
+                    
+                time_slice = unified_lines[max(0, i-5):i]
                 extracted_time = extract_time_context(time_slice)
                 
                 odds_slice = unified_lines[i+1 : min(i+12, len(unified_lines))]
@@ -1922,7 +1934,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.5 (ORIGINAL PIPELINE + SOTA TIMING) Starting...")
+    log(f"🚀 Neural Scout V144.4 (THE EXACT-BOUNDARY MATRIX + UNIFIED CREDITS ENGINE) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2120,41 +2132,43 @@ async def run_pipeline():
                             
                             ai_text_final = f"{ai.get('ai_text', '').replace('json', '').strip()} {value_tag} [🎲 SIM: {sim_result['predicted_line']} Games]"
                             
-                        data = {
-                            "player1_name": n1, 
-                            "player2_name": n2, 
-                            "tournament": matched_tour_name,
-                            "ai_fair_odds1": fair1, 
-                            "ai_fair_odds2": fair2,
-                            "ai_analysis_text": ai_text_final, 
-                            "games_prediction": sim_result, 
-                            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "match_time": parse_time_to_iso(m['time']) if m['time'] else f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z", 
-                            "odds1": m['odds1'], 
-                            "odds2": m['odds2']
-                        }
-                        
-                        hist_fair1 = fair1
-                        hist_fair2 = fair2
-                        
-                        if db_match_id: 
-                            try:
-                                supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
-                            except Exception as up_e:
-                                log(f"❌ SUPABASE UPDATE ERROR bei {n1} vs {n2}: {up_e}")
-                        else:
-                            op1 = to_float(existing_match.get('opening_odds1') if existing_match else 0, 0)
-                            if op1 <= 1.01 and m['odds1'] > 1.01: 
-                                data["opening_odds1"] = m['odds1']
-                                data["opening_odds2"] = m['odds2']
-                                
-                            try:
-                                res_ins = supabase.table("market_odds").insert(data).execute()
-                                if res_ins.data: 
-                                    db_match_id = res_ins.data[0]['id']
-                                log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
-                            except Exception as ins_e:
-                                log(f"❌ SUPABASE INSERT ERROR bei {n1} vs {n2}: {ins_e}")
+                            final_time_str = parse_time_to_iso(m['time'])
+
+                            data = {
+                                "player1_name": n1, 
+                                "player2_name": n2, 
+                                "tournament": matched_tour_name,
+                                "ai_fair_odds1": fair1, 
+                                "ai_fair_odds2": fair2,
+                                "ai_analysis_text": ai_text_final, 
+                                "games_prediction": sim_result, 
+                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "match_time": final_time_str, 
+                                "odds1": m['odds1'], 
+                                "odds2": m['odds2']
+                            }
+                            
+                            hist_fair1 = fair1
+                            hist_fair2 = fair2
+                            
+                            if db_match_id: 
+                                try:
+                                    supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                except Exception as up_e:
+                                    log(f"❌ SUPABASE UPDATE ERROR bei {n1} vs {n2}: {up_e}")
+                            else:
+                                op1 = to_float(existing_match.get('opening_odds1') if existing_match else 0, 0)
+                                if op1 <= 1.01 and m['odds1'] > 1.01: 
+                                    data["opening_odds1"] = m['odds1']
+                                    data["opening_odds2"] = m['odds2']
+                                    
+                                try:
+                                    res_ins = supabase.table("market_odds").insert(data).execute()
+                                    if res_ins.data: 
+                                        db_match_id = res_ins.data[0]['id']
+                                    log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
+                                except Exception as ins_e:
+                                    log(f"❌ SUPABASE INSERT ERROR bei {n1} vs {n2}: {ins_e}")
 
                     # L8 SOTA FIX: CATCH-ALL ODDS MOVEMENT TRACKING
                     if db_match_id:
