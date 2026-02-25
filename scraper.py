@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V145.1 - EXACT BOUNDARY REVERSE-SCAN)...")
+log("🔌 Initialisiere Neural Scout (V144.5 - ORIGINAL PIPELINE + SOTA TIMING)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -688,15 +688,30 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
             return None
 
 # =================================================================
-# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER & REVERSE-SCAN TIMING)
+# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER + SOTA TIMING)
 # =================================================================
+def extract_time_context(lines_slice: List[str]) -> str:
+    """ SOTA FIX: Scannt von unten nach oben nach dem exakten 1win Muster """
+    for l in reversed(lines_slice):
+        # Ziel-Format: "19:00 • 25.02.2026"
+        m = re.search(r'\b(\d{1,2}:\d{2})\s*\W+\s*(\d{1,2}\.\d{1,2}\.\d{4})\b', l)
+        if m:
+            return f"{m.group(1)} {m.group(2)}" # Returnt: "19:00 25.02.2026"
+            
+        # Fallback (lose in der gleichen Zeile)
+        d_m = re.search(r'\b(\d{1,2}\.\d{1,2}\.\d{4})\b', l)
+        t_m = re.search(r'\b(\d{1,2}:\d{2})\b', l)
+        if d_m and t_m:
+            return f"{t_m.group(1)} {d_m.group(1)}"
+            
+    return "00:00"
+
 def parse_time_to_iso(raw_time_str: str) -> str:
-    """ SOTA: Konvertiert das 1win CET Format exakt in UTC für Supabase """
+    """ SOTA FIX: Konvertiert das lokale Format absolut sicher in UTC für Supabase """
     if not raw_time_str or raw_time_str == "00:00":
         return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
         
     try:
-        # Erwartetes Format: "25.02.2026 19:00"
         t_match = re.search(r'(\d{1,2}):(\d{2})', raw_time_str)
         d_match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{4})', raw_time_str)
         
@@ -704,10 +719,10 @@ def parse_time_to_iso(raw_time_str: str) -> str:
         
         if d_match:
             day, month, year = d_match.groups()
-            # 1win zeigt Zeiten im lokalen EU-Format
+            # Hier greift ZoneInfo: Das 1win Frontend läuft in Berlin/CET!
             local_tz = ZoneInfo("Europe/Berlin")
             dt = datetime(int(year), int(month), int(day), int(h), int(m_min), tzinfo=local_tz)
-            # Konvertiere sicher nach UTC
+            # Fehlerfreie Konvertierung in absolutes UTC für Supabase
             return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         elif t_match:
             now = datetime.now(ZoneInfo("Europe/Berlin"))
@@ -721,7 +736,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
     return f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z"
 
 async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[Dict]) -> List[Dict]:
-    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V145.1)...")
+    log("🚀 [1WIN GHOST] Starte SOTA Database Surgeon (V144.5 - ORIGINAL PIPELINE)...")
     
     context = await browser.new_context(
         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -749,6 +764,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
         await page.mouse.move(960, 540)
         await asyncio.sleep(1.5)
         
+        # 1:1 DER ALTE SCROLL LOOP (Damit alle 25+ Matches kommen)
         for scroll_step in range(80): 
             try:
                 await page.evaluate("""
@@ -793,20 +809,19 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
             if not unified_lines or unified_lines[-1] != line:
                 unified_lines.append(line)
 
-    log(f"🧠 Starte Exact Boundary Reverse-Scan Extraktion auf {len(unified_lines)} Zeilen...")
+    log(f"🧠 Starte Dynamic Anchor Extraktion auf {len(unified_lines)} Zeilen...")
     
     current_tour = "Unknown"
-
+    
     for i in range(len(unified_lines)):
         line = unified_lines[i]
         line_norm = normalize_text(line).lower()
         
-        # 1. Update Tour Context
         if len(line) < 100 and any(kw in line_norm for kw in ['atp', 'wta', 'open', 'masters', 'tour', 'challenger', 'itf', 'utr']):
             if "sieger" not in line_norm and "winner" not in line_norm:
                 current_tour = line
         
-        # 2. Match Block Processing
+        # 1:1 DIE ALTE EXTRAKTION
         if line_norm == "sieger" or line_norm == "winner":
             up_slice = unified_lines[max(0, i-6):i]
             potential_names = []
@@ -828,27 +843,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                 match_key = tuple(sorted([p1_raw, p2_raw]))
                 if match_key in seen_matches:
                     continue
-                    
-                # 🔄 SOTA FIX: REVERSE SCAN. Wir suchen exakt das Muster "19:00 • 25.02.2026" von i aufwärts
-                extracted_time = "00:00"
-                # Wir scannen die letzten 15 Zeilen vor dem Wort "Winner", um das 1win Format sicher abzufangen
-                for j in range(i - 1, max(-1, i - 15), -1):
-                    line_j = unified_lines[j]
-                    
-                    # Sucht exakt nach "19:00 • 25.02.2026" (erlaubt beliebige Zeichen als Trenner)
-                    m = re.search(r'\b(\d{1,2}:\d{2})\s*\W+\s*(\d{1,2}\.\d{1,2}\.\d{4})\b', line_j)
-                    if m:
-                        extracted_time = f"{m.group(2)} {m.group(1)}" # Konvertiert zu "25.02.2026 19:00"
-                        break
-                    
-                    # Fallback falls es aus UI-Gründen ohne Bullet in einer Zeile klebt
-                    d_m = re.search(r'\b(\d{1,2}\.\d{1,2}\.\d{4})\b', line_j)
-                    t_m = re.search(r'\b(\d{1,2}:\d{2})\b', line_j)
-                    if d_m and t_m:
-                        extracted_time = f"{d_m.group(1)} {t_m.group(1)}"
-                        break
-                        
-                final_iso_time = parse_time_to_iso(extracted_time)
+                
+                # SOTA FIX: Wir erweitern NUR den Radius für das Zeit-Array (i-12),
+                # damit wir das Datum/Uhrzeit sicher abfangen. Die Namenssuche bleibt unberührt.
+                time_slice = unified_lines[max(0, i-12):i]
+                extracted_time = extract_time_context(time_slice)
                 
                 odds_slice = unified_lines[i+1 : min(i+12, len(unified_lines))]
                 floats = []
@@ -874,7 +873,7 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
                                 "p1_raw": p1_raw, 
                                 "p2_raw": p2_raw,
                                 "tour": clean_tournament_name(current_tour),
-                                "time": final_iso_time, 
+                                "time": extracted_time, 
                                 "odds1": o1, 
                                 "odds2": o2,
                                 "handicap_line": None, "handicap_odds1": 0, "handicap_odds2": 0,
@@ -1923,7 +1922,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V145.1 (THE EXACT-BOUNDARY MATRIX + UNIFIED CREDITS ENGINE) Starting...")
+    log(f"🚀 Neural Scout V144.5 (ORIGINAL PIPELINE + SOTA TIMING) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2017,8 +2016,8 @@ async def run_pipeline():
                     if is_signal_locked:
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
                         update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
-                        if m['time']: 
-                            update_data["match_time"] = m['time']  # ISO wurde bereits vom Scraper geliefert!
+                        if m['time'] and m['time'] != "00:00": 
+                            update_data["match_time"] = parse_time_to_iso(m['time'])
                         
                         op1 = to_float(existing_match.get('opening_odds1'), 0)
                         
@@ -2130,7 +2129,7 @@ async def run_pipeline():
                             "ai_analysis_text": ai_text_final, 
                             "games_prediction": sim_result, 
                             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                            "match_time": m['time'], # 🔄 SOTA FIX: ISO kommt perfekt vom Scraper
+                            "match_time": parse_time_to_iso(m['time']) if m['time'] else f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}T00:00:00Z", 
                             "odds1": m['odds1'], 
                             "odds2": m['odds2']
                         }
