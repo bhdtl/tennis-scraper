@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.4 - EXACT-BOUNDARY + UNIFIED CREDITS ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V144.5 - HYBRID TIME ENGINE + UNIFIED CREDITS)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -692,12 +692,12 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
 def extract_time_context(lines_slice: List[str]) -> str:
     full_text = " ".join(lines_slice)
     
-    # SOTA 1win Extractor: Sucht direkt nach dem Format "17:00 • 25.2.2026" oder "17:00 . 25.2.2026"
+    # 1. Prio: SOTA Methode für das exakte "Zeit • Datum" Format
     sota_match = re.search(r'(\d{1,2}:\d{2})\s*[•\.\-|]\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', full_text)
     if sota_match:
         return f"{sota_match.group(2)} {sota_match.group(1)}"
 
-    # Fallback Old Logic
+    # 2. Prio: HYBRID Fallback für "Heute", "Morgen" oder fehlende Trennzeichen
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
         r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
@@ -712,10 +712,12 @@ def extract_time_context(lines_slice: List[str]) -> str:
     for l in lines_slice:
         for dp in date_patterns:
             m = re.search(dp, l, re.IGNORECASE)
-            if m: found_date = m.group(0)
+            if m: 
+                found_date = m.group(0)
         for tp in time_patterns:
             m = re.search(tp, l)
-            if m: found_time = m.group(0)
+            if m: 
+                found_time = m.group(0)
             
     if found_date:
         return f"{found_date} {found_time}"
@@ -728,7 +730,6 @@ def parse_time_to_iso(raw_time_str: str) -> str:
         
     try:
         t_match = re.search(r'(\d{1,2}):(\d{2})', raw_time_str)
-        # Erweitert auf \d{2,4} für robustere Jahre, da oft das Jahrhundert fehlt
         d_match = re.search(r'(\d{1,2})\.(\d{1,2})\.(\d{2,4})', raw_time_str)
         
         h, m_min = t_match.groups() if t_match else ("00", "00")
@@ -737,7 +738,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
             day, month, year = d_match.groups()
             y = int(year)
             if y < 100: 
-                y += 2000 # Korrigiert z.B. 26 zu 2026
+                y += 2000 # Korrigiert 2-stellige Jahre (26 -> 2026)
             dt = datetime(y, int(month), int(day), int(h), int(m_min), tzinfo=timezone.utc)
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif t_match:
@@ -1934,7 +1935,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.4 (THE EXACT-BOUNDARY MATRIX + UNIFIED CREDITS ENGINE) Starting...")
+    log(f"🚀 Neural Scout V144.5 (HYBRID TIME ENGINE + UNIFIED CREDITS) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
