@@ -35,7 +35,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.5 - HYBRID TIME ENGINE + UNIFIED CREDITS)...")
+log("🔌 Initialisiere Neural Scout (V144.7 - HYBRID TIME + EDGE MONTE CARLO + FREE TIER OPTIMIZED)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -48,7 +48,7 @@ if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# SOTA Model Selection
+# SOTA Model Selection - Free Tier Optimized
 MODEL_NAME = 'llama-3.1-8b-instant'
 
 # Global Caches
@@ -599,70 +599,56 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. TACTICAL COMPUTER
+# 5. MONTE CARLO & TACTICAL EDGE ENGINE (NEW)
 # =================================================================
-class TacticalComputer:
+class MonteCarloEngine:
+    ALGO_WEIGHTS = {
+        "SKILL": 0.50,
+        "FORM": 0.35,
+        "SURFACE": 0.15
+    }
+
     @staticmethod
-    def calculate_matchup_math(
-        s1: Dict, s2: Dict, 
-        f1_score: float, f2_score: float, 
-        fatigue1_txt: str, fatigue2_txt: str,
-        bsi: float, surface: str
-    ) -> Dict[str, Any]:
-        score = 5.5
-        log_reasons = []
-
-        skill1_avg = sum(s1.values()) / len(s1) if s1 else 50
-        skill2_avg = sum(s2.values()) / len(s2) if s2 else 50
-        diff = skill1_avg - skill2_avg
-        skill_impact = (diff / 2) * 0.1
-        score += skill_impact
+    def run_simulation(skillA: float, formA: float, surfaceA: float, 
+                       skillB: float, formB: float, surfaceB: float, 
+                       iterations: int = 1000) -> Dict[str, float]:
         
-        if abs(skill_impact) > 0.3: 
-            log_reasons.append(f"Skill Gap: {'P1' if skill_impact > 0 else 'P2'} superior (+{abs(diff):.1f})")
-
-        form_diff = f1_score - f2_score
-        form_impact = form_diff * 0.2
-        score += form_impact
+        baseA = (skillA / 10) * MonteCarloEngine.ALGO_WEIGHTS["SKILL"] + formA * MonteCarloEngine.ALGO_WEIGHTS["FORM"] + surfaceA * MonteCarloEngine.ALGO_WEIGHTS["SURFACE"]
+        baseB = (skillB / 10) * MonteCarloEngine.ALGO_WEIGHTS["SKILL"] + formB * MonteCarloEngine.ALGO_WEIGHTS["FORM"] + surfaceB * MonteCarloEngine.ALGO_WEIGHTS["SURFACE"]
         
-        if abs(form_impact) > 0.4: 
-            log_reasons.append(f"Form: {'P1' if form_impact > 0 else 'P2'} hotter")
-
-        p1_power = s1.get('power', 50) + s1.get('serve', 50)
-        p2_power = s2.get('power', 50) + s2.get('serve', 50)
-        
-        if bsi >= 7.5: 
-            if p1_power > (p2_power + 10):
-                score += 0.5
-                log_reasons.append("P1 Big Serve advantage on fast court")
-            elif p2_power > (p1_power + 10):
-                score -= 0.5
-                log_reasons.append("P2 Big Serve advantage on fast court")
-        elif bsi <= 4.0: 
-            p1_grind = s1.get('stamina', 50) + s1.get('speed', 50)
-            p2_grind = s2.get('stamina', 50) + s2.get('speed', 50)
-            if p1_grind > (p2_grind + 10):
-                score += 0.5
-                log_reasons.append("P1 Grinder advantage on slow court")
-            elif p2_grind > (p1_grind + 10):
-                score -= 0.5
-                log_reasons.append("P2 Grinder advantage on slow court")
-
-        if "Heavy" in fatigue2_txt or "CRITICAL" in fatigue2_txt:
-            score += 0.8
-            log_reasons.append("P2 Fatigued")
+        # Fish out of water penalty
+        if surfaceA < 4.5:
+            baseA -= (4.5 - surfaceA) * 1.5
+        if surfaceB < 4.5:
+            baseB -= (4.5 - surfaceB) * 1.5
             
-        if "Heavy" in fatigue1_txt or "CRITICAL" in fatigue1_txt:
-            score -= 0.8
-            log_reasons.append("P1 Fatigued")
-
-        final_score = max(1.0, min(10.0, score))
-        return {"calculated_score": round(final_score, 2), "reasons": log_reasons, "skill_diff": round(diff, 1)}
+        variance = 1.2
+        winsA = 0
+        winsB = 0
+        
+        for _ in range(iterations):
+            simA = random.gauss(baseA, variance)
+            simB = random.gauss(baseB, variance)
+            
+            if simA > simB:
+                winsA += 1
+            else:
+                winsB += 1
+                
+        probA = (winsA / iterations) * 100
+        probB = (winsB / iterations) * 100
+        
+        return {
+            "probA": round(probA, 1),
+            "probB": round(probB, 1),
+            "scoreA": baseA,
+            "scoreB": baseB
+        }
 
 # =================================================================
 # 6. GROQ ENGINE
 # =================================================================
-async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> Optional[str]:
+async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -679,11 +665,13 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.0) -> 
     }
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.post(url, headers=headers, json=payload, timeout=30.0)
+            response = await client.post(url, headers=headers, json=payload, timeout=45.0)
             if response.status_code != 200: 
+                log(f"⚠️ Groq API Error: {response.status_code} - {response.text}")
                 return None
             return response.json()['choices'][0]['message']['content']
-        except: 
+        except Exception as e: 
+            log(f"⚠️ Groq Exception: {e}")
             return None
 
 # =================================================================
@@ -1306,10 +1294,10 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        players = supabase.table("players").select("").execute().data
-        skills = supabase.table("player_skills").select("").execute().data
-        reports = supabase.table("scouting_reports").select("").execute().data
-        tournaments = supabase.table("tournaments").select("").execute().data
+        players = supabase.table("players").select("*").execute().data
+        skills = supabase.table("player_skills").select("*").execute().data
+        reports = supabase.table("scouting_reports").select("*").execute().data
+        tournaments = supabase.table("tournaments").select("*").execute().data
         
         if tournaments:
             for t in tournaments:
@@ -1336,9 +1324,11 @@ async def get_db_data():
                         'power': to_float(entry.get('power')),
                         'forehand': to_float(entry.get('forehand')), 
                         'backhand': to_float(entry.get('backhand')),
+                        'volley': to_float(entry.get('volley')),
                         'speed': to_float(entry.get('speed')), 
                         'stamina': to_float(entry.get('stamina')),
-                        'mental': to_float(entry.get('mental'))
+                        'mental': to_float(entry.get('mental')),
+                        'overall_rating': to_float(entry.get('overall_rating', 50))
                     }
                     
         return players or [], clean_skills, reports or [], tournaments or []
@@ -1379,8 +1369,7 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True}
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta, market_odds1, market_odds2):
-    ai_meta = ensure_dict(ai_meta)
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2):
     n1 = get_last_name(p1_name)
     n2 = get_last_name(p2_name)
     tour = "ATP"
@@ -1411,31 +1400,9 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
-    m1 = to_float(ai_meta.get('p1_tactical_score', 5))
-    m2 = to_float(ai_meta.get('p2_tactical_score', 5))
-    prob_matchup = sigmoid_prob(m1 - m2, sensitivity=0.8)
-    
-    def get_offense(s): 
-        return s.get('serve', 50) + s.get('power', 50)
-        
-    c1_score = get_offense(s1)
-    c2_score = get_offense(s2)
-    
-    prob_bsi = sigmoid_prob(c1_score - c2_score, sensitivity=0.12)
-    prob_skills = sigmoid_prob(sum(s1.values()) - sum(s2.values()), sensitivity=0.08)
-    
-    f1 = to_float(ai_meta.get('p1_form_score', 5))
-    f2 = to_float(ai_meta.get('p2_form_score', 5))
-    prob_form = sigmoid_prob(f1 - f2, sensitivity=0.5)
-
-    weights = [0.20, 0.15, 0.15, 0.40, 0.10] 
-    
-    prob_alpha = (prob_matchup * weights[0]) + (prob_bsi * weights[1]) + (prob_skills * weights[2]) + (prob_elo * weights[3]) + (prob_form * weights[4])
-    
-    if prob_alpha > 0.60: 
-        prob_alpha = min(prob_alpha * 1.05, 0.98)
-    elif prob_alpha < 0.40: 
-        prob_alpha = max(prob_alpha * 0.95, 0.02)
+    # SOTA INTEGRATION: Blend Elo Model with the new Monte Carlo Probabilities
+    mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
+    prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
     
     prob_market = 0.5
     if market_odds1 > 1 and market_odds2 > 1:
@@ -1443,7 +1410,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, ai_meta,
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
         
-    model_trust_factor = 0.25
+    model_trust_factor = 0.35 # Slightly higher trust now that we have MC
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
@@ -1593,63 +1560,101 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         
     return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0], tour
 
-async def analyze_match_with_ai(p1, p2, s1, s2, r1, r2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile):
+def format_skills(s: Dict) -> str:
+    if not s: 
+        return "No granular skill data."
+    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}"
+
+async def analyze_match_with_ai(p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
-    
-    tactical_data = TacticalComputer.calculate_matchup_math(s1, s2, form1_data['score'], form2_data['score'], fatigueA, fatigueB, bsi, surface)
-    score = tactical_data['calculated_score']
-    reasons_bullet_points = "\n- ".join(tactical_data['reasons'])
     
     if weather_data:
         weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}"
     else:
-        weather_str = "Weather: Unknown"
+        weather_str = "Weather: Neutral/No Data."
         
     current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
-    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
-    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.5)
-    surface_context = f"SURFACE SPECIALTIES: P1 Rating {p1_s_rating} on {current_surf_key}. P2 Rating {p2_s_rating} on {current_surf_key}."
+    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+    
+    scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available for Player A."
+    scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available for Player B."
+    
+    validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
+    
+    aWins = mc_results['probA'] > mc_results['probB']
+    predictedMCWinner = p1['last_name'] if aWins else p2['last_name']
+    predictedMCLoser = p2['last_name'] if aWins else p1['last_name']
+    finalProb = f"{mc_results['probA']}%" if aWins else f"{mc_results['probB']}%"
 
     prompt = f"""
-    ROLE: Elite Tennis Analyst.
-    TASK: Write a sharp analysis based on these CALCULATED FACTS.
+    You are an elite Senior Tennis Analyst (Style: Gil Gross). 
+    Your analysis must be grounded EXCLUSIVELY in the provided technical data and scouting reports.
     
-    FACTS (TRUST THESE):
-    - Matchup Score: {score}/10 ( >5.5 favors {p1['last_name']}, <5.5 favors {p2['last_name']})
-    - Key Drivers: 
-      - {reasons_bullet_points if reasons_bullet_points else "Balanced stats."}
-    - Player A ({p1['last_name']}): Form {form1_data['text']}, Fatigue: {fatigueA}
-    - Player B ({p2['last_name']}): Form {form2_data['text']}, Fatigue: {fatigueB}
-    - Conditions: {surface} (Speed {bsi}/10). {weather_str}
-    - {surface_context}
+    *** DATA GROUNDING (SOURCE OF TRUTH) ***
+    Player A ({p1['last_name']}):
+    - Style: {p1.get('play_style', 'Unknown')}
+    - Form / Momentum: {form1_data['text']}
+    - Surface Rating ({current_surf_key}): {p1_s_rating}/10
+    - Granular Skills: {format_skills(s1)}
+    - Scouting Report: {scoutA}
+    - Fatigue: {fatigueA}
+    
+    Player B ({p2['last_name']}):
+    - Style: {p2.get('play_style', 'Unknown')}
+    - Form / Momentum: {form2_data['text']}
+    - Surface Rating ({current_surf_key}): {p2_s_rating}/10
+    - Granular Skills: {format_skills(s2)}
+    - Scouting Report: {scoutB}
+    - Fatigue: {fatigueB}
+    
+    Match Conditions:
+    - Surface: {surface} (BSI: {bsi})
+    - Court Notes: {validCourtNotes}
+    - {weather_str}
 
-    OUTPUT JSON ONLY:
-    {{ 
-        "p1_tactical_score": {score}, 
-        "p2_tactical_score": {10.0 - score}, 
-        "ai_text": "One key sentence summary + 3 bullet points explanations. Mention surface rating if relevant.", 
-        "p1_win_sentiment": {score / 10.0} 
+    *** INTERNAL MATCHUP DATA (FOR LOGIC ONLY, DO NOT OUTPUT THESE NUMBERS) ***
+    Winner: {predictedMCWinner} (Internal Win Probability: {finalProb})
+    
+    *** CRITICAL DIRECTIVES (MUST OBEY) ***
+    1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages (%), numerical ratings (e.g., 8/10), or skill points in 'prediction_text' and 'key_factor'.
+    2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics". Explain how the specific "Court Notes" (bounce height, court speed) amplify a player's strengths or expose their weaknesses.
+    3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses'.
+    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions.
+    5. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
+    
+    OUTPUT JSON:
+    {{
+        "winner_prediction": "{predictedMCWinner}",
+        "key_factor": "One sharp tactical sentence focusing on the primary technical mismatch (NO NUMBERS).",
+        "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.",
+        "tactical_bullets": ["Tactic 1 based on report", "Tactic 2 based on report", "Tactic 3 based on report"]
     }}
     """
     
     res = await call_groq(prompt)
-    default = {'p1_tactical_score': score, 'p2_tactical_score': 10.0-score, 'ai_text': 'Analysis unavailable.', 'p1_win_sentiment': 0.5}
+    default_text = f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}."
     
     if not res: 
-        return default
+        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
         
     try:
         cleaned = res.replace("json", "").replace("```", "").strip()
         data = ensure_dict(json.loads(cleaned))
-        data['p1_tactical_score'] = score
-        data['p2_tactical_score'] = 10.0 - score
-        return data
+        
+        bullets = "\n".join([f"- {b}" for b in data.get('tactical_bullets', [])])
+        formatted_text = f"🔑 {data.get('key_factor', '')}\n\n📝 {data.get('prediction_text', '')}\n\n🎯 Tactical Keys:\n{bullets}"
+        
+        return {
+            'ai_text': formatted_text.strip(),
+            'mc_prob_a': mc_results['probA']
+        }
     except: 
-        return default
+        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
 
 # =================================================================
-# 10. QUANTUM GAMES SIMULATOR
+# 10. QUANTUM GAMES SIMULATOR (OVER/UNDER)
 # =================================================================
 class QuantumGamesSimulator:
     @staticmethod
@@ -1747,7 +1752,6 @@ class LiveSkillEngine:
 
         base_shift = 0.0
         
-        # ODD-BASIERTER EV-SHIFT
         if is_winner:
             if odds <= 1.30: base_shift = 0.1
             elif odds <= 1.701: base_shift = 0.2
@@ -1772,17 +1776,14 @@ class LiveSkillEngine:
         score_lower = str(score).lower()
         sets = re.findall(r'(\d+)-(\d+)', score_lower)
 
-        # 1. Glatter Sieg
         if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
             for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
                 if skill in new_skills: new_skills[skill] += 0.2
 
-        # 2. Harter Kampf Sieg
         if is_winner and len(sets) >= 3:
             if 'mental' in new_skills: new_skills['mental'] += 0.3
             if 'stamina' in new_skills: new_skills['stamina'] += 0.3
 
-        # 3. Verlorener Tiebreak Check
         lost_tiebreak = False
         for s in sets:
             l, r = int(s[0]), int(s[1])
@@ -1792,7 +1793,6 @@ class LiveSkillEngine:
         if not is_winner and lost_tiebreak:
              if 'mental' in new_skills: new_skills['mental'] -= 0.2
 
-        # 4. Physischer Einbruch
         if not is_winner and "ret." in score_lower:
              if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
              if 'speed' in new_skills: new_skills['speed'] -= 0.5
@@ -1806,7 +1806,7 @@ class LiveSkillEngine:
         return new_skills
 
 # =================================================================
-# 12. FANTASY SETTLEMENT ENGINE (THE NEW LOOP)
+# 12. FANTASY SETTLEMENT ENGINE
 # =================================================================
 class FantasySettlementEngine:
     @staticmethod
@@ -1814,19 +1814,17 @@ class FantasySettlementEngine:
         log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
         now = datetime.now(timezone.utc)
         
-        # 1. Check for Active weeks that need to be settled
         res_gw = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
         active_gws = res_gw.data or []
         
         for gw in active_gws:
             deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
-            end_of_week = deadline + timedelta(days=7) # Settled 1 week after draft lock
+            end_of_week = deadline + timedelta(days=7) 
             
             if now > end_of_week:
                 log(f"📉 [FANTASY ENGINE] Deadline + 7 Tage erreicht. Settling Gameweek {gw['week_number']}...")
                 FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
                 
-        # 2. Auto-Create next gameweek if needed
         res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
         latest_gw = res_latest.data[0] if res_latest.data else None
         
@@ -1837,7 +1835,6 @@ class FantasySettlementEngine:
                 next_week_num = 1
                 next_year += 1
                 
-            # Next deadline is Next Monday 08:00 UTC
             days_ahead = 0 - now.weekday()
             if days_ahead <= 0: days_ahead += 7
             next_monday = now + timedelta(days=days_ahead)
@@ -1865,11 +1862,9 @@ class FantasySettlementEngine:
             log(f"⏭️ [FANTASY ENGINE] Gameweek {gw['week_number']} geschlossen (Keine Aufstellungen).")
             return
 
-        # Lade alle Matches, die in dieser Gameweek gespielt wurden
         matches_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
         matches = matches_res.data or []
         
-        # Mapping von IDs zu Namen für die Suche
         players_res = supabase.table("players").select("id, last_name, first_name").execute()
         players_map = {p['id']: p for p in (players_res.data or [])}
 
@@ -1879,7 +1874,6 @@ class FantasySettlementEngine:
                 if not pid or pid not in players_map: continue
                 p_name = players_map[pid]['last_name'].lower()
                 
-                # Finde Matches dieses Spielers
                 p_matches = [m for m in matches if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower()]
                 
                 for m in p_matches:
@@ -1889,7 +1883,7 @@ class FantasySettlementEngine:
                     
                     if won:
                         base = 50
-                        bonus = max(0, (odds - 1.5) * 20) # Underdog Bonus
+                        bonus = max(0, (odds - 1.5) * 20) 
                         total_pts += (base + bonus)
                     else:
                         total_pts -= 10
@@ -1897,16 +1891,11 @@ class FantasySettlementEngine:
             total_pts = round(max(0, total_pts), 1)
             uid = lineup['user_id']
             
-            # Speicher die verdienten Punkte für das Team
             supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
             
-            # ========================================================
-            # PROFIL BELOHNEN: XP (fantasy_profiles) + CREDITS (profiles)
-            # ========================================================
             xp_gain = int(total_pts * 10)
             credits_gain = int(total_pts / 5) 
             
-            # 1. Update XP (Für das Leaderboard / Fantasy Profil)
             prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", uid).execute()
             if prof_res.data:
                 old_xp = prof_res.data[0].get('total_xp', 0)
@@ -1916,7 +1905,6 @@ class FantasySettlementEngine:
             else:
                 supabase.table("fantasy_profiles").insert({"user_id": uid, "total_xp": xp_gain}).execute()
                 
-            # 2. Update Echte Credits (Hauptprofil - 'profiles' Tabelle)
             try:
                 main_prof_res = supabase.table("profiles").select("credits").eq("id", uid).execute()
                 if main_prof_res.data:
@@ -1935,7 +1923,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.5 (HYBRID TIME ENGINE + UNIFIED CREDITS) Starting...")
+    log(f"🚀 Neural Scout V144.7 (HYBRID TIME + EDGE MONTE CARLO + FREE TIER OPTIMIZED) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -1944,30 +1932,9 @@ async def run_pipeline():
             if not players: 
                 return
             
-            # SOTA L8 FIX: TE SETTLEMENT ANSTELLE VON RAG AI
             await update_past_results(browser, players)
             
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
-            
-            log("🌍 [MIGRATION] Prüfe Spieler auf Schema-Sync (V95)...")
-            players_to_update = []
-            for p_iter in players:
-                if not p_iter.get('surface_ratings') or not isinstance(p_iter.get('surface_ratings'), dict) or not p_iter.get('surface_ratings', {}).get('_v95_mastery_applied'):
-                    players_to_update.append(p_iter)
-                    
-            if players_to_update:
-                log(f"🔄 Syncing {len(players_to_update)} players to new schema...")
-                for p_data in players_to_update:
-                    p_name = p_data['last_name']
-                    p_hist = await fetch_player_history_extended(p_name, limit=80)
-                    p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name)
-                    p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name)
-                    try: 
-                        supabase.table('players').update({'surface_ratings': p_profile, 'form_rating': p_form}).eq('id', p_data['id']).execute()
-                    except: 
-                        pass
-                    await asyncio.sleep(0.05) 
-                log("✅ [GLOBAL PROFILER] Migration abgeschlossen.")
             
             matches = await fetch_1win_markets_spatial_stream(browser, players)
             
@@ -2007,7 +1974,6 @@ async def run_pipeline():
                         res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
                         existing_match = res2.data[0] if res2.data else None
                         
-                        # 🔄 L8 SOTA FIX: ORIENTATION SWAP
                         if existing_match:
                             n1, n2 = n2, n1
                             p1_obj, p2_obj = p2_obj, p1_obj
@@ -2063,6 +2029,9 @@ async def run_pipeline():
                         s1 = all_skills.get(p1_obj['id'], {})
                         s2 = all_skills.get(p2_obj['id'], {})
                         
+                        report1 = next((r for r in all_reports if r.get('player_id') == p1_obj['id']), None)
+                        report2 = next((r for r in all_reports if r.get('player_id') == p2_obj['id']), None)
+                        
                         p1_history = await fetch_player_history_extended(n1, limit=80)
                         p2_history = await fetch_player_history_extended(n2, limit=80)
                         
@@ -2070,12 +2039,6 @@ async def run_pipeline():
                         p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, n2)
                         p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
                         p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
-
-                        try:
-                            supabase.table('players').update({'surface_ratings': p1_surface_profile, 'form_rating': p1_form_v2}).eq('id', p1_obj['id']).execute()
-                            supabase.table('players').update({'surface_ratings': p2_surface_profile, 'form_rating': p2_form_v2}).eq('id', p2_obj['id']).execute()
-                        except: 
-                            pass
 
                         should_run_ai = True
                         if db_match_id and cached_ai:
@@ -2097,23 +2060,42 @@ async def run_pipeline():
                             
                             value_tag = ""
                             if val_p1["is_value"]: 
-                                value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                                value_tag = f"\n\n[{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                 hist_is_value = True
                                 hist_pick_player = n1
                             elif val_p2["is_value"]: 
-                                value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                                value_tag = f"\n\n[{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                 hist_is_value = True
                                 hist_pick_player = n2
                                 
-                            ai_text_final = re.sub(r'\[.*?\]', '', cached_ai['ai_text']).strip() + value_tag
+                            ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
                             hist_fair1 = fair1
                             hist_fair2 = fair2
 
                         else:
-                            log(f"   🧠 Fresh Analysis & Simulation: {n1} vs {n2} | T: {matched_tour_name} ({surf}) | Time: {m['time']}")
+                            log(f"   🧠 Fresh AI Gil Gross Analysis & Monte Carlo Sim: {n1} vs {n2} | T: {matched_tour_name}")
+                            
+                            # 1. Run Quantum Simulator for O/U Games
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
-                            ai = await analyze_match_with_ai(p1_obj, p2_obj, s1, s2, {}, {}, surf, bsi, notes, p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile)
-                            prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai, m['odds1'], m['odds2'])
+                            
+                            # 2. Run new SOTA Monte Carlo Win Probability Simulator
+                            current_surf_key = SurfaceIntelligence.normalize_surface_key(surf)
+                            surf_rating_a = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+                            surf_rating_b = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+                            
+                            mc_results = MonteCarloEngine.run_simulation(
+                                skillA=s1.get('overall_rating', 50), formA=p1_form_v2['score'], surfaceA=surf_rating_a,
+                                skillB=s2.get('overall_rating', 50), formB=p2_form_v2['score'], surfaceB=surf_rating_b
+                            )
+                            
+                            # 3. Request Gil Gross AI Text with specific Matchup Math
+                            ai = await analyze_match_with_ai(
+                                p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
+                                p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results
+                            )
+                            
+                            # 4. Integrate MC Prob into the final market physics blend
+                            prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
                             
                             fair1 = round(1/prob, 2) if prob > 0.01 else 99
                             fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
@@ -2123,16 +2105,15 @@ async def run_pipeline():
                             
                             value_tag = ""
                             if val_p1["is_value"]: 
-                                value_tag = f" [{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                                value_tag = f"\n\n[{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                                 hist_is_value = True
                                 hist_pick_player = n1
                             elif val_p2["is_value"]: 
-                                value_tag = f" [{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                                value_tag = f"\n\n[{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                                 hist_is_value = True
                                 hist_pick_player = n2
                             
-                            ai_text_final = f"{ai.get('ai_text', '').replace('json', '').strip()} {value_tag} [🎲 SIM: {sim_result['predicted_line']} Games]"
-                            
+                            ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
                             final_time_str = parse_time_to_iso(m['time'])
 
                             data = {
@@ -2215,7 +2196,6 @@ async def run_pipeline():
         finally: 
             await browser.close()
             
-    # THE LOOP CLOSER: Trigger Fantasy Engine
     try:
         FantasySettlementEngine.run_settlement()
     except Exception as e:
