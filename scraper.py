@@ -16,6 +16,7 @@ import difflib
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
+import numpy as np # SOTA: Required for Neural Grid Search
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Page
@@ -35,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V144.7 - HYBRID TIME + EDGE MONTE CARLO + FREE TIER OPTIMIZED)...")
+log("🔌 Initialisiere Neural Scout (V150.0 - AUTONOMOUS SELF-LEARNING LOOP)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -51,7 +52,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # SOTA Model Selection - Free Tier Optimized
 MODEL_NAME = 'llama-3.1-8b-instant'
 
-# Global Caches
+# Global Caches & Dynamic Memory
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -59,6 +60,13 @@ METADATA_CACHE: Dict[str, Any] = {}
 WEATHER_CACHE: Dict[str, Any] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 TML_MATCH_CACHE: List[Dict] = [] 
+
+# SELF LEARNING STATE MEMORY
+DYNAMIC_WEIGHTS = {
+    "ATP": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20},
+    "WTA": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20}
+}
+SYSTEM_ACCURACY = {"ATP": 65.0, "WTA": 65.0}
 
 CITY_TO_DB_STRING = {
     "Perth": "RAC Arena", "Sydney": "Ken Rosewall Arena",
@@ -599,22 +607,23 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. MONTE CARLO & TACTICAL EDGE ENGINE (NEW)
+# 5. MONTE CARLO & TACTICAL EDGE ENGINE (NEW & DYNAMIC)
 # =================================================================
 class MonteCarloEngine:
-    ALGO_WEIGHTS = {
-        "SKILL": 0.50,
-        "FORM": 0.35,
-        "SURFACE": 0.15
-    }
-
     @staticmethod
-    def run_simulation(skillA: float, formA: float, surfaceA: float, 
+    def run_simulation(tour: str, skillA: float, formA: float, surfaceA: float, 
                        skillB: float, formB: float, surfaceB: float, 
                        iterations: int = 1000) -> Dict[str, float]:
         
-        baseA = (skillA / 10) * MonteCarloEngine.ALGO_WEIGHTS["SKILL"] + formA * MonteCarloEngine.ALGO_WEIGHTS["FORM"] + surfaceA * MonteCarloEngine.ALGO_WEIGHTS["SURFACE"]
-        baseB = (skillB / 10) * MonteCarloEngine.ALGO_WEIGHTS["SKILL"] + formB * MonteCarloEngine.ALGO_WEIGHTS["FORM"] + surfaceB * MonteCarloEngine.ALGO_WEIGHTS["SURFACE"]
+        # SOTA FIX: Dynamic Weights Retrieval
+        weights = DYNAMIC_WEIGHTS.get(tour, DYNAMIC_WEIGHTS["ATP"])
+        w_skill = weights["SKILL"]
+        w_form = weights["FORM"]
+        w_surf = weights["SURFACE"]
+        variance = weights.get("MC_VARIANCE", 1.20)
+        
+        baseA = (skillA / 10) * w_skill + formA * w_form + surfaceA * w_surf
+        baseB = (skillB / 10) * w_skill + formB * w_form + surfaceB * w_surf
         
         # Fish out of water penalty
         if surfaceA < 4.5:
@@ -622,7 +631,6 @@ class MonteCarloEngine:
         if surfaceB < 4.5:
             baseB -= (4.5 - surfaceB) * 1.5
             
-        variance = 1.2
         winsA = 0
         winsB = 0
         
@@ -644,6 +652,119 @@ class MonteCarloEngine:
             "scoreA": baseA,
             "scoreB": baseB
         }
+
+# =================================================================
+# 5.5 SOTA: SELF-LEARNING NEURAL OPTIMIZER
+# =================================================================
+class NeuralOptimizer:
+    @staticmethod
+    def optimize_ai_weights(matches_history: List[Dict], current_weights: Dict) -> Dict:
+        log("🧠 Starte Neural Weight Optimization (Backpropagation Simulation)...")
+        
+        best_weights = current_weights
+        best_brier_score = float('inf') 
+        
+        # GRID SEARCH: Wir testen verschiedene Gewichtungen auf vergangenen Daten
+        for w_skill in np.arange(0.30, 0.70, 0.05):
+            for w_form in np.arange(0.20, 0.50, 0.05):
+                w_surf = 1.0 - (w_skill + w_form)
+                if w_surf < 0.05 or w_surf > 0.30: continue 
+                
+                current_brier_score = 0.0
+                valid_matches = 0
+                
+                for m in matches_history:
+                    baseA = (m['skillA']/10) * w_skill + m['formA'] * w_form + m['surfA'] * w_surf
+                    baseB = (m['skillB']/10) * w_skill + m['formB'] * w_form + m['surfB'] * w_surf
+                    
+                    prob_a = 1 / (1 + math.exp(-(baseA - baseB)))
+                    actual_result = 1.0 if m['winner_is_A'] else 0.0
+                    
+                    current_brier_score += (prob_a - actual_result)**2
+                    valid_matches += 1
+                    
+                if valid_matches > 0:
+                    avg_brier = current_brier_score / valid_matches
+                    if avg_brier < best_brier_score:
+                        best_brier_score = avg_brier
+                        best_weights = {
+                            "SKILL": round(float(w_skill), 2), 
+                            "FORM": round(float(w_form), 2), 
+                            "SURFACE": round(float(w_surf), 2),
+                            "MC_VARIANCE": current_weights.get("MC_VARIANCE", 1.20)
+                        }
+
+        log(f"✅ Neues Gehirn-Setup gefunden! Brier Score: {round(best_brier_score, 4)} -> {best_weights}")
+        return best_weights
+
+    @staticmethod
+    def trigger_learning_cycle(players: List[Dict], all_skills: Dict):
+        log("🔄 Initiating Weekly Self-Learning Routine...")
+        
+        for tour in ["ATP", "WTA"]:
+            tour_players = [p['id'] for p in players if p.get('tour') == tour]
+            if not tour_players: continue
+            
+            # Hole die letzten beendeten Matches für diese Tour
+            recent_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(200).execute()
+            recent_matches = recent_res.data or []
+            
+            history_data = []
+            correct_predictions = 0
+            total_predictions = 0
+            
+            for m in recent_matches:
+                p1_name = m.get('player1_name', '')
+                p2_name = m.get('player2_name', '')
+                winner = m.get('actual_winner_name', '')
+                
+                # Check System Accuracy
+                fair1 = to_float(m.get('ai_fair_odds1'), 0)
+                fair2 = to_float(m.get('ai_fair_odds2'), 0)
+                if fair1 > 0 and fair2 > 0:
+                    total_predictions += 1
+                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()):
+                        correct_predictions += 1
+
+                # Build Grid Search History
+                p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
+                p2_obj = next((p for p in players if p.get('last_name') == p2_name and p['id'] in tour_players), None)
+                
+                if p1_obj and p2_obj:
+                    s1 = all_skills.get(p1_obj['id'], {}).get('overall_rating', 50)
+                    s2 = all_skills.get(p2_obj['id'], {}).get('overall_rating', 50)
+                    # Approximation: Use default 5.0 for historical form/surf to keep it lightweight, 
+                    # or pull from their current state if no snapshot exists.
+                    history_data.append({
+                        "skillA": s1, "formA": 5.5, "surfA": 5.5,
+                        "skillB": s2, "formB": 5.5, "surfB": 5.5,
+                        "winner_is_A": p1_name.lower() in winner.lower()
+                    })
+
+            # 1. Update Global Accuracy
+            if total_predictions > 0:
+                acc = (correct_predictions / total_predictions) * 100
+                SYSTEM_ACCURACY[tour] = round(acc, 1)
+                log(f"🎯 {tour} System Accuracy Rating: {SYSTEM_ACCURACY[tour]}% ({correct_predictions}/{total_predictions})")
+
+            # 2. Run Grid Search
+            if len(history_data) >= 20:
+                new_weights = NeuralOptimizer.optimize_ai_weights(history_data, DYNAMIC_WEIGHTS[tour])
+                DYNAMIC_WEIGHTS[tour] = new_weights
+                
+                # 3. Save to Supabase
+                try:
+                    supabase.table("ai_system_weights").upsert({
+                        "tour": tour,
+                        "weight_skill": new_weights["SKILL"],
+                        "weight_form": new_weights["FORM"],
+                        "weight_surface": new_weights["SURFACE"],
+                        "mc_variance": new_weights["MC_VARIANCE"],
+                        "last_optimized": datetime.now(timezone.utc).isoformat()
+                    }).execute()
+                    log(f"💾 {tour} Gewichte erfolgreich in Supabase gesichert.")
+                except Exception as e:
+                    log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
 
 # =================================================================
 # 6. GROQ ENGINE
@@ -1294,6 +1415,18 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
+        # Fetch dynamic weights from DB for the Neural Optimizer
+        weights_res = supabase.table("ai_system_weights").select("*").execute()
+        if weights_res.data:
+            for w in weights_res.data:
+                tour = w.get("tour", "ATP")
+                DYNAMIC_WEIGHTS[tour] = {
+                    "SKILL": to_float(w.get("weight_skill"), 0.50),
+                    "FORM": to_float(w.get("weight_form"), 0.35),
+                    "SURFACE": to_float(w.get("weight_surface"), 0.15),
+                    "MC_VARIANCE": to_float(w.get("mc_variance"), 1.20)
+                }
+
         players = supabase.table("players").select("*").execute().data
         skills = supabase.table("player_skills").select("*").execute().data
         reports = supabase.table("scouting_reports").select("*").execute().data
@@ -1400,7 +1533,6 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_
         
     prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     
-    # SOTA INTEGRATION: Blend Elo Model with the new Monte Carlo Probabilities
     mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
     prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
     
@@ -1410,7 +1542,7 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
         
-    model_trust_factor = 0.35 # Slightly higher trust now that we have MC
+    model_trust_factor = 0.35 
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
@@ -1565,7 +1697,7 @@ def format_skills(s: Dict) -> str:
         return "No granular skill data."
     return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}"
 
-async def analyze_match_with_ai(p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
+async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
     
@@ -1588,9 +1720,17 @@ async def analyze_match_with_ai(p1, p2, s1, s2, report1, report2, surface, bsi, 
     predictedMCLoser = p2['last_name'] if aWins else p1['last_name']
     finalProb = f"{mc_results['probA']}%" if aWins else f"{mc_results['probB']}%"
 
+    # SOTA: Injecting Live Accuracy from Self-Learning Engine
+    tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
+    sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
+
     prompt = f"""
     You are an elite Senior Tennis Analyst (Style: Gil Gross). 
     Your analysis must be grounded EXCLUSIVELY in the provided technical data and scouting reports.
+    
+    *** SYSTEM SELF-REFLECTION (CRITICAL) ***
+    Our internal neural network has an active prediction accuracy of {sys_acc}%. 
+    If this accuracy is below 65%, you MUST be more conservative in your tone and acknowledge potential variance. If it is above 70%, be highly assertive about the data trends.
     
     *** DATA GROUNDING (SOURCE OF TRUTH) ***
     Player A ({p1['last_name']}):
@@ -1923,7 +2063,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V144.7 (HYBRID TIME + EDGE MONTE CARLO + FREE TIER OPTIMIZED) Starting...")
+    log(f"🚀 Neural Scout V150.0 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -1933,6 +2073,12 @@ async def run_pipeline():
                 return
             
             await update_past_results(browser, players)
+            
+            # THE SELF LEARNING HOOK (Runs dynamically using recent past results)
+            try:
+                NeuralOptimizer.trigger_learning_cycle(players, all_skills)
+            except Exception as opt_err:
+                log(f"⚠️ Self-Learning Cycle Exception: {opt_err}")
             
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
@@ -2078,19 +2224,22 @@ async def run_pipeline():
                             # 1. Run Quantum Simulator for O/U Games
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                             
-                            # 2. Run new SOTA Monte Carlo Win Probability Simulator
+                            # 2. Run new SOTA Monte Carlo Win Probability Simulator (NOW DYNAMIC WITH TOUR INFO)
                             current_surf_key = SurfaceIntelligence.normalize_surface_key(surf)
                             surf_rating_a = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
                             surf_rating_b = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
                             
+                            tour_identifier = "WTA" if "WTA" in matched_tour_name.upper() else "ATP"
+                            
                             mc_results = MonteCarloEngine.run_simulation(
+                                tour=tour_identifier,
                                 skillA=s1.get('overall_rating', 50), formA=p1_form_v2['score'], surfaceA=surf_rating_a,
                                 skillB=s2.get('overall_rating', 50), formB=p2_form_v2['score'], surfaceB=surf_rating_b
                             )
                             
                             # 3. Request Gil Gross AI Text with specific Matchup Math
                             ai = await analyze_match_with_ai(
-                                p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
+                                matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                                 p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results
                             )
                             
