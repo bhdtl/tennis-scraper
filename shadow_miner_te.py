@@ -142,17 +142,17 @@ def parse_te_name(raw: str):
         
     return normalize_db_name(last_name), initial
 
-def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
+def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
     """
     Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
-    SOTA FIX: Sichert gegen Zwillinge/Brüder mit identischem Initial (z.B. Blanch D.)
+    Gibt "TIE_BREAKER" zurück, falls eine Zwilling/Bruder Situation besteht.
     """
     target_last, target_initial = parse_te_name(raw_name)
     if not target_last: return None
     
     best_match = None
     best_score = -1
-    tie_flag = False # 🚨 Alarm-System für identische Brüder
+    tie_flag = False 
     
     for p in db_players:
         db_last = normalize_db_name(p.get('last_name', ''))
@@ -180,10 +180,9 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
                 elif score == best_score:
                     tie_flag = True # 🚨 K. Pliskova Problem detektiert!
                 
-    # FAIL-SAFE: Bevor wir Darwin's Stats bei Dali eintragen, 
-    # ignorieren wir das Background-Match lieber komplett.
+    # 🚨 SOTA FIX: Wenn Tie-Breaker zuschlägt, senden wir ein klares Abbruch-Signal!
     if tie_flag:
-        return None
+        return "TIE_BREAKER"
         
     return best_match
 
@@ -510,7 +509,7 @@ def parse_matches_locally_v5(html):
 # 5. PIPELINE EXECUTION (THE SMART SHADOW PROCESS)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout SMART SHADOW MINER V150.1 Starting...")
+    log(f"🚀 Neural Scout SMART SHADOW MINER V150.2 Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -546,13 +545,18 @@ async def run_pipeline():
                     p1_db = match_te_player(m['p1_raw'], players)
                     p2_db = match_te_player(m['p2_raw'], players)
 
+                    # 🚨 SOTA FIX: Hard Abort bei Zwillingen/Brüdern!
+                    if p1_db == "TIE_BREAKER" or p2_db == "TIE_BREAKER":
+                        log(f"🚨 Tie-Breaker Alarm! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']}) um Ghost-Duplikate zu verhindern.")
+                        continue
+
                     if not p1_db and not p2_db:
                         # BEIDE Spieler sind unbekannt -> Ignorieren! (Kein Müll in der DB)
                         continue 
 
                     # Wir nutzen den exakten DB-Namen, wenn gefunden!
-                    full_n1 = p1_db['last_name'] if p1_db else clean_player_name(m['p1_raw'])
-                    full_n2 = p2_db['last_name'] if p2_db else clean_player_name(m['p2_raw'])
+                    full_n1 = p1_db['last_name'] if p1_db and isinstance(p1_db, dict) else clean_player_name(m['p1_raw'])
+                    full_n2 = p2_db['last_name'] if p2_db and isinstance(p2_db, dict) else clean_player_name(m['p2_raw'])
 
                     if not full_n1 or not full_n2 or full_n1 == full_n2: continue
 
