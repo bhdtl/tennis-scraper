@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.2 - SOTA BROTHER-RESOLUTION & SELF-LEARNING)...")
+log("🔌 Initialisiere Neural Scout (V150.3 - SOTA VISIBILITY FIX)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -1214,9 +1214,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                 return -1, []
 
             # -------------------------------------------------------------
-            # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder trennen)
-            # -------------------------------------------------------------
-            # -------------------------------------------------------------
             # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder & Substrings)
             # -------------------------------------------------------------
             def match_player_db_te(db_full_name, te_last, te_init):
@@ -1225,27 +1222,22 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                 db_last = db_parts[-1] if db_parts else ""
                 db_first = db_parts[0] if len(db_parts) > 1 else ""
                 
-                # SOTA Token-Setup zur Verhinderung des "Ma"-Bugs
                 te_last_tokens = set(te_last.split())
                 db_n_tokens = set(db_parts)
 
                 is_last_match = False
                 
-                # 1. Exakter Match
                 if te_last == db_last:
                     is_last_match = True
-                # 2. Exakte Token-Überschneidung (Ganze Wörter)
                 elif db_n_tokens.intersection(te_last_tokens):
                     is_last_match = True
-                # 3. Substring nur erlaubt, wenn Name sehr lang ist (z.B. Doppelnamen)
                 elif (len(te_last) >= 5 and te_last in db_n) or (len(db_last) >= 5 and db_last in te_last):
                     is_last_match = True
 
                 if is_last_match:
-                    # Brother separation
                     if te_init and db_first:
                         if db_first.startswith(te_init): return True
-                        else: return False # Falscher Bruder
+                        else: return False 
                     return True
                 return False
 
@@ -1276,7 +1268,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                     if '/' in pending_p1_raw or '/' in p2_raw: 
                         pending_p1_raw = None; i += 1; continue
                     
-                    # 🚀 SOTA FIX: Parse Namen anstatt blind auf Substring zu prüfen
                     te_last1, te_init1 = parse_te_name(pending_p1_raw)
                     te_last2, te_init2 = parse_te_name(p2_raw)
                     
@@ -2155,7 +2146,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.2 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.3 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2190,6 +2181,11 @@ async def run_pipeline():
                     p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                     p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                     
+                    # 🚨 SOTA FIX: Hard Abort bei Zwillingen/Brüdern!
+                    if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
+                        log(f"🚨 Tie-Breaker Alarm! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']})")
+                        continue
+
                     if not p1_obj or not p2_obj: 
                         continue
                         
@@ -2232,7 +2228,9 @@ async def run_pipeline():
                     
                     if is_signal_locked:
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
-                        update_data = {"odds1": m['odds1'], "odds2": m['odds2']}
+                        
+                        # 🚀 SOTA FIX 1: Zwinge "is_visible_in_scanner: True" bei gelockten Matches!
+                        update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True}
                         if m['time'] and m['time'] != "00:00": 
                             update_data["match_time"] = parse_time_to_iso(m['time'])
                         
@@ -2309,6 +2307,20 @@ async def run_pipeline():
                             ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
                             hist_fair1 = fair1
                             hist_fair2 = fair2
+                            
+                            # 🚀 SOTA FIX 2: Zwinge "is_visible_in_scanner: True" auch bei kleinen Odds-Updates
+                            if db_match_id:
+                                try:
+                                    supabase.table("market_odds").update({
+                                        "odds1": m['odds1'], 
+                                        "odds2": m['odds2'], 
+                                        "ai_fair_odds1": fair1, 
+                                        "ai_fair_odds2": fair2,
+                                        "ai_analysis_text": ai_text_final,
+                                        "is_visible_in_scanner": True
+                                    }).eq("id", db_match_id).execute()
+                                except Exception as up_e:
+                                    pass
 
                         else:
                             log(f"   🧠 Fresh AI Gil Gross Analysis & Monte Carlo Sim: {n1} vs {n2} | T: {matched_tour_name}")
@@ -2357,6 +2369,7 @@ async def run_pipeline():
                             ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
                             final_time_str = parse_time_to_iso(m['time'])
 
+                            # 🚀 SOTA FIX 3: Haupt-Payload IMMER mit is_visible_in_scanner: True
                             data = {
                                 "player1_name": n1, 
                                 "player2_name": n2, 
@@ -2368,7 +2381,8 @@ async def run_pipeline():
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                                 "match_time": final_time_str, 
                                 "odds1": m['odds1'], 
-                                "odds2": m['odds2']
+                                "odds2": m['odds2'],
+                                "is_visible_in_scanner": True 
                             }
                             
                             hist_fair1 = fair1
