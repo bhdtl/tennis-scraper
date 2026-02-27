@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.3 - SOTA VISIBILITY FIX)...")
+log("🔌 Initialisiere Neural Scout (V150.4 - SOTA 1WIN SUPREMACY & OVERRIDE)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -240,7 +240,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     sf_tokens = scrape_first_part.split()
                     if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
                         score += 15
-                    # 🚀 SOTA FIX: Brother Penalty!
                     elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
                         score -= 100 
         else:
@@ -274,7 +273,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     if any(ft in scrape_tokens for ft in db_first_tokens):
                         score += 30
                     else:
-                        # 🚀 SOTA FIX: Check Initialien zur Brüder-Trennung (z.B. Cerundolo F.)
                         db_f_init = db_first[0]
                         has_contradicting = False
                         has_matching = False
@@ -287,7 +285,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         if has_matching: 
                             score += 20
                         elif has_contradicting: 
-                            score -= 100 # Brother Penalty!
+                            score -= 100 
                             
         if score >= 60: 
             candidates.append((p, score))
@@ -295,7 +293,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     if not candidates: 
         return None
         
-    # SOTA FIX: THE ULTIMATE TIE-BREAKER FOR BROTHERS
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
     
     if len(candidates) > 1:
@@ -306,7 +303,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
             top_has_report = candidates[0][0]['id'] in report_ids
             second_has_report = candidates[1][0]['id'] in report_ids
             
-            # Wenn beide exakt gleichauf sind (Gleicher Score, gleicher Report-Status) -> TIE!
             if top_has_report == second_has_report:
                 p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
                 p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
@@ -791,8 +787,6 @@ class NeuralOptimizer:
                 if p1_obj and p2_obj:
                     s1 = all_skills.get(p1_obj['id'], {}).get('overall_rating', 50)
                     s2 = all_skills.get(p2_obj['id'], {}).get('overall_rating', 50)
-                    # Approximation: Use default 5.0 for historical form/surf to keep it lightweight, 
-                    # or pull from their current state if no snapshot exists.
                     history_data.append({
                         "skillA": s1, "formA": 5.5, "surfA": 5.5,
                         "skillB": s2, "formB": 5.5, "surfB": 5.5,
@@ -1213,9 +1207,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                         return int(sets_val), scores
                 return -1, []
 
-            # -------------------------------------------------------------
-            # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder & Substrings)
-            # -------------------------------------------------------------
             def match_player_db_te(db_full_name, te_last, te_init):
                 db_n = normalize_db_name(db_full_name)
                 db_parts = db_n.split()
@@ -1317,9 +1308,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                                 "score": final_score
                             }).eq("id", matched_pm['id']).execute()
 
-                            # ==========================================
-                            # LIVE SKILL & FORM UPDATE ENGINE
-                            # ==========================================
                             log(f"🧠 Triggere Live Skill & Form Engine für das Match...")
                             
                             p1_name = matched_pm['player1_name']
@@ -1353,7 +1341,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                                 except Exception as se:
                                     log(f"⚠️ Live Skill Update Error: {se}")
 
-                            # RE-PROFILING HOOK (Form & Surface Update)
                             for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                                 p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
                                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook)
@@ -1498,7 +1485,6 @@ async def fetch_elo_ratings(browser: Browser):
 
 async def get_db_data():
     try:
-        # Fetch dynamic weights from DB for the Neural Optimizer
         weights_res = supabase.table("ai_system_weights").select("*").execute()
         if weights_res.data:
             for w in weights_res.data:
@@ -1803,7 +1789,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     predictedMCLoser = p2['last_name'] if aWins else p1['last_name']
     finalProb = f"{mc_results['probA']}%" if aWins else f"{mc_results['probB']}%"
 
-    # SOTA: Injecting Live Accuracy from Self-Learning Engine
     tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
 
@@ -2146,7 +2131,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.3 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.4 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2157,7 +2142,6 @@ async def run_pipeline():
             
             await update_past_results(browser, players)
             
-            # THE SELF LEARNING HOOK (Runs dynamically using recent past results)
             try:
                 NeuralOptimizer.trigger_learning_cycle(players, all_skills)
             except Exception as opt_err:
@@ -2181,7 +2165,6 @@ async def run_pipeline():
                     p1_obj = find_player_smart(m['p1_raw'], players, report_ids)
                     p2_obj = find_player_smart(m['p2_raw'], players, report_ids)
                     
-                    # 🚨 SOTA FIX: Hard Abort bei Zwillingen/Brüdern!
                     if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
                         log(f"🚨 Tie-Breaker Alarm! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']})")
                         continue
@@ -2198,7 +2181,6 @@ async def run_pipeline():
                     db_matched_count += 1
                         
                     if not validate_market_integrity(m['odds1'], m['odds2']):
-                        log(f"   ⚠️ REJECTED BAD DATA: {n1} vs {n2} -> {m['odds1']} | {m['odds2']} (Margin Error)")
                         continue 
 
                     res1 = supabase.table("market_odds").select("*").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
@@ -2215,7 +2197,6 @@ async def run_pipeline():
                     
                     if existing_match:
                         if is_suspicious_movement(to_float(existing_match.get('odds1'), 0), m['odds1'], to_float(existing_match.get('odds2'), 0), m['odds2']):
-                            log(f"   ⚠️ REJECTED SPIKE: {n1} ({existing_match.get('odds1')}->{m['odds1']}) vs {n2}")
                             continue
 
                     db_match_id = existing_match['id'] if existing_match else None
@@ -2228,8 +2209,6 @@ async def run_pipeline():
                     
                     if is_signal_locked:
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
-                        
-                        # 🚀 SOTA FIX 1: Zwinge "is_visible_in_scanner: True" bei gelockten Matches!
                         update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True}
                         if m['time'] and m['time'] != "00:00": 
                             update_data["match_time"] = parse_time_to_iso(m['time'])
@@ -2243,7 +2222,7 @@ async def run_pipeline():
                         try:
                             supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                         except Exception as up_e:
-                            log(f"❌ SUPABASE UPDATE ERROR (Locked) bei {n1} vs {n2}: {up_e}")
+                            pass
                             
                         hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
                         hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
@@ -2276,8 +2255,11 @@ async def run_pipeline():
                         p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
                         p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
 
+                        # 🚀 SOTA FIX 4: Der Ghost-Override Filter
+                        is_shadow_match = existing_match and (existing_match.get('is_visible_in_scanner') is False or "[BACKGROUND DATA]" in existing_match.get('ai_analysis_text', ''))
+
                         should_run_ai = True
-                        if db_match_id and cached_ai:
+                        if db_match_id and cached_ai and not is_shadow_match:
                             odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
                             try: 
                                 is_stale = (datetime.now(timezone.utc) - datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))) > timedelta(hours=6)
@@ -2308,7 +2290,6 @@ async def run_pipeline():
                             hist_fair1 = fair1
                             hist_fair2 = fair2
                             
-                            # 🚀 SOTA FIX 2: Zwinge "is_visible_in_scanner: True" auch bei kleinen Odds-Updates
                             if db_match_id:
                                 try:
                                     supabase.table("market_odds").update({
@@ -2325,10 +2306,8 @@ async def run_pipeline():
                         else:
                             log(f"   🧠 Fresh AI Gil Gross Analysis & Monte Carlo Sim: {n1} vs {n2} | T: {matched_tour_name}")
                             
-                            # 1. Run Quantum Simulator for O/U Games
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                             
-                            # 2. Run new SOTA Monte Carlo Win Probability Simulator (NOW DYNAMIC WITH TOUR INFO)
                             current_surf_key = SurfaceIntelligence.normalize_surface_key(surf)
                             surf_rating_a = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
                             surf_rating_b = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
@@ -2341,13 +2320,11 @@ async def run_pipeline():
                                 skillB=s2.get('overall_rating', 50), formB=p2_form_v2['score'], surfaceB=surf_rating_b
                             )
                             
-                            # 3. Request Gil Gross AI Text with specific Matchup Math
                             ai = await analyze_match_with_ai(
                                 matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                                 p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results
                             )
                             
-                            # 4. Integrate MC Prob into the final market physics blend
                             prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
                             
                             fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -2369,7 +2346,6 @@ async def run_pipeline():
                             ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
                             final_time_str = parse_time_to_iso(m['time'])
 
-                            # 🚀 SOTA FIX 3: Haupt-Payload IMMER mit is_visible_in_scanner: True
                             data = {
                                 "player1_name": n1, 
                                 "player2_name": n2, 
@@ -2378,7 +2354,7 @@ async def run_pipeline():
                                 "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final, 
                                 "games_prediction": sim_result, 
-                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), # SOTA: Updatet Timestamp, Match rückt nach oben!
                                 "match_time": final_time_str, 
                                 "odds1": m['odds1'], 
                                 "odds2": m['odds2'],
@@ -2391,8 +2367,9 @@ async def run_pipeline():
                             if db_match_id: 
                                 try:
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                                    log(f"🔄 OVERRIDE: Shadow Match überschrieben und sichtbar gemacht! ({n1} vs {n2})")
                                 except Exception as up_e:
-                                    log(f"❌ SUPABASE UPDATE ERROR bei {n1} vs {n2}: {up_e}")
+                                    pass
                             else:
                                 op1 = to_float(existing_match.get('opening_odds1') if existing_match else 0, 0)
                                 if op1 <= 1.01 and m['odds1'] > 1.01: 
@@ -2405,15 +2382,13 @@ async def run_pipeline():
                                         db_match_id = res_ins.data[0]['id']
                                     log(f"💾 Saved: {n1} vs {n2} (via 1WIN) - Odds: {m['odds1']} | {m['odds2']}")
                                 except Exception as ins_e:
-                                    log(f"❌ SUPABASE INSERT ERROR bei {n1} vs {n2}: {ins_e}")
+                                    pass
 
-                    # L8 SOTA FIX: CATCH-ALL ODDS MOVEMENT TRACKING
                     if db_match_id:
                         should_log_history = False
                         
                         if not existing_match:
                             should_log_history = True
-                            log(f"      📍 [ENTRY ODDS] Logging initial odds for {n1} vs {n2}")
                         elif is_signal_locked or hist_is_value: 
                             should_log_history = True
                         else:
@@ -2423,7 +2398,6 @@ async def run_pipeline():
                                 
                                 if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
                                     should_log_history = True
-                                    log(f"      📈 [ODDS MOVEMENT] {n1} vs {n2} | P1: {old_o1} -> {m['odds1']} | P2: {old_o2} -> {m['odds2']}")
                             except: 
                                 pass
                         
@@ -2440,8 +2414,8 @@ async def run_pipeline():
                             }
                             try: 
                                 supabase.table("odds_history").insert(h_data).execute()
-                            except Exception as hist_err: 
-                                log(f"❌ HISTORY INSERT ERROR: {hist_err}")
+                            except: 
+                                pass
 
                 except Exception as e: 
                     log(f"⚠️ Match Error bei Iteration: {e}")
