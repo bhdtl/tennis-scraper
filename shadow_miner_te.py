@@ -13,6 +13,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import numpy as np
+import difflib
 
 import httpx
 from playwright.async_api import async_playwright, Browser, Page
@@ -32,7 +33,7 @@ logger = logging.getLogger("NeuralScout_ShadowMiner")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout SHADOW MINER (Background Data Ingestion)...")
+log("🔌 Initialisiere Neural Scout SHADOW MINER (Smart Background Ingestion)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -294,7 +295,7 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     return 0.5 * (1 + math.erf(z))
 
 # =================================================================
-# 4. TE SCRAPING LOGIC (Background Mining)
+# 4. TE SCRAPING LOGIC (Background Mining WITH SOTA RESULTS)
 # =================================================================
 async def scrape_tennis_odds_for_date(browser: Browser, target_date):
     page = await browser.new_page()
@@ -314,6 +315,8 @@ def parse_matches_locally_v5(html):
         rows = table.find_all("tr")
         current_tour = "Unknown"
         pending_p1_raw = None; pending_p1_href = None; pending_time = "00:00"
+        pending_p1_row = None
+        
         i = 0
         while i < len(rows):
             row = rows[i]
@@ -348,7 +351,7 @@ def parse_matches_locally_v5(html):
                 if '/' in pending_p1_raw or '/' in p2_raw: 
                     pending_p1_raw = None; i += 1; continue
                 
-                prev_row = rows[i-1]
+                prev_row = pending_p1_row
                 prev_odds = []
                 for c in prev_row.find_all('td', class_=re.compile(r'course')):
                     try:
@@ -357,33 +360,95 @@ def parse_matches_locally_v5(html):
                     except: pass
                 
                 all_odds = prev_odds + raw_odds
-                if len(all_odds) >= 2:
-                    final_o1 = all_odds[0]; final_o2 = all_odds[1]
+                
+                # --- SOTA: RESULT (SCORE & WINNER) EXTRACTION ---
+                def extract_row_data(r_row):
+                    cells = r_row.find_all('td')
+                    p_idx = -1
+                    for idx, c in enumerate(cells):
+                        if c.find('a') and 'time' not in c.get('class', []):
+                            p_idx = idx
+                            break
                     
+                    if p_idx != -1 and p_idx + 1 < len(cells):
+                        sets_cell = cells[p_idx + 1]
+                        sets_val = sets_cell.get_text(strip=True)
+                        
+                        if sets_val.isdigit():
+                            scores = []
+                            for k in range(1, 6):
+                                if p_idx + 1 + k >= len(cells): break
+                                sc_cell = cells[p_idx + 1 + k]
+                                
+                                raw_txt = ""
+                                for child in sc_cell.children:
+                                    if child.name == 'sup': continue
+                                    raw_txt += str(child).strip() if isinstance(child, str) else child.get_text(strip=True)
+                                
+                                raw_txt = re.sub(r'<[^>]+>', '', raw_txt).strip()
+                                
+                                if raw_txt.isdigit():
+                                    scores.append(raw_txt)
+                                else:
+                                    break
+                            return int(sets_val), scores
+                    return -1, []
+
+                s1, scores1 = extract_row_data(prev_row)
+                s2, scores2 = extract_row_data(row)
+                
+                winner_found = None
+                final_score = ""
+                
+                is_ret = "ret." in prev_row.get_text().lower() or "ret." in row.get_text().lower() or "w.o." in prev_row.get_text().lower() or "w.o." in row.get_text().lower()
+                
+                if s1 != -1 and s2 != -1:
+                    if s1 > s2: winner_found = pending_p1_raw
+                    elif s2 > s1: winner_found = p2_raw
+                    
+                    score_parts = []
+                    min_len = min(len(scores1), len(scores2))
+                    for k in range(min_len):
+                        score_parts.append(f"{scores1[k]}-{scores2[k]}")
+                    
+                    if score_parts:
+                        final_score = " ".join(score_parts)
+                        if is_ret: final_score += " ret."
+
+                final_o1 = all_odds[0] if len(all_odds) >= 2 else 0
+                final_o2 = all_odds[1] if len(all_odds) >= 2 else 0
+                
+                # Wir nehmen das Match auf, wenn Quoten ODER ein Ergebnis existieren
+                if (final_o1 > 0 and final_o2 > 0) or winner_found:
                     found.append({
                         "p1_raw": pending_p1_raw, "p2_raw": p2_raw, 
                         "tour": clean_tournament_name(current_tour), 
                         "time": pending_time, "odds1": final_o1, "odds2": final_o2,
-                        "p1_href": pending_p1_href, "p2_href": p2_href
+                        "p1_href": pending_p1_href, "p2_href": p2_href,
+                        "actual_winner": winner_found,
+                        "score": final_score
                     })
                 pending_p1_raw = None
             else:
-                if first_cell and first_cell.get('rowspan') == '2': pending_p1_raw = p_raw; pending_p1_href = p_href
-                else: pending_p1_raw = p_raw; pending_p1_href = p_href
+                if first_cell and first_cell.get('rowspan') == '2': 
+                    pending_p1_raw = p_raw; pending_p1_href = p_href; pending_p1_row = row
+                else: 
+                    pending_p1_raw = p_raw; pending_p1_href = p_href; pending_p1_row = row
             i += 1
     return found
 
 # =================================================================
-# 5. PIPELINE EXECUTION (THE SHADOW PROCESS)
+# 5. PIPELINE EXECUTION (THE SMART SHADOW PROCESS)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout SHADOW MINER V150 Starting...")
+    log(f"🚀 Neural Scout SMART SHADOW MINER V150.1 Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # Load DB state & Dynamic Weights
-            players = supabase.table("players").select("*").execute().data or []
+            # Load DB state
+            players = supabase.table("players").select("id, last_name, first_name").execute().data or []
             
+            # Load Dynamic Weights
             weights_res = supabase.table("ai_system_weights").select("*").execute()
             if weights_res.data:
                 for w in weights_res.data:
@@ -410,30 +475,75 @@ async def run_pipeline():
                     n2 = get_last_name(m['p2_raw'])
                     if not n1 or not n2 or n1 == n2: continue
 
-                    # 1. 🛑 DUPLIKAT-PRÜFUNG: Ist das Match schon im Scanner (1win)?
-                    res1 = supabase.table("market_odds").select("id, is_visible_in_scanner").eq("player1_name", n1).eq("player2_name", n2).gte("created_at", (datetime.now() - timedelta(days=1)).isoformat()).execute()
-                    res2 = supabase.table("market_odds").select("id, is_visible_in_scanner").eq("player1_name", n2).eq("player2_name", n1).gte("created_at", (datetime.now() - timedelta(days=1)).isoformat()).execute()
-                    
-                    existing_match = None
-                    if res1.data: existing_match = res1.data[0]
-                    elif res2.data: existing_match = res2.data[0]
-
-                    if existing_match:
-                        # Match ist bereits da. Wir machen nichts!
-                        continue
-
-                    log(f"🧠 Shadow Lücke gefunden! Erfasse fehlendes Match: {n1} vs {n2}...")
-
-                    # 2. 🤫 SILENT INSERTION: Wir berechnen die Mathe, aber KEIN Groq/LLM Text!
-                    
-                    # Hol dir die echten Datenbank-Namen für saubere Zuordnung
+                    # ---------------------------------------------------------
+                    # 🚀 SOTA FIX 1: PLAYER DATABASE RELEVANCE FILTER
+                    # ---------------------------------------------------------
                     p1_db = next((p for p in players if get_last_name(p['last_name']) == n1), None)
                     p2_db = next((p for p in players if get_last_name(p['last_name']) == n2), None)
-                    
+
+                    if not p1_db and not p2_db:
+                        # BEIDE Spieler sind unbekannt -> Ignorieren! (Kein Müll in der DB)
+                        continue 
+
                     full_n1 = p1_db['last_name'] if p1_db else m['p1_raw']
                     full_n2 = p2_db['last_name'] if p2_db else m['p2_raw']
 
-                    # Simple Mathe für die History (Ohne teure LLM-Calls)
+                    # ---------------------------------------------------------
+                    # 🚀 SOTA FIX 2: DUPLICATE & RESULT-UPDATE LOGIC
+                    # ---------------------------------------------------------
+                    time_window = (datetime.now() - timedelta(days=4)).isoformat()
+                    res1 = supabase.table("market_odds").select("id, actual_winner_name").eq("player1_name", full_n1).eq("player2_name", full_n2).gte("created_at", time_window).execute()
+                    res2 = supabase.table("market_odds").select("id, actual_winner_name").eq("player1_name", full_n2).eq("player2_name", full_n1).gte("created_at", time_window).execute()
+                    
+                    existing_match = None
+                    is_reversed = False
+                    
+                    if res1.data: 
+                        existing_match = res1.data[0]
+                    elif res2.data: 
+                        existing_match = res2.data[0]
+                        is_reversed = True
+
+                    if existing_match:
+                        # Match existiert bereits (Kein Duplikat anlegen!)
+                        # ABER: Wenn TE ein Ergebnis hat, das in unserer DB noch fehlt, updaten wir es!
+                        if m['actual_winner'] and not existing_match.get('actual_winner_name'):
+                            
+                            act_winner = full_n1 if m['actual_winner'] == m['p1_raw'] else full_n2
+                            score_to_update = m['score']
+                            
+                            # Wenn die Reihenfolge in der DB umgekehrt ist, drehen wir den Score um
+                            if is_reversed and m['score']:
+                                parts = m['score'].split()
+                                flipped_parts = []
+                                for part in parts:
+                                    if '-' in part:
+                                        try:
+                                            l, r = part.split('-')
+                                            if 'ret' in r:
+                                               r = r.replace('ret.', '').strip()
+                                               flipped_parts.append(f"{r}-{l} ret.")
+                                            else:
+                                               flipped_parts.append(f"{r}-{l}")
+                                        except:
+                                            flipped_parts.append(part)
+                                score_to_update = " ".join(flipped_parts)
+
+                            log(f"🔄 Result-Lücke gefüllt: {full_n1} vs {full_n2} -> Winner: {act_winner}")
+                            try:
+                                supabase.table("market_odds").update({
+                                    "actual_winner_name": act_winner,
+                                    "score": score_to_update
+                                }).eq("id", existing_match['id']).execute()
+                            except Exception as e:
+                                pass
+                        
+                        # Nach Update (oder wenn kein Update nötig) -> Gehe zum nächsten Match
+                        continue
+
+                    # ---------------------------------------------------------
+                    # 3. 🤫 SILENT INSERTION (Für komplett neue Lücken-Matches)
+                    # ---------------------------------------------------------
                     prob_market = 0.5
                     if m['odds1'] > 1 and m['odds2'] > 1:
                         inv1 = 1/m['odds1']; inv2 = 1/m['odds2']
@@ -443,15 +553,21 @@ async def run_pipeline():
                     fair2 = round(1/(1-prob_market), 2) if prob_market < 0.99 else 99
 
                     final_time_str = f"{target_date.strftime('%Y-%m-%d')}T{m['time']}:00Z"
+                    
+                    act_winner = None
+                    if m['actual_winner']:
+                        act_winner = full_n1 if m['actual_winner'] == m['p1_raw'] else full_n2
 
                     silent_data = {
                         "player1_name": full_n1, 
                         "player2_name": full_n2, 
                         "tournament": m['tour'],
-                        "odds1": m['odds1'], 
-                        "odds2": m['odds2'], 
+                        "odds1": m['odds1'] if m['odds1'] > 0 else None, 
+                        "odds2": m['odds2'] if m['odds2'] > 0 else None, 
                         "ai_fair_odds1": fair1, 
                         "ai_fair_odds2": fair2,
+                        "actual_winner_name": act_winner,
+                        "score": m['score'],
                         # ❌ HIER IST DER MAGISCHE SCHALTER:
                         "is_visible_in_scanner": False, 
                         "ai_analysis_text": "[BACKGROUND DATA] Captured for Elo & Form calculations only. Not eligible for Value Scanner.",
@@ -461,12 +577,12 @@ async def run_pipeline():
                     
                     try:
                         supabase.table("market_odds").insert(silent_data).execute()
-                        log(f"💾 SILENT SAVE: {full_n1} vs {full_n2}")
+                        log(f"💾 SILENT SAVE: {full_n1} vs {full_n2} (Mit Resultat? {bool(act_winner)})")
                     except Exception as ins_e:
                         pass
 
         finally: await browser.close()
-    log("🏁 Shadow Cycle Finished.")
+    log("🏁 Smart Shadow Cycle Finished.")
 
 if __name__ == "__main__":
     asyncio.run(run_pipeline())
