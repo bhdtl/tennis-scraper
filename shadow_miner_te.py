@@ -150,6 +150,8 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
     target_last, target_initial = parse_te_name(raw_name)
     if not target_last: return None
     
+    target_last_tokens = set(target_last.split())
+    
     best_match = None
     best_score = -1
     tie_flag = False 
@@ -158,10 +160,22 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
         db_last = normalize_db_name(p.get('last_name', ''))
         db_first = normalize_db_name(p.get('first_name', ''))
         
+        db_last_tokens = set(db_last.split())
+        
         score = 0
         
-        # 1. Check Nachname
-        if db_last == target_last or target_last in db_last or db_last in target_last:
+        # 1. 🚀 SOTA FIX: Anti-Substring Bug (Verhindert "ma" in "krishnakumar")
+        is_last_match = False
+        if db_last == target_last:
+            is_last_match = True
+        elif db_last_tokens.intersection(target_last_tokens):
+            # Matcht nur ganze Wörter! "ma" matcht nicht in "kumar"
+            is_last_match = True
+        elif (len(target_last) >= 5 and target_last in db_last) or (len(db_last) >= 5 and db_last in target_last):
+            # Substring-Suche NUR erlaubt, wenn der Name lang genug ist (>4 Buchstaben)
+            is_last_match = True
+            
+        if is_last_match:
             score += 50
             
             # 2. Check Vorname (Brüder trennen!)
@@ -185,7 +199,6 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
         return "TIE_BREAKER"
         
     return best_match
-
 # =================================================================
 # 3. CORE ENGINES (Form, Surface, Monte Carlo)
 # =================================================================
