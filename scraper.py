@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+# -*- coding: utf-8 -*-
 
 import asyncio
 import json
@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.0 - AUTONOMOUS SELF-LEARNING LOOP)...")
+log("🔌 Initialisiere Neural Scout (V150.1 - SOTA BROTHER-RESOLUTION & SELF-LEARNING)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -165,6 +165,32 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
+# -----------------------------------------------------------------
+# 🚀 SOTA FIX: THE BROTHER-RESOLUTION ENGINE (Exact Matching)
+# -----------------------------------------------------------------
+def parse_te_name(raw: str):
+    """Extrahiert aus 'Cerundolo F.' -> Nachname: 'cerundolo', Initiale: 'f'"""
+    clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
+    parts = clean.split()
+    if not parts: return "", ""
+    
+    initial = ""
+    last_name_parts = []
+    
+    for p in parts:
+        if (len(p) <= 2 and p.endswith('.')) or (len(p) == 1 and p.isalpha()):
+            if not initial:
+                initial = p[0].lower()
+        else:
+            last_name_parts.append(p)
+            
+    last_name = " ".join(last_name_parts)
+    if not initial and len(parts) > 1:
+        initial = parts[0][0].lower()
+        last_name = " ".join(parts[1:])
+        
+    return normalize_db_name(last_name), initial
+
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None: report_ids = set()
     
@@ -217,6 +243,9 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     sf_tokens = scrape_first_part.split()
                     if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
                         score += 15
+                    # 🚀 SOTA FIX: Brother Penalty!
+                    elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
+                        score -= 100 
         else:
             if all(t in scrape_tokens for t in db_last_tokens):
                 score += 60
@@ -247,6 +276,21 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 if db_first and score >= 60:
                     if any(ft in scrape_tokens for ft in db_first_tokens):
                         score += 30
+                    else:
+                        # 🚀 SOTA FIX: Check Initialien zur Brüder-Trennung (z.B. Cerundolo F.)
+                        db_f_init = db_first[0]
+                        has_contradicting = False
+                        has_matching = False
+                        for st in scrape_tokens:
+                            if len(st) <= 2:
+                                c_st = st.replace('.', '')
+                                if len(c_st) == 1:
+                                    if c_st == db_f_init: has_matching = True
+                                    else: has_contradicting = True
+                        if has_matching: 
+                            score += 20
+                        elif has_contradicting: 
+                            score -= 100 # Brother Penalty!
                         
         if score >= 60: 
             candidates.append((p, score))
@@ -1155,6 +1199,23 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                         return int(sets_val), scores
                 return -1, []
 
+            # -------------------------------------------------------------
+            # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder trennen)
+            # -------------------------------------------------------------
+            def match_player_db_te(db_full_name, te_last, te_init):
+                db_n = normalize_db_name(db_full_name)
+                db_parts = db_n.split()
+                db_last = db_parts[-1] if db_parts else ""
+                db_first = db_parts[0] if len(db_parts) > 1 else ""
+                
+                if te_last == db_last or te_last in db_n or db_last in te_last:
+                    # Brother separation
+                    if te_init and db_first:
+                        if db_first.startswith(te_init): return True
+                        else: return False # Falscher Bruder
+                    return True
+                return False
+
             rows = table.find_all('tr')
             i = 0
             pending_p1_raw = None
@@ -1182,20 +1243,18 @@ async def update_past_results(browser: Browser, players: List[Dict]):
                     if '/' in pending_p1_raw or '/' in p2_raw: 
                         pending_p1_raw = None; i += 1; continue
                     
-                    p1_norm_te = normalize_db_name(pending_p1_raw)
-                    p2_norm_te = normalize_db_name(p2_raw)
+                    # 🚀 SOTA FIX: Parse Namen anstatt blind auf Substring zu prüfen
+                    te_last1, te_init1 = parse_te_name(pending_p1_raw)
+                    te_last2, te_init2 = parse_te_name(p2_raw)
                     
                     matched_pm = None
                     is_reversed = False
                     
                     for pm in list(safe_to_check):
-                        db_p1 = normalize_db_name(pm['player1_name'])
-                        db_p2 = normalize_db_name(pm['player2_name'])
-                        
-                        if (db_p1 in p1_norm_te or p1_norm_te in db_p1) and (db_p2 in p2_norm_te or p2_norm_te in db_p2):
+                        if match_player_db_te(pm['player1_name'], te_last1, te_init1) and match_player_db_te(pm['player2_name'], te_last2, te_init2):
                             matched_pm = pm
                             break
-                        elif (db_p1 in p2_norm_te or p2_norm_te in db_p1) and (db_p2 in p1_norm_te or p1_norm_te in db_p2):
+                        elif match_player_db_te(pm['player1_name'], te_last2, te_init2) and match_player_db_te(pm['player2_name'], te_last1, te_init1):
                             matched_pm = pm
                             is_reversed = True
                             break
@@ -2063,7 +2122,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.0 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.1 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
