@@ -1202,19 +1202,50 @@ async def update_past_results(browser: Browser, players: List[Dict]):
             # -------------------------------------------------------------
             # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder trennen)
             # -------------------------------------------------------------
-            def match_player_db_te(db_full_name, te_last, te_init):
-                db_n = normalize_db_name(db_full_name)
-                db_parts = db_n.split()
-                db_last = db_parts[-1] if db_parts else ""
-                db_first = db_parts[0] if len(db_parts) > 1 else ""
+            def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
+    """
+    Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
+    SOTA FIX: Sichert gegen Zwillinge/Brüder mit identischem Initial (z.B. Blanch D.)
+    """
+    target_last, target_initial = parse_te_name(raw_name)
+    if not target_last: return None
+    
+    best_match = None
+    best_score = -1
+    tie_flag = False # 🚨 Alarm-System für identische Brüder
+    
+    for p in db_players:
+        db_last = normalize_db_name(p.get('last_name', ''))
+        db_first = normalize_db_name(p.get('first_name', ''))
+        
+        score = 0
+        
+        # 1. Check Nachname
+        if db_last == target_last or target_last in db_last or db_last in target_last:
+            score += 50
+            
+            # 2. Check Vorname (Brüder trennen!)
+            if target_initial and db_first:
+                if db_first.startswith(target_initial):
+                    score += 50 # Richtig!
+                else:
+                    score -= 100 # Falscher Bruder! -> Harter Abzug
+            
+            # 3. Score-Auswertung & Tie-Erkennung
+            if score > 0:
+                if score > best_score:
+                    best_score = score
+                    best_match = p
+                    tie_flag = False # Klarer Favorit
+                elif score == best_score:
+                    tie_flag = True # 🚨 K. Pliskova Problem detektiert!
                 
-                if te_last == db_last or te_last in db_n or db_last in te_last:
-                    # Brother separation
-                    if te_init and db_first:
-                        if db_first.startswith(te_init): return True
-                        else: return False # Falscher Bruder
-                    return True
-                return False
+    # FAIL-SAFE: Bevor wir Darwin's Stats bei Dali eintragen, 
+    # ignorieren wir das Background-Match lieber komplett.
+    if tie_flag:
+        return None
+        
+    return best_match
 
             rows = table.find_all('tr')
             i = 0
