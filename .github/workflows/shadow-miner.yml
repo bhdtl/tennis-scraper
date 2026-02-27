@@ -1,0 +1,37 @@
+name: 🕵️ Shadow Miner (TE Background Sync)
+
+on:
+  schedule:
+    # Läuft jeden Tag um 04:00 Uhr und um 16:00 Uhr (UTC)
+    - cron: '0 4,16 * * *'
+  workflow_dispatch: # Erlaubt es dir, das Skript manuell per Button-Klick zu starten
+
+jobs:
+  mine-background-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Nutze deine gewohnte Python-Version
+          cache: 'pip'
+
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: 🌐 Install Playwright Browsers
+        run: playwright install chromium
+
+      - name: 🚀 Run Shadow Miner
+        env:
+          # Greift auf deine bestehenden GitHub Secrets zu!
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Groq Key wird hier NICHT gebraucht, da der Shadow Miner kein LLM nutzt!
+        run: python shadow_miner_te.py
