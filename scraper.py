@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.1 - SOTA BROTHER-RESOLUTION & SELF-LEARNING)...")
+log("🔌 Initialisiere Neural Scout (V150.2 - SOTA BROTHER-RESOLUTION & SELF-LEARNING)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -165,9 +165,6 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
-# -----------------------------------------------------------------
-# 🚀 SOTA FIX: THE BROTHER-RESOLUTION ENGINE (Exact Matching)
-# -----------------------------------------------------------------
 def parse_te_name(raw: str):
     """Extrahiert aus 'Cerundolo F.' -> Nachname: 'cerundolo', Initiale: 'f'"""
     clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
@@ -291,14 +288,31 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                             score += 20
                         elif has_contradicting: 
                             score -= 100 # Brother Penalty!
-                        
+                            
         if score >= 60: 
             candidates.append((p, score))
                 
     if not candidates: 
         return None
         
+    # SOTA FIX: THE ULTIMATE TIE-BREAKER FOR BROTHERS
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
+    
+    if len(candidates) > 1:
+        top_score = candidates[0][1]
+        second_score = candidates[1][1]
+        
+        if top_score == second_score:
+            top_has_report = candidates[0][0]['id'] in report_ids
+            second_has_report = candidates[1][0]['id'] in report_ids
+            
+            # Wenn beide exakt gleichauf sind (Gleicher Score, gleicher Report-Status) -> TIE!
+            if top_has_report == second_has_report:
+                p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
+                p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
+                log(f"🚨 TIE-BREAKER ALARM: '{scraped_name_raw}' ist mehrdeutig zwischen {p1_n} und {p2_n}. Match wird sicherheitshalber ignoriert!")
+                return None
+                
     return candidates[0][0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
@@ -449,7 +463,7 @@ class MomentumV2Engine:
             winner = m.get('actual_winner_name', "") or ""
             won = p_name_lower in winner.lower()
 
-            odds = m['odds1'] if is_p1 else m['odds2']
+            odds = m.get('odds1', 1.50) if is_p1 else m.get('odds2', 1.50)
             if not odds or odds <= 1.0: 
                 odds = 1.50
 
@@ -1202,50 +1216,19 @@ async def update_past_results(browser: Browser, players: List[Dict]):
             # -------------------------------------------------------------
             # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder trennen)
             # -------------------------------------------------------------
-            def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
-    """
-    Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
-    SOTA FIX: Sichert gegen Zwillinge/Brüder mit identischem Initial (z.B. Blanch D.)
-    """
-    target_last, target_initial = parse_te_name(raw_name)
-    if not target_last: return None
-    
-    best_match = None
-    best_score = -1
-    tie_flag = False # 🚨 Alarm-System für identische Brüder
-    
-    for p in db_players:
-        db_last = normalize_db_name(p.get('last_name', ''))
-        db_first = normalize_db_name(p.get('first_name', ''))
-        
-        score = 0
-        
-        # 1. Check Nachname
-        if db_last == target_last or target_last in db_last or db_last in target_last:
-            score += 50
-            
-            # 2. Check Vorname (Brüder trennen!)
-            if target_initial and db_first:
-                if db_first.startswith(target_initial):
-                    score += 50 # Richtig!
-                else:
-                    score -= 100 # Falscher Bruder! -> Harter Abzug
-            
-            # 3. Score-Auswertung & Tie-Erkennung
-            if score > 0:
-                if score > best_score:
-                    best_score = score
-                    best_match = p
-                    tie_flag = False # Klarer Favorit
-                elif score == best_score:
-                    tie_flag = True # 🚨 K. Pliskova Problem detektiert!
+            def match_player_db_te(db_full_name, te_last, te_init):
+                db_n = normalize_db_name(db_full_name)
+                db_parts = db_n.split()
+                db_last = db_parts[-1] if db_parts else ""
+                db_first = db_parts[0] if len(db_parts) > 1 else ""
                 
-    # FAIL-SAFE: Bevor wir Darwin's Stats bei Dali eintragen, 
-    # ignorieren wir das Background-Match lieber komplett.
-    if tie_flag:
-        return None
-        
-    return best_match
+                if te_last == db_last or te_last in db_n or db_last in te_last:
+                    # Brother separation
+                    if te_init and db_first:
+                        if db_first.startswith(te_init): return True
+                        else: return False # Falscher Bruder
+                    return True
+                return False
 
             rows = table.find_all('tr')
             i = 0
@@ -2153,7 +2136,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.1 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.2 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
