@@ -1216,13 +1216,32 @@ async def update_past_results(browser: Browser, players: List[Dict]):
             # -------------------------------------------------------------
             # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder trennen)
             # -------------------------------------------------------------
+            # -------------------------------------------------------------
+            # 🚀 SOTA FIX: HELPER FÜR EXAKTEN DB -> TE ABGLEICH (Brüder & Substrings)
+            # -------------------------------------------------------------
             def match_player_db_te(db_full_name, te_last, te_init):
                 db_n = normalize_db_name(db_full_name)
                 db_parts = db_n.split()
                 db_last = db_parts[-1] if db_parts else ""
                 db_first = db_parts[0] if len(db_parts) > 1 else ""
                 
-                if te_last == db_last or te_last in db_n or db_last in te_last:
+                # SOTA Token-Setup zur Verhinderung des "Ma"-Bugs
+                te_last_tokens = set(te_last.split())
+                db_n_tokens = set(db_parts)
+
+                is_last_match = False
+                
+                # 1. Exakter Match
+                if te_last == db_last:
+                    is_last_match = True
+                # 2. Exakte Token-Überschneidung (Ganze Wörter)
+                elif db_n_tokens.intersection(te_last_tokens):
+                    is_last_match = True
+                # 3. Substring nur erlaubt, wenn Name sehr lang ist (z.B. Doppelnamen)
+                elif (len(te_last) >= 5 and te_last in db_n) or (len(db_last) >= 5 and db_last in te_last):
+                    is_last_match = True
+
+                if is_last_match:
                     # Brother separation
                     if te_init and db_first:
                         if db_first.startswith(te_init): return True
