@@ -145,12 +145,14 @@ def parse_te_name(raw: str):
 def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
     """
     Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
+    SOTA FIX: Sichert gegen Zwillinge/Brüder mit identischem Initial (z.B. Blanch D.)
     """
     target_last, target_initial = parse_te_name(raw_name)
     if not target_last: return None
     
     best_match = None
     best_score = -1
+    tie_flag = False # 🚨 Alarm-System für identische Brüder
     
     for p in db_players:
         db_last = normalize_db_name(p.get('last_name', ''))
@@ -169,10 +171,20 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
                 else:
                     score -= 100 # Falscher Bruder! -> Harter Abzug
             
-            if score > best_score and score > 0:
-                best_score = score
-                best_match = p
+            # 3. Score-Auswertung & Tie-Erkennung
+            if score > 0:
+                if score > best_score:
+                    best_score = score
+                    best_match = p
+                    tie_flag = False # Klarer Favorit
+                elif score == best_score:
+                    tie_flag = True # 🚨 K. Pliskova Problem detektiert!
                 
+    # FAIL-SAFE: Bevor wir Darwin's Stats bei Dali eintragen, 
+    # ignorieren wir das Background-Match lieber komplett.
+    if tie_flag:
+        return None
+        
     return best_match
 
 # =================================================================
