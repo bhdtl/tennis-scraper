@@ -94,12 +94,6 @@ def clean_tournament_name(raw: str) -> str:
     clean = re.sub(r'\s\d+$', '', clean)
     return clean.strip()
 
-def get_last_name(full_name: str) -> str:
-    if not full_name: return ""
-    clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
-    parts = clean.split()
-    return parts[-1].lower() if parts else ""
-
 def ensure_dict(data: Any) -> Dict:
     try:
         if isinstance(data, dict): return data
@@ -117,6 +111,69 @@ def normalize_db_name(name: str) -> str:
 
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
+
+# -----------------------------------------------------------------
+# 🚀 SOTA FIX: THE BROTHER-RESOLUTION ENGINE (Exact Matching)
+# -----------------------------------------------------------------
+def parse_te_name(raw: str):
+    """
+    Extrahiert aus "Cerundolo F." -> Nachname: "cerundolo", Initiale: "f"
+    """
+    clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
+    parts = clean.split()
+    if not parts: return "", ""
+    
+    initial = ""
+    last_name_parts = []
+    
+    for p in parts:
+        if (len(p) <= 2 and p.endswith('.')) or (len(p) == 1 and p.isalpha()):
+            if not initial:
+                initial = p[0].lower()
+        else:
+            last_name_parts.append(p)
+            
+    last_name = " ".join(last_name_parts)
+    
+    # Fallback, falls der Name "Francisco Cerundolo" war (kein Punkt)
+    if not initial and len(parts) > 1:
+        initial = parts[0][0].lower()
+        last_name = " ".join(parts[1:])
+        
+    return normalize_db_name(last_name), initial
+
+def match_te_player(raw_name: str, db_players: List[Dict]) -> Optional[Dict]:
+    """
+    Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
+    """
+    target_last, target_initial = parse_te_name(raw_name)
+    if not target_last: return None
+    
+    best_match = None
+    best_score = -1
+    
+    for p in db_players:
+        db_last = normalize_db_name(p.get('last_name', ''))
+        db_first = normalize_db_name(p.get('first_name', ''))
+        
+        score = 0
+        
+        # 1. Check Nachname
+        if db_last == target_last or target_last in db_last or db_last in target_last:
+            score += 50
+            
+            # 2. Check Vorname (Brüder trennen!)
+            if target_initial and db_first:
+                if db_first.startswith(target_initial):
+                    score += 50 # Richtig!
+                else:
+                    score -= 100 # Falscher Bruder! -> Harter Abzug
+            
+            if score > best_score and score > 0:
+                best_score = score
+                best_match = p
+                
+    return best_match
 
 # =================================================================
 # 3. CORE ENGINES (Form, Surface, Monte Carlo)
@@ -471,22 +528,21 @@ async def run_pipeline():
                 for m in matches:
                     await asyncio.sleep(0.1)
                     
-                    n1 = get_last_name(m['p1_raw'])
-                    n2 = get_last_name(m['p2_raw'])
-                    if not n1 or not n2 or n1 == n2: continue
-
                     # ---------------------------------------------------------
-                    # 🚀 SOTA FIX 1: PLAYER DATABASE RELEVANCE FILTER
+                    # 🚀 SOTA FIX 1: THE BROTHER-RESOLUTION ENGINE
                     # ---------------------------------------------------------
-                    p1_db = next((p for p in players if get_last_name(p['last_name']) == n1), None)
-                    p2_db = next((p for p in players if get_last_name(p['last_name']) == n2), None)
+                    p1_db = match_te_player(m['p1_raw'], players)
+                    p2_db = match_te_player(m['p2_raw'], players)
 
                     if not p1_db and not p2_db:
                         # BEIDE Spieler sind unbekannt -> Ignorieren! (Kein Müll in der DB)
                         continue 
 
-                    full_n1 = p1_db['last_name'] if p1_db else m['p1_raw']
-                    full_n2 = p2_db['last_name'] if p2_db else m['p2_raw']
+                    # Wir nutzen den exakten DB-Namen, wenn gefunden!
+                    full_n1 = p1_db['last_name'] if p1_db else clean_player_name(m['p1_raw'])
+                    full_n2 = p2_db['last_name'] if p2_db else clean_player_name(m['p2_raw'])
+
+                    if not full_n1 or not full_n2 or full_n1 == full_n2: continue
 
                     # ---------------------------------------------------------
                     # 🚀 SOTA FIX 2: DUPLICATE & RESULT-UPDATE LOGIC
