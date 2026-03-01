@@ -37,7 +37,7 @@ if not SUPABASE_URL or not SUPABASE_KEY or not FUNCTION_URL:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
-# 2. HELPERS (CLEANING & MATCHING)
+# 2. HELPERS
 # =================================================================
 def normalize_text(text: str) -> str:
     if not text: return ""
@@ -118,9 +118,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict]) -> Optional
     candidates.sort(key=lambda x: x[1], reverse=True)
     return candidates[0][0]
 
-# =================================================================
-# 3. HTML PARSER
-# =================================================================
 def parse_draws_locally(html):
     soup = BeautifulSoup(html, 'html.parser')
     found = []
@@ -188,9 +185,6 @@ def parse_draws_locally(html):
             
     return found
 
-# =================================================================
-# 4. MATH ENGINE (ONLY FOR DEEP RUNS / OUTRIGHTS)
-# =================================================================
 def extract_rating(rating_obj: Any, default: float = 5.0) -> float:
     if not rating_obj: return default
     if isinstance(rating_obj, (int, float)): return float(rating_obj)
@@ -209,7 +203,6 @@ def get_surface_rating(surface_ratings: Any, surface_type: str) -> float:
     return 5.0
 
 def get_player_base_power(skill: float, form: float, surface: float) -> float:
-    """Berechnet die absolute Stärke für die Turnier-Simulation (Deep Runs)."""
     w_skill = 0.50
     w_form = 0.35
     w_surf = 0.15
@@ -217,9 +210,6 @@ def get_player_base_power(skill: float, form: float, surface: float) -> float:
     if surface < 4.5: power -= (4.5 - surface) * 1.5
     return max(1.0, power)
 
-# =================================================================
-# 5. MAIN PIPELINE (CALLING THE EDGE FUNCTION)
-# =================================================================
 async def call_edge_function(payload: dict):
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -277,7 +267,6 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 
                 log(f"   🧠 Sending {n1} vs {n2} to AI Edge Function...")
                 
-                # 1. 🚀 THE GENIUS PRE-WARM: API PAYLOAD
                 payload = {
                     "playerAId": p1_obj['id'],
                     "playerBId": p2_obj['id'],
@@ -291,20 +280,15 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                     "language": "en"
                 }
 
-                # API Call ausführen
                 edge_result = await call_edge_function(payload)
                 
                 if edge_result and "winner_prediction" in edge_result:
                     predicted_winner = edge_result["winner_prediction"]
                     
-                    # Wahrscheinlichkeit bereinigen (z.B. "68.5%" -> 68.5)
                     raw_prob = str(edge_result.get("win_probability", "50.0")).replace("%", "")
-                    try:
-                        win_prob = float(raw_prob)
-                    except:
-                        win_prob = 50.0
+                    try: win_prob = float(raw_prob)
+                    except: win_prob = 50.0
 
-                    # Speichern ins Oracle Backend
                     db_payload = {
                         "tournament_name": tour_name,
                         "match_date": target_date.strftime('%Y-%m-%d'),
@@ -322,13 +306,10 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                     
                     inserted_matches += 1
                     log(f"   ✅ AI Result: {predicted_winner} wins.")
-                    
-                    # Damit wir die OpenRouter API nicht überlasten
                     await asyncio.sleep(2)
                 else:
                     log(f"   ⚠️ Edge Function failed for {n1} vs {n2}. Skipping.")
 
-                # 2. TOURNAMENT POOL COLLECTION (For Deep Runs)
                 if tour_name not in tournament_pools:
                     tournament_pools[tour_name] = {"surface": tour_surface, "players": {}}
                 
@@ -342,9 +323,6 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
 
         log(f"✅ Synced {inserted_matches} matches via Edge Function.")
 
-        # =================================================================
-        # 🚀 DEEP RUN ENGINE (TOURNAMENT OUTRIGHTS)
-        # =================================================================
         inserted_outrights = 0
         for tour_name, tour_data in tournament_pools.items():
             players_dict = tour_data["players"]
@@ -376,15 +354,30 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
 
 async def run_pipeline():
     try:
-        log("📥 Loading DB Context (Players, Skills, Reports, Tournaments)...")
+        # 🚀 SOTA FIX: Getrennte, sichere Ladeblöcke!
+        log("📥 Loading DB Context (Players)...")
         players = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute().data
-        skills = supabase.table("player_skills").select("*").execute().data
-        reports = supabase.table("scouting_reports").select("*").execute().data
+        
+        log("📥 Loading DB Context (Tournaments)...")
         tournaments = supabase.table("tournaments").select("id, name, surface, bsi_rating").execute().data
         
         if not players or not tournaments:
-            log("❌ Error: Could not load DB reference data.")
+            log("❌ Error: Could not load critical DB reference data (Players/Tournaments).")
             return
+
+        skills = []
+        try:
+            log("📥 Loading DB Context (Skills)...")
+            skills = supabase.table("player_skills").select("*").execute().data
+        except Exception as e:
+            log(f"⚠️ Warning: player_skills table has corrupt data, ignoring skills for now: {e}")
+
+        reports = []
+        try:
+            log("📥 Loading DB Context (Reports)...")
+            reports = supabase.table("scouting_reports").select("player_id, strengths, weaknesses").execute().data
+        except Exception as e:
+            log(f"⚠️ Warning: scouting_reports table has corrupt data, ignoring reports for now: {e}")
 
         skills_dict = {s['player_id']: s for s in (skills or [])}
         reports_dict = {r['player_id']: r for r in (reports or [])}
