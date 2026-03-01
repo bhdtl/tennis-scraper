@@ -354,30 +354,43 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
 
 async def run_pipeline():
     try:
-        # 🚀 SOTA FIX: Getrennte, sichere Ladeblöcke!
         log("📥 Loading DB Context (Players)...")
-        players = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute().data
-        
+        # Wir laden die Daten jetzt einzeln und vorsichtig
+        try:
+            res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute()
+            players = res.data
+        except Exception as e:
+            log(f"🚨 CRITICAL: Database fetch failed. Error details: {str(e)}")
+            # Wenn es hier crasht, versuchen wir einen Notfall-Load ohne Ratings
+            log("🔄 Attempting Emergency Load (Safe Mode - No Ratings)...")
+            res = supabase.table("players").select("id, last_name, first_name").execute()
+            players = res.data
+
         log("📥 Loading DB Context (Tournaments)...")
         tournaments = supabase.table("tournaments").select("id, name, surface, bsi_rating").execute().data
         
         if not players or not tournaments:
-            log("❌ Error: Could not load critical DB reference data (Players/Tournaments).")
+            log("❌ Error: Could not load critical DB reference data.")
             return
+
+        # Sicherstellen, dass Ratings als Dictionaries vorliegen
+        for p in players:
+            if isinstance(p.get('form_rating'), str):
+                try: import json; p['form_rating'] = json.loads(p['form_rating'])
+                except: p['form_rating'] = None
+            if isinstance(p.get('surface_ratings'), str):
+                try: import json; p['surface_ratings'] = json.loads(p['surface_ratings'])
+                except: p['surface_ratings'] = None
 
         skills = []
         try:
-            log("📥 Loading DB Context (Skills)...")
             skills = supabase.table("player_skills").select("*").execute().data
-        except Exception as e:
-            log(f"⚠️ Warning: player_skills table has corrupt data, ignoring skills for now: {e}")
+        except: log("⚠️ Skipping player_skills due to data error.")
 
         reports = []
         try:
-            log("📥 Loading DB Context (Reports)...")
             reports = supabase.table("scouting_reports").select("player_id, strengths, weaknesses").execute().data
-        except Exception as e:
-            log(f"⚠️ Warning: scouting_reports table has corrupt data, ignoring reports for now: {e}")
+        except: log("⚠️ Skipping scouting_reports due to data error.")
 
         skills_dict = {s['player_id']: s for s in (skills or [])}
         reports_dict = {r['player_id']: r for r in (reports or [])}
