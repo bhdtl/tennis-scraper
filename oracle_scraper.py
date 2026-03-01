@@ -221,8 +221,10 @@ def get_player_base_power(skill: float, form: float, surface: float) -> float:
 # 5. MAIN PIPELINE (CALLING THE EDGE FUNCTION)
 # =================================================================
 async def call_edge_function(payload: dict):
+    # 🚀 SOTA FIX: Exakte Headers aus deiner cURL übernommen!
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
+        "apikey": SUPABASE_KEY, # <-- Dieser Header war das Geheimnis!
         "Content-Type": "application/json"
     }
     async with httpx.AsyncClient(timeout=120.0) as client:
