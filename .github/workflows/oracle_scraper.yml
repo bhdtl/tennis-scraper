@@ -2,9 +2,8 @@ name: 🔮 Tournament Oracle Scraper
 
 on:
   schedule:
-    # Läuft jeden Tag um 04:00 Uhr UTC (Morgens, bevor die Matches starten)
     - cron: '0 4 * * *'
-  workflow_dispatch: # Erlaubt es dir, den Scraper jederzeit manuell per Knopfdruck zu starten
+  workflow_dispatch:
 
 jobs:
   run-oracle:
@@ -17,7 +16,7 @@ jobs:
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Nutze eine stabile Python-Version
+          python-version: '3.11'
 
       - name: 📦 Install Dependencies
         run: |
@@ -32,7 +31,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          # Falls du den Key in GitHub anders genannt hast (z.B. SUPABASE_KEY), passe es unten an:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }} 
+          SUPABASE_FUNCTION_URL: ${{ secrets.FUNCTION_URL }} 
         run: |
           python oracle_scraper.py
