@@ -1,0 +1,234 @@
+# -*- coding: utf-8 -*-
+
+import asyncio
+import os
+import re
+import logging
+import sys
+from typing import List, Dict, Any
+from supabase import create_client, Client
+
+# =================================================================
+# 1. CONFIGURATION & LOGGING
+# =================================================================
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%H:%M:%S')
+logger = logging.getLogger("NeuralScout_Recalibrator")
+
+def log(msg: str):
+    logger.info(msg)
+
+log("🔌 Initialisiere GRAND RECALIBRATION (Form & Surface Update für ALLE Spieler)...")
+
+# Secrets Load (Genau wie in den anderen Scrapern)
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    log("❌ CRITICAL: Supabase Secrets fehlen! Prüfe GitHub Secrets.")
+    sys.exit(1)
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
+
+# =================================================================
+# 2. DIE NEUEN, VERBESSERTEN ENGINES (Inklusive Albot-Killer)
+# =================================================================
+class MomentumV2Engine:
+    @staticmethod
+    def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
+        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
+
+        recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
+        chrono_matches = recent_matches[::-1]
+
+        rating = 5.5 
+        momentum = 0.0
+        history_log = []
+
+        for idx, m in enumerate(chrono_matches):
+            p_name_lower = player_name.lower()
+            is_p1 = p_name_lower in str(m.get('player1_name', '')).lower()
+            winner = str(m.get('actual_winner_name', ''))
+            won = p_name_lower in winner.lower()
+
+            odds = m.get('odds1', 1.50) if is_p1 else m.get('odds2', 1.50)
+            if not odds or odds <= 1.0: odds = 1.50
+
+            is_recent = idx >= (len(chrono_matches) - 5)
+            weight = 1.5 if is_recent else 0.8
+            impact = 0.0
+
+            if won:
+                if odds < 1.30: impact = 0.4      
+                elif odds <= 2.00: impact = 0.7   
+                else: impact = 1.4    # 🚀 SOTA FIX: Underdog Wins generft      
+                
+                score = str(m.get('score', ''))
+                if score and "2-1" not in score and "1-2" not in score: impact += 0.2
+                
+                # 🚀 SOTA FIX: Winning Streak
+                if history_log and history_log[-1] == "W": momentum += 0.3
+                else: momentum = 0.1 
+                
+                history_log.append("W")
+            else:
+                if odds < 1.30: impact = -0.9     # 🚀 SOTA FIX: Harte Strafe für Favoriten-Loss
+                elif odds < 1.50: impact = -0.6
+                elif odds <= 2.20: impact = -0.6  
+                else: impact = -0.4               
+                
+                # 🚀 SOTA FIX: Losing Streak Bestrafung
+                if history_log and history_log[-1] == "L": momentum -= 0.4
+                else: momentum = -0.1
+                
+                history_log.append("L")
+            
+            rating += (impact * weight)
+
+        rating += momentum
+        final_rating = max(1.0, min(10.0, rating))
+        
+        desc = "Average"
+        if final_rating >= 8.5: desc = "🔥 ELITE"
+        elif final_rating >= 7.0: desc = "📈 Strong"
+        elif final_rating < 4.0: desc = "❄️ Cold"
+        elif final_rating < 5.5: desc = "⚠️ Weak"
+        
+        color_hex = "#F0C808" 
+        if final_rating >= 8.5: color_hex = "#FF00FF" 
+        elif final_rating >= 7.0: color_hex = "#00B25B" 
+        elif final_rating >= 5.5: color_hex = "#99CC33" 
+        elif final_rating <= 4.0: color_hex = "#CC0000" 
+        elif final_rating < 5.5: color_hex = "#FF9933" 
+
+        return {
+            "score": round(final_rating, 2),
+            "text": desc,
+            "color_hex": color_hex,
+            "history_summary": "".join(history_log[-5:])
+        }
+
+class SurfaceIntelligence:
+    @staticmethod
+    def normalize_surface_key(raw_surface: str) -> str:
+        if not raw_surface: return "unknown"
+        s = raw_surface.lower()
+        if "grass" in s: return "grass"
+        if "clay" in s or "sand" in s: return "clay"
+        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard"
+        return "unknown"
+
+    @staticmethod
+    def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
+        filtered = []
+        target = SurfaceIntelligence.normalize_surface_key(target_surface)
+        
+        for m in all_matches:
+            tour_name = str(m.get('tournament', '')).lower()
+            ai_text = str(m.get('ai_analysis_text', '')).lower()
+            found_surface = "unknown"
+            
+            match_hist = re.search(r'surface:\s*(hard|clay|grass)', ai_text)
+            if match_hist: found_surface = match_hist.group(1)
+            elif "hard court" in ai_text or "hard surface" in ai_text: found_surface = "hard"
+            elif "red clay" in ai_text or "clay court" in ai_text: found_surface = "clay"
+            elif "grass court" in ai_text: found_surface = "grass"
+            elif "clay" in tour_name or "roland garros" in tour_name: found_surface = "clay"
+            elif "grass" in tour_name or "wimbledon" in tour_name: found_surface = "grass"
+            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: found_surface = "hard"
+            
+            if SurfaceIntelligence.normalize_surface_key(found_surface) == target:
+                filtered.append(m)
+        
+        return filtered
+
+    @staticmethod
+    def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
+        profile = {}
+        surfaces_data = {
+            "hard": SurfaceIntelligence.get_matches_by_surface(matches, "hard"),
+            "clay": SurfaceIntelligence.get_matches_by_surface(matches, "clay"),
+            "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
+        }
+        
+        for surf, surf_matches in surfaces_data.items():
+            n_surf = len(surf_matches)
+            if n_surf == 0:
+                profile[surf] = {"rating": 3.5, "color": "#808080", "matches_tracked": 0, "text": "No Experience"}
+                continue
+                
+            wins = sum(1 for m in surf_matches if player_name.lower() in str(m.get('actual_winner_name', '')).lower())
+            win_rate = wins / n_surf
+            
+            vol_score = min(1.0, n_surf / 30.0) * 1.95
+            win_score = win_rate * 4.55
+            
+            final_rating = max(1.0, min(10.0, 3.5 + vol_score + win_score))
+            
+            desc = "Average"
+            if final_rating >= 8.5: desc = "🔥 SPECIALIST"
+            elif final_rating >= 7.0: desc = "📈 Strong"
+            elif final_rating >= 5.5: desc = "Solid"
+            elif final_rating >= 4.5: desc = "⚠️ Vulnerable"
+            else: desc = "❄️ Weakness"
+            
+            color_hex = "#F0C808" 
+            if final_rating >= 8.5: color_hex = "#FF00FF" 
+            elif final_rating >= 7.5: color_hex = "#3366FF" 
+            elif final_rating >= 6.5: color_hex = "#00B25B" 
+            elif final_rating >= 5.5: color_hex = "#99CC33" 
+            elif final_rating <= 4.5: color_hex = "#CC0000" 
+            elif final_rating < 5.5: color_hex = "#FF9933" 
+
+            profile[surf] = {"rating": round(final_rating, 2), "color": color_hex, "matches_tracked": n_surf, "text": desc}
+            
+        profile['_v95_mastery_applied'] = True
+        return profile
+
+# =================================================================
+# 3. DER REKALIBRIERUNGS-LOOP
+# =================================================================
+async def run_recalibration():
+    log("📥 Lade alle Spieler aus der Datenbank...")
+    res = supabase.table("players").select("id, first_name, last_name").execute()
+    players = res.data or []
+    
+    log(f"✅ {len(players)} Spieler gefunden. Starte Sync...")
+    
+    updated_count = 0
+    for i, p in enumerate(players):
+        full_name = p.get('last_name')
+        if not full_name:
+            continue
+            
+        try:
+            # Hole die letzten 40 Matches für diesen Spieler aus market_odds
+            hist_res = supabase.table("market_odds").select("*").or_(
+                f"player1_name.ilike.%{full_name}%,player2_name.ilike.%{full_name}%"
+            ).order("created_at", desc=True).limit(40).execute()
+            
+            matches = hist_res.data or []
+            
+            # Berechne neue Ratings
+            new_form = MomentumV2Engine.calculate_rating(matches, full_name)
+            new_surface = SurfaceIntelligence.compute_player_surface_profile(matches, full_name)
+            
+            # Update Datenbank
+            supabase.table("players").update({
+                "form_rating": new_form,
+                "surface_ratings": new_surface
+            }).eq("id", p['id']).execute()
+            
+            updated_count += 1
+            log(f"[{i+1}/{len(players)}] 🔄 {full_name} geupdatet -> Form: {new_form['score']} ({new_form['history_summary']})")
+            
+            # Kurze Pause, um die Datenbank nicht zu überlasten
+            await asyncio.sleep(0.1)
+            
+        except Exception as e:
+            log(f"⚠️ Fehler bei {full_name}: {e}")
+
+    log(f"🏁 GRAND RECALIBRATION ABGESCHLOSSEN! {updated_count} Spieler wurden aktualisiert.")
+
+if __name__ == "__main__":
+    asyncio.run(run_recalibration())
