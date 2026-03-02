@@ -205,7 +205,7 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
 # =================================================================
 class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der Rest des Codes nicht bricht!
     @staticmethod
-    def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
+    def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
         if not matches: 
             return {"score": 6.5, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
