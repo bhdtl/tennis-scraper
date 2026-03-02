@@ -350,7 +350,7 @@ class SurfaceIntelligence:
             wins = 0
             for m in surf_matches:
                 winner = m.get('actual_winner_name', "") or ""
-                if player_name.lower() in winner.lower():
+                if player_name.lower() in str(winner).lower():
                     wins += 1
             win_rate = wins / n_surf
             
@@ -636,29 +636,34 @@ async def run_pipeline():
                                 }).eq("id", existing_match['id']).execute()
                                 
                                 # =========================================================
-                                # 🚀 SOTA FIX: LIVE PROFILE SYNC BEIM UPDATE
+                                # 🚀 SOTA FIX: LIVE PROFILE SYNC (Independent Update)
                                 # =========================================================
-                                if isinstance(p1_db, dict) and isinstance(p2_db, dict):
-                                    try:
-                                        hist_res = supabase.table("market_odds").select("*").or_(
-                                            f"player1_name.ilike.%{full_n1}%,player2_name.ilike.%{full_n1}%,"
-                                            f"player1_name.ilike.%{full_n2}%,player2_name.ilike.%{full_n2}%"
-                                        ).order("created_at", desc=True).limit(40).execute()
-                                        
-                                        all_hist = hist_res.data or []
+                                try:
+                                    # Lade die Historie nur einmal
+                                    hist_res = supabase.table("market_odds").select("*").or_(
+                                        f"player1_name.ilike.%{full_n1}%,player2_name.ilike.%{full_n1}%,"
+                                        f"player1_name.ilike.%{full_n2}%,player2_name.ilike.%{full_n2}%"
+                                    ).order("created_at", desc=True).limit(40).execute()
+                                    
+                                    all_hist = hist_res.data or []
+                                    
+                                    # Update Player 1 (Wenn er in unserer Datenbank existiert)
+                                    if isinstance(p1_db, dict):
                                         hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
-                                        hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
-
                                         p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
                                         p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
+                                        supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
+
+                                    # Update Player 2 (Wenn er in unserer Datenbank existiert)
+                                    if isinstance(p2_db, dict):
+                                        hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
                                         p2_new_form = MomentumV2Engine.calculate_rating(hist_p2, full_n2)
                                         p2_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p2, full_n2)
-
-                                        supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
                                         supabase.table("players").update({"form_rating": p2_new_form, "surface_ratings": p2_new_surface}).eq("id", p2_db['id']).execute()
-                                        log(f"🧠 PROFILE SYNC (Update): {full_n1} & {full_n2} Form & Surface live aktualisiert!")
-                                    except Exception as sync_e:
-                                        log(f"⚠️ Profile Sync fehlgeschlagen für {full_n1}/{full_n2}: {sync_e}")
+                                        
+                                    log(f"🧠 PROFILE SYNC (Update): Form & Surface für bekannte Spieler erfolgreich aktualisiert!")
+                                except Exception as sync_e:
+                                    log(f"⚠️ Profile Sync fehlgeschlagen für {full_n1}/{full_n2}: {sync_e}")
 
                             except Exception as e:
                                 pass
@@ -704,27 +709,33 @@ async def run_pipeline():
                         log(f"💾 SILENT SAVE: {full_n1} vs {full_n2} (Mit Resultat? {bool(act_winner)})")
 
                         # =========================================================
-                        # 🚀 SOTA FIX: LIVE PROFILE SYNC BEIM INSERT
+                        # 🚀 SOTA FIX: LIVE PROFILE SYNC (Independent Insert)
                         # =========================================================
-                        if act_winner and isinstance(p1_db, dict) and isinstance(p2_db, dict):
+                        if act_winner:
                             try:
+                                # Lade die Historie nur einmal
                                 hist_res = supabase.table("market_odds").select("*").or_(
                                     f"player1_name.ilike.%{full_n1}%,player2_name.ilike.%{full_n1}%,"
                                     f"player1_name.ilike.%{full_n2}%,player2_name.ilike.%{full_n2}%"
                                 ).order("created_at", desc=True).limit(40).execute()
                                 
                                 all_hist = hist_res.data or []
-                                hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
-                                hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
+                                
+                                # Update Player 1 (Wenn er in unserer Datenbank existiert)
+                                if isinstance(p1_db, dict):
+                                    hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
+                                    p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
+                                    p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
+                                    supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
 
-                                p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
-                                p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
-                                p2_new_form = MomentumV2Engine.calculate_rating(hist_p2, full_n2)
-                                p2_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p2, full_n2)
-
-                                supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
-                                supabase.table("players").update({"form_rating": p2_new_form, "surface_ratings": p2_new_surface}).eq("id", p2_db['id']).execute()
-                                log(f"🧠 PROFILE SYNC (Insert): {full_n1} & {full_n2} Form & Surface live aktualisiert!")
+                                # Update Player 2 (Wenn er in unserer Datenbank existiert)
+                                if isinstance(p2_db, dict):
+                                    hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
+                                    p2_new_form = MomentumV2Engine.calculate_rating(hist_p2, full_n2)
+                                    p2_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p2, full_n2)
+                                    supabase.table("players").update({"form_rating": p2_new_form, "surface_ratings": p2_new_surface}).eq("id", p2_db['id']).execute()
+                                    
+                                log(f"🧠 PROFILE SYNC (Insert): Form & Surface für bekannte Spieler erfolgreich aktualisiert!")
                             except Exception as sync_e:
                                 log(f"⚠️ Profile Sync fehlgeschlagen für {full_n1}/{full_n2}: {sync_e}")
 
