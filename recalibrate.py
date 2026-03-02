@@ -31,75 +31,130 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 
 # =================================================================
-# 2. DIE NEUEN, VERBESSERTEN ENGINES (Inklusive Albot-Killer)
+# 2. SOTA MOMENTUM V3 ENGINE (xG Model)
 # =================================================================
-class MomentumV2Engine:
+class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der Rest des Codes nicht bricht!
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
-        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
+        if not matches: 
+            return {"score": 6.5, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
-        recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
+        recent_matches = sorted(matches, key=lambda x: str(x.get('created_at', '')), reverse=True)[:max_matches]
         chrono_matches = recent_matches[::-1]
 
-        rating = 5.5 
-        momentum = 0.0
+        base_rating = 6.5 
+        cumulative_edge = 0.0
+        total_weight = 0.0
         history_log = []
+        
+        search_name = player_name.split()[-1].lower() if player_name else ""
 
         for idx, m in enumerate(chrono_matches):
-            p_name_lower = player_name.lower()
-            is_p1 = p_name_lower in str(m.get('player1_name', '')).lower()
-            winner = str(m.get('actual_winner_name', ''))
-            won = p_name_lower in winner.lower()
-
-            odds = m.get('odds1', 1.50) if is_p1 else m.get('odds2', 1.50)
-            if not odds or odds <= 1.0: odds = 1.50
-
-            is_recent = idx >= (len(chrono_matches) - 5)
-            weight = 1.5 if is_recent else 0.8
-            impact = 0.0
-
-            if won:
-                if odds < 1.30: impact = 0.4      
-                elif odds <= 2.00: impact = 0.7   
-                else: impact = 1.4    # 🚀 SOTA FIX: Underdog Wins generft      
-                
-                score = str(m.get('score', ''))
-                if score and "2-1" not in score and "1-2" not in score: impact += 0.2
-                
-                # 🚀 SOTA FIX: Winning Streak
-                if history_log and history_log[-1] == "W": momentum += 0.3
-                else: momentum = 0.1 
-                
-                history_log.append("W")
-            else:
-                if odds < 1.30: impact = -0.9     # 🚀 SOTA FIX: Harte Strafe für Favoriten-Loss
-                elif odds < 1.50: impact = -0.6
-                elif odds <= 2.20: impact = -0.6  
-                else: impact = -0.4               
-                
-                # 🚀 SOTA FIX: Losing Streak Bestrafung
-                if history_log and history_log[-1] == "L": momentum -= 0.4
-                else: momentum = -0.1
-                
-                history_log.append("L")
+            is_p1 = search_name in str(m.get('player1_name', '')).lower()
+            winner = str(m.get('actual_winner_name', '')).lower()
+            won = search_name in winner
             
-            rating += (impact * weight)
+            odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
+            if odds <= 1.01: odds = 1.85
+            
+            expected_perf = 1 / odds 
+            
+            actual_perf = 0.5 
+            score_str = str(m.get('score', '')).lower()
+            
+            if "ret" in score_str or "w.o" in score_str:
+                actual_perf = 0.6 if won else 0.4
+            else:
+                sets = re.findall(r'(\d+)-(\d+)', score_str)
+                
+                if not sets:
+                    actual_perf = 0.75 if won else 0.25
+                else:
+                    player_sets_won = 0
+                    opp_sets_won = 0
+                    player_games_won = 0
+                    opp_games_won = 0
+                    
+                    for s in sets:
+                        try:
+                            l, r = int(s[0]), int(s[1])
+                            p_games = l if is_p1 else r
+                            o_games = r if is_p1 else l
+                            
+                            player_games_won += p_games
+                            opp_games_won += o_games
+                            
+                            if p_games > o_games: player_sets_won += 1
+                            elif o_games > p_games: opp_sets_won += 1
+                        except: pass
+                    
+                    if won:
+                        if opp_sets_won == 0: 
+                            game_diff = player_games_won - opp_games_won
+                            if game_diff >= 8: actual_perf = 1.0      
+                            elif game_diff >= 5: actual_perf = 0.9    
+                            elif game_diff >= 3: actual_perf = 0.8    
+                            else: actual_perf = 0.7                   
+                        else: 
+                            game_diff = player_games_won - opp_games_won
+                            if game_diff >= 4: actual_perf = 0.75     
+                            elif game_diff >= 1: actual_perf = 0.65   
+                            else: actual_perf = 0.55                  
+                    else:
+                        if player_sets_won == 1: 
+                            game_diff = opp_games_won - player_games_won
+                            if game_diff <= 1: actual_perf = 0.45     
+                            elif game_diff <= 4: actual_perf = 0.35   
+                            else: actual_perf = 0.25                  
+                        else: 
+                            game_diff = opp_games_won - player_games_won
+                            if game_diff <= 3: actual_perf = 0.30     
+                            elif game_diff <= 5: actual_perf = 0.20   
+                            elif game_diff <= 7: actual_perf = 0.10   
+                            else: actual_perf = 0.0                   
 
-        rating += momentum
-        final_rating = max(1.0, min(10.0, rating))
+            match_edge = actual_perf - expected_perf 
+            
+            time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
+            
+            cumulative_edge += (match_edge * time_weight)
+            total_weight += time_weight
+            
+            history_log.append("W" if won else "L")
+
+        streak_bonus = 0.0
+        if len(history_log) >= 3:
+            recent_3 = history_log[-3:]
+            if recent_3 == ["W", "W", "W"]: streak_bonus = 0.4
+            elif recent_3 == ["L", "L", "L"]: streak_bonus = -0.4
+            if len(history_log) >= 5:
+                recent_5 = history_log[-5:]
+                if recent_5.count("W") == 5: streak_bonus = 0.8
+                elif recent_5.count("L") == 5: streak_bonus = -0.8
+
+        avg_edge = (cumulative_edge / total_weight) if total_weight > 0 else 0.0
+        
+        final_rating = base_rating + (avg_edge * 10.0) + streak_bonus
+        final_rating = max(1.0, min(10.0, final_rating))
         
         desc = "Average"
-        if final_rating >= 8.5: desc = "🔥 ELITE"
-        elif final_rating >= 7.0: desc = "📈 Strong"
-        elif final_rating < 4.0: desc = "❄️ Cold"
-        elif final_rating < 5.5: desc = "⚠️ Weak"
-        
         color_hex = "#F0C808" 
-        if final_rating >= 8.5: color_hex = "#FF00FF" 
-        elif final_rating >= 7.0: color_hex = "#00B25B" 
-        elif final_rating >= 5.5: color_hex = "#99CC33" 
-        elif final_rating <= 4.0: color_hex = "#CC0000" 
-        elif final_rating < 5.5: color_hex = "#FF9933" 
+        
+        if final_rating >= 8.5: 
+            desc = "🔥 ELITE"
+            color_hex = "#FF00FF" 
+        elif final_rating >= 7.2: 
+            desc = "📈 Strong"
+            color_hex = "#3366FF" 
+        elif final_rating >= 6.0: 
+            desc = "Solid"
+            color_hex = "#00B25B" 
+        elif final_rating >= 4.5: 
+            desc = "⚠️ Vulnerable"
+            color_hex = "#FF9933" 
+        else: 
+            desc = "❄️ Cold"
+            color_hex = "#CC0000" 
 
         return {
             "score": round(final_rating, 2),
@@ -107,6 +162,14 @@ class MomentumV2Engine:
             "color_hex": color_hex,
             "history_summary": "".join(history_log[-5:])
         }
+
+def to_float(val: Any, default: float = 0.0) -> float:
+    if val is None: 
+        return default
+    try: 
+        return float(val)
+    except: 
+        return default
 
 class SurfaceIntelligence:
     @staticmethod
@@ -151,13 +214,16 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
+        # 🚀 SOTA FIX: Smart Matcher
+        search_name = player_name.split()[-1].lower() if player_name else ""
+
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             if n_surf == 0:
                 profile[surf] = {"rating": 3.5, "color": "#808080", "matches_tracked": 0, "text": "No Experience"}
                 continue
                 
-            wins = sum(1 for m in surf_matches if player_name.lower() in str(m.get('actual_winner_name', '')).lower())
+            wins = sum(1 for m in surf_matches if search_name in str(m.get('actual_winner_name', '')).lower())
             win_rate = wins / n_surf
             
             vol_score = min(1.0, n_surf / 30.0) * 1.95
@@ -202,14 +268,16 @@ async def run_recalibration():
             continue
             
         try:
-            # Hole die letzten 40 Matches für diesen Spieler aus market_odds
+            # 🚀 SOTA FIX: Suche in der Match-Historie nach dem letzten Namensteil
+            search_name = full_name.split()[-1]
+            
             hist_res = supabase.table("market_odds").select("*").or_(
-                f"player1_name.ilike.%{full_name}%,player2_name.ilike.%{full_name}%"
+                f"player1_name.ilike.%{search_name}%,player2_name.ilike.%{search_name}%"
             ).order("created_at", desc=True).limit(40).execute()
             
             matches = hist_res.data or []
             
-            # Berechne neue Ratings
+            # Berechne neue Ratings (Die Engine verarbeitet die Namen jetzt richtig!)
             new_form = MomentumV2Engine.calculate_rating(matches, full_name)
             new_surface = SurfaceIntelligence.compute_player_surface_profile(matches, full_name)
             
@@ -223,7 +291,7 @@ async def run_recalibration():
             log(f"[{i+1}/{len(players)}] 🔄 {full_name} geupdatet -> Form: {new_form['score']} ({new_form['history_summary']})")
             
             # Kurze Pause, um die Datenbank nicht zu überlasten
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             
         except Exception as e:
             log(f"⚠️ Fehler bei {full_name}: {e}")
