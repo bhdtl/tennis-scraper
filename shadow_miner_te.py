@@ -289,7 +289,7 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
             
             # 🚀 DEIN NEUER SIEG-BONUS (Win-Override)
             if won:
-                match_edge += 0.20  # <--- HIER: Erhöhe diese Zahl nach Belieben!
+                match_edge += 0.40  # <--- HIER: Erhöhe diese Zahl nach Belieben!
             
             # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
