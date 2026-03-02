@@ -283,8 +283,15 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
                             elif game_diff <= 7: actual_perf = 0.10   
                             else: actual_perf = 0.0                   
 
+                        # --- 3. THE DELTA (Reality vs. Expectation) ---
+            # Positiv = Overperformance / Negativ = Underperformance
             match_edge = actual_perf - expected_perf 
             
+            # 🚀 DEIN NEUER SIEG-BONUS (Win-Override)
+            if won:
+                match_edge += 0.20  # <--- HIER: Erhöhe diese Zahl nach Belieben!
+            
+            # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
