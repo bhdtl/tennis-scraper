@@ -455,8 +455,8 @@ class MomentumV2Engine:
 
         for idx, m in enumerate(chrono_matches):
             p_name_lower = player_name.lower()
-            is_p1 = p_name_lower in m['player1_name'].lower()
-            winner = m.get('actual_winner_name', "") or ""
+            is_p1 = p_name_lower in str(m.get('player1_name', '')).lower()
+            winner = str(m.get('actual_winner_name', ''))
             won = p_name_lower in winner.lower()
 
             odds = m.get('odds1', 1.50) if is_p1 else m.get('odds2', 1.50)
@@ -468,35 +468,28 @@ class MomentumV2Engine:
             impact = 0.0
 
             if won:
-                if odds < 1.30: 
-                    impact = 0.4      
-                elif odds <= 2.00: 
-                    impact = 0.8   
-                else: 
-                    impact = 1.8                
-                    
+                if odds < 1.30: impact = 0.4      
+                elif odds <= 2.00: impact = 0.7   
+                else: impact = 1.4    # 🚀 SOTA FIX: Underdog Wins generft      
+                
                 score = str(m.get('score', ''))
-                if score and "2-1" not in score and "1-2" not in score: 
-                    impact += 0.3
-                    
-                momentum += 0.2 
+                if score and "2-1" not in score and "1-2" not in score: impact += 0.2
+                
+                # 🚀 SOTA FIX: Winning Streak
+                if history_log and history_log[-1] == "W": momentum += 0.3
+                else: momentum = 0.1 
+                
                 history_log.append("W")
             else:
-                if odds < 1.30: 
-                    impact = -0.6      
-                elif odds < 1.50: 
-                    impact = -0.5
-                elif odds <= 2.20: 
-                    impact = -0.6  
-                else: 
-                    impact = -0.2                
-                    
-                score = str(m.get('score', ''))
-                if "2-1" in score or "1-2" in score: 
-                    momentum = max(0.0, momentum - 0.1)
-                else: 
-                    momentum = 0.0 
-                    
+                if odds < 1.30: impact = -0.9     # 🚀 SOTA FIX: Harte Strafe für Favoriten-Loss
+                elif odds < 1.50: impact = -0.6
+                elif odds <= 2.20: impact = -0.6  
+                else: impact = -0.4   # 🚀 SOTA FIX: Underdog Losses tun jetzt auch weh            
+                
+                # 🚀 SOTA FIX: Losing Streak Bestrafung
+                if history_log and history_log[-1] == "L": momentum -= 0.4
+                else: momentum = -0.1
+                
                 history_log.append("L")
             
             rating += (impact * weight)
@@ -507,15 +500,15 @@ class MomentumV2Engine:
         desc = "Average"
         color_hex = "#F0C808" 
         
-        if final_rating > 8.5: 
+        if final_rating >= 8.5: 
             desc = "🔥 ELITE"
             color_hex = "#FF00FF" 
-        elif final_rating > 7.0: 
+        elif final_rating >= 7.0: 
             desc = "📈 Strong"
             color_hex = "#3366FF" 
-        elif final_rating >= 6.0: 
-            color_hex = "#00B25B" 
-        elif final_rating < 4.0: 
+        elif final_rating >= 5.5: 
+            color_hex = "#99CC33" 
+        elif final_rating <= 4.0: 
             desc = "❄️ Cold"
             color_hex = "#CC0000" 
         elif final_rating < 5.5: 
