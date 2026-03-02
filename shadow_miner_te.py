@@ -206,7 +206,8 @@ def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
 class MomentumV2Engine:
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
-        if not matches: return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
+        if not matches: 
+            return {"score": 5.0, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
         recent_matches = sorted(matches, key=lambda x: x.get('created_at', ''), reverse=True)[:max_matches]
         chrono_matches = recent_matches[::-1]
@@ -217,12 +218,13 @@ class MomentumV2Engine:
 
         for idx, m in enumerate(chrono_matches):
             p_name_lower = player_name.lower()
-            is_p1 = p_name_lower in m['player1_name'].lower()
-            winner = m.get('actual_winner_name', "") or ""
+            is_p1 = p_name_lower in str(m.get('player1_name', '')).lower()
+            winner = str(m.get('actual_winner_name', ''))
             won = p_name_lower in winner.lower()
 
             odds = m.get('odds1', 1.50) if is_p1 else m.get('odds2', 1.50)
-            if not odds or odds <= 1.0: odds = 1.50
+            if not odds or odds <= 1.0: 
+                odds = 1.50
 
             is_recent = idx >= (len(chrono_matches) - 5)
             weight = 1.5 if is_recent else 0.8
@@ -230,20 +232,27 @@ class MomentumV2Engine:
 
             if won:
                 if odds < 1.30: impact = 0.4      
-                elif odds <= 2.00: impact = 0.8   
-                else: impact = 1.8                
+                elif odds <= 2.00: impact = 0.7   
+                else: impact = 1.4    # 🚀 SOTA FIX: Underdog Wins generft      
+                
                 score = str(m.get('score', ''))
-                if score and "2-1" not in score and "1-2" not in score: impact += 0.3
-                momentum += 0.2 
+                if score and "2-1" not in score and "1-2" not in score: impact += 0.2
+                
+                # 🚀 SOTA FIX: Winning Streak
+                if history_log and history_log[-1] == "W": momentum += 0.3
+                else: momentum = 0.1 
+                
                 history_log.append("W")
             else:
-                if odds < 1.30: impact = -0.6     
-                elif odds < 1.50: impact = -0.5
+                if odds < 1.30: impact = -0.9     # 🚀 SOTA FIX: Harte Strafe für Favoriten-Loss
+                elif odds < 1.50: impact = -0.6
                 elif odds <= 2.20: impact = -0.6  
-                else: impact = -0.2                
-                score = str(m.get('score', ''))
-                if "2-1" in score or "1-2" in score: momentum = max(0.0, momentum - 0.1)
-                else: momentum = 0.0 
+                else: impact = -0.4   # 🚀 SOTA FIX: Underdog Losses tun jetzt auch weh            
+                
+                # 🚀 SOTA FIX: Losing Streak Bestrafung
+                if history_log and history_log[-1] == "L": momentum -= 0.4
+                else: momentum = -0.1
+                
                 history_log.append("L")
             
             rating += (impact * weight)
@@ -252,18 +261,22 @@ class MomentumV2Engine:
         final_rating = max(1.0, min(10.0, rating))
         
         desc = "Average"
-        if final_rating > 8.5: desc = "🔥 ELITE"
-        elif final_rating > 7.0: desc = "📈 Strong"
-        elif final_rating < 4.0: desc = "❄️ Cold"
-        elif final_rating < 5.5: desc = "⚠️ Weak"
-        
         color_hex = "#F0C808" 
-        if final_rating >= 9.0: color_hex = "#FF00FF" 
-        elif final_rating >= 8.0: color_hex = "#3366FF" 
-        elif final_rating >= 7.0: color_hex = "#00B25B" 
-        elif final_rating >= 6.0: color_hex = "#99CC33" 
-        elif final_rating <= 4.0: color_hex = "#CC0000" 
-        elif final_rating <= 5.5: color_hex = "#FF9933" 
+        
+        if final_rating >= 8.5: 
+            desc = "🔥 ELITE"
+            color_hex = "#FF00FF" 
+        elif final_rating >= 7.0: 
+            desc = "📈 Strong"
+            color_hex = "#3366FF" 
+        elif final_rating >= 5.5: 
+            color_hex = "#99CC33" 
+        elif final_rating <= 4.0: 
+            desc = "❄️ Cold"
+            color_hex = "#CC0000" 
+        elif final_rating < 5.5: 
+            desc = "⚠️ Weak"
+            color_hex = "#FF9933" 
 
         return {
             "score": round(final_rating, 2),
@@ -565,7 +578,7 @@ async def run_pipeline():
                         continue
 
                     if not p1_db and not p2_db:
-                        # BEIDE Spieler sind unbekannt -> Ignorieren! (Kein Müll in der DB)
+                        # BEIDE Spieler sind unbekannt -> Ignorieren! (Kein Müll in DB)
                         continue 
 
                     # Wir nutzen den exakten DB-Namen, wenn gefunden!
@@ -633,8 +646,8 @@ async def run_pipeline():
                                         ).order("created_at", desc=True).limit(40).execute()
                                         
                                         all_hist = hist_res.data or []
-                                        hist_p1 = [h for h in all_hist if full_n1.lower() in h['player1_name'].lower() or full_n1.lower() in h['player2_name'].lower()]
-                                        hist_p2 = [h for h in all_hist if full_n2.lower() in h['player1_name'].lower() or full_n2.lower() in h['player2_name'].lower()]
+                                        hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
+                                        hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
 
                                         p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
                                         p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
@@ -701,8 +714,8 @@ async def run_pipeline():
                                 ).order("created_at", desc=True).limit(40).execute()
                                 
                                 all_hist = hist_res.data or []
-                                hist_p1 = [h for h in all_hist if full_n1.lower() in h['player1_name'].lower() or full_n1.lower() in h['player2_name'].lower()]
-                                hist_p2 = [h for h in all_hist if full_n2.lower() in h['player1_name'].lower() or full_n2.lower() in h['player2_name'].lower()]
+                                hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
+                                hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
 
                                 p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
                                 p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
