@@ -37,7 +37,7 @@ logger = logging.getLogger("NeuralScout_History")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere History Ingest (Synced Environment)...")
+log("🔌 Initialisiere History Ingest (Synced Environment mit SOTA Brother-Preservation)...")
 
 # --- SECRETS MANAGEMENT (1:1 VOM SCRAPER) ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -87,12 +87,13 @@ def get_session():
 # =================================================================
 
 def normalize_name(name):
+    """
+    🚀 SOTA FIX: Brother-Preservation. 
+    Wir dürfen Initialen am Ende (z.B. "Cerundolo F.") NICHT mehr wegschneiden! 
+    Wenn wir sie entfernen, weiß unsere Momentum Engine später nicht mehr, welcher Bruder gespielt hat.
+    """
     if not isinstance(name, str): return "Unknown"
-    name = name.strip()
-    parts = name.split()
-    if len(parts) > 1 and len(parts[-1]) <= 2:
-        return " ".join(parts[:-1])
-    return name
+    return name.strip()
 
 def generate_canonical_id(date_str, p1, p2):
     n1 = normalize_name(p1).lower()
