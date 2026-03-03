@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.4 - SOTA 1WIN SUPREMACY & OVERRIDE)...")
+log("🔌 Initialisiere Neural Scout (V150.5 - SOTA Brother-Resolution & Defeat Penalty)...")
 
 # Secrets Load
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -210,6 +210,9 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     else:
         scrape_last_part = clean_scrape
         scrape_first_part = ""
+        # Extrahiere potenziellen Vornamen aus dem Scrape-Token, falls klassisches Format
+        if len(scrape_tokens) > 1:
+            scrape_first_part = scrape_tokens[0]
     
     for p in db_players:
         db_last = normalize_db_name(p.get('last_name', ''))
@@ -232,16 +235,17 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 continue 
                 
             if last_matched and db_first and scrape_first_part:
-                if db_first in scrape_first_part or scrape_first_part in db_first:
-                    score += 30
+                # 🚀 SOTA FIX: Brother Resolution Check (Strikter Bonus)
+                if db_first == scrape_first_part or scrape_first_part in db_first:
+                    score += 80 
                 elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80:
-                    score += 25
+                    score += 50
                 else:
                     sf_tokens = scrape_first_part.split()
                     if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
-                        score += 15
+                        score += 15 # Nur Initiale matcht -> Risiko für Tie-Break!
                     elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
-                        score -= 100 
+                        score -= 100 # Contradiction -> Falscher Bruder!
         else:
             if all(t in scrape_tokens for t in db_last_tokens):
                 score += 60
@@ -270,8 +274,9 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     score -= 50 
                     
                 if db_first and score >= 60:
-                    if any(ft in scrape_tokens for ft in db_first_tokens):
-                        score += 30
+                    # 🚀 SOTA FIX: Vornamen strikt matchen ohne Cross-Contamination
+                    if any(ft in scrape_tokens for ft in db_first_tokens) or (scrape_first_part and scrape_first_part in db_first):
+                        score += 80 
                     else:
                         db_f_init = db_first[0]
                         has_contradicting = False
@@ -283,7 +288,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                                     if c_st == db_f_init: has_matching = True
                                     else: has_contradicting = True
                         if has_matching: 
-                            score += 20
+                            score += 15
                         elif has_contradicting: 
                             score -= 100 
                             
@@ -303,11 +308,10 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
             top_has_report = candidates[0][0]['id'] in report_ids
             second_has_report = candidates[1][0]['id'] in report_ids
             
-            if top_has_report == second_has_report:
-                p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
-                p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
-                log(f"🚨 TIE-BREAKER ALARM: '{scraped_name_raw}' ist mehrdeutig zwischen {p1_n} und {p2_n}. Match wird sicherheitshalber ignoriert!")
-                return None
+            p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
+            p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
+            log(f"🚨 TIE-BREAKER ALARM: '{scraped_name_raw}' ist mehrdeutig zwischen {p1_n} und {p2_n}. Match wird sicherheitshalber ignoriert!")
+            return "TIE_BREAKER"
                 
     return candidates[0][0]
 
@@ -454,12 +458,22 @@ class MomentumV2Engine:  # Name bleibt V2, damit Aufrufe nicht kaputt gehen
         total_weight = 0.0
         history_log = []
         
-        search_name = player_name.split()[-1].lower() if player_name else ""
+        # 🚀 SOTA FIX: Strenge Brother-Resolution in der Historie
+        p_name_low = player_name.lower()
+        search_name_last = player_name.split()[-1].lower() if player_name else ""
+        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
 
         for idx, m in enumerate(chrono_matches):
-            is_p1 = search_name in str(m.get('player1_name', '')).lower()
+            p1_str = str(m.get('player1_name', '')).lower()
+            p2_str = str(m.get('player2_name', '')).lower()
+            
+            is_p1 = (p_name_low in p1_str) or (search_name_last in p1_str and search_name_first_init and p1_str.startswith(search_name_first_init))
+            is_p2 = (p_name_low in p2_str) or (search_name_last in p2_str and search_name_first_init and p2_str.startswith(search_name_first_init))
+            if not is_p1 and not is_p2:
+                is_p1 = search_name_last in p1_str
+
             winner = str(m.get('actual_winner_name', '')).lower()
-            won = search_name in winner
+            won = (is_p1 and search_name_last in winner) or (not is_p1 and search_name_last in winner)
             
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
             if odds <= 1.01: odds = 1.85
@@ -524,9 +538,11 @@ class MomentumV2Engine:  # Name bleibt V2, damit Aufrufe nicht kaputt gehen
             # Positiv = Overperformance / Negativ = Underperformance
             match_edge = actual_perf - expected_perf 
             
-            # 🚀 DEIN NEUER SIEG-BONUS (Win-Override)
+            # 🚀 SOTA FIX: ASYMMETRISCHE BESTRAFUNG FÜR NIEDERLAGEN
             if won:
-                match_edge += 0.40  # <--- HIER: Erhöhe diese Zahl nach Belieben!
+                match_edge += 0.40  
+            else:
+                match_edge -= 0.20
             
             # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
@@ -652,6 +668,11 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
+        # 🚀 SOTA FIX: Strenge Brother-Resolution
+        p_name_low = player_name.lower()
+        search_name_last = player_name.split()[-1].lower() if player_name else ""
+        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
+
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
@@ -666,8 +687,8 @@ class SurfaceIntelligence:
                 
             wins = 0
             for m in surf_matches:
-                winner = m.get('actual_winner_name', "") or ""
-                if player_name.lower() in winner.lower(): 
+                winner = str(m.get('actual_winner_name', "") or "").lower()
+                if (p_name_low in winner) or (search_name_last in winner and search_name_first_init and winner.startswith(search_name_first_init)) or (search_name_last in winner and not search_name_first_init):
                     wins += 1
                     
             win_rate = wins / n_surf
@@ -2179,7 +2200,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.4 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.5 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
