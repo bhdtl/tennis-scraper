@@ -37,7 +37,7 @@ jobs:
       - name: Run Scraper
         env:
           # SECURITY: Ensure these secrets are set in GitHub Repo Settings
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}             # <--- NEU: Der Schlüssel für Groq
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}             # <--- NEU: Der Schlüssel für Groq
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}             # Public Anon Key usually
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Admin Key for bypass RLS
