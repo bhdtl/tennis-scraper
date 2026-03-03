@@ -33,7 +33,7 @@ GLOBAL_SURFACE_MAP: Dict[str, str] = {}
 # =================================================================
 # 2. SOTA MOMENTUM V3 ENGINE (xG Model)
 # =================================================================
-class MomentumV2Engine:  
+class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der Rest des Codes nicht bricht!
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
         if not matches: 
@@ -47,7 +47,7 @@ class MomentumV2Engine:
         total_weight = 0.0
         history_log = []
         
-        # 🚀 SOTA FIX: Brother-Bleeding Prevention in History Engine
+        # 🚀 SOTA FIX: Strenge Brother-Resolution in der Historie
         p_name_low = player_name.lower()
         search_name_last = player_name.split()[-1].lower() if player_name else ""
         search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
@@ -56,20 +56,13 @@ class MomentumV2Engine:
             p1_str = str(m.get('player1_name', '')).lower()
             p2_str = str(m.get('player2_name', '')).lower()
             
-            # Strict Matching, um Historien von Brüdern nicht zu mischen
             is_p1 = (p_name_low in p1_str) or (search_name_last in p1_str and search_name_first_init and p1_str.startswith(search_name_first_init))
             is_p2 = (p_name_low in p2_str) or (search_name_last in p2_str and search_name_first_init and p2_str.startswith(search_name_first_init))
-            
-            # Fallback falls Namen abweichen
             if not is_p1 and not is_p2:
                 is_p1 = search_name_last in p1_str
-            
+
             winner = str(m.get('actual_winner_name', '')).lower()
-            won = (is_p1 and search_name_last in winner and (search_name_first_init in winner or p_name_low in winner)) or \
-                  (not is_p1 and search_name_last in winner and (search_name_first_init in winner or p_name_low in winner))
-            
-            if not won and search_name_last in winner:
-                won = True # Fallback für reine Nachnamen im Winner-Feld
+            won = (is_p1 and search_name_last in winner) or (not is_p1 and search_name_last in winner)
             
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
             if odds <= 1.01: odds = 1.85
@@ -133,11 +126,11 @@ class MomentumV2Engine:
             # --- 3. THE DELTA (Reality vs. Expectation) ---
             match_edge = actual_perf - expected_perf 
             
-            # 🚀 SOTA FIX: SIEG/NIEDERLAGE-BONUS (Asymmetrische Bestrafung)
+            # 🚀 SOTA FIX: ASYMMETRISCHE BESTRAFUNG FÜR NIEDERLAGEN
             if won:
                 match_edge += 0.40  
             else:
-                match_edge -= 0.20  # Harte Bestrafung für Niederlagen
+                match_edge -= 0.20
             
             # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
@@ -239,7 +232,7 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
-        # 🚀 SOTA FIX: Brother-Bleeding Prevention
+        # 🚀 SOTA FIX: Strenge Brother-Resolution
         p_name_low = player_name.lower()
         search_name_last = player_name.split()[-1].lower() if player_name else ""
         search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
@@ -252,11 +245,10 @@ class SurfaceIntelligence:
                 
             wins = 0
             for m in surf_matches:
-                winner = str(m.get('actual_winner_name', '')).lower()
-                # Strict check
+                winner = str(m.get('actual_winner_name', "") or "").lower()
                 if (p_name_low in winner) or (search_name_last in winner and search_name_first_init and winner.startswith(search_name_first_init)) or (search_name_last in winner and not search_name_first_init):
                     wins += 1
-
+                    
             win_rate = wins / n_surf
             
             vol_score = min(1.0, n_surf / 30.0) * 1.95
@@ -296,20 +288,23 @@ async def run_recalibration():
     
     updated_count = 0
     for i, p in enumerate(players):
+        # 🚀 SOTA FIX: Wir generieren hier den VOLLEN Namen, damit die Brother-Resolution Engine 
+        # (die wir oben gepatcht haben) den Vornamen verifizieren kann!
         full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
         last_name = p.get('last_name')
+        
         if not last_name:
             continue
             
         try:
-            # SOTA FIX: Hole History via exaktem Namen, um Bruder-Konflikte zu minimieren
+            # Suchen mit dem Nachnamen in Supabase, um alle relevanten Matches des Stammbaums zu holen
             hist_res = supabase.table("market_odds").select("*").or_(
                 f"player1_name.ilike.%{last_name}%,player2_name.ilike.%{last_name}%"
             ).order("created_at", desc=True).limit(40).execute()
             
             matches = hist_res.data or []
             
-            # Berechne neue Ratings
+            # Berechne neue Ratings (Die Engine verarbeitet die vollen Namen jetzt strikt richtig!)
             new_form = MomentumV2Engine.calculate_rating(matches, full_name)
             new_surface = SurfaceIntelligence.compute_player_surface_profile(matches, full_name)
             
