@@ -36,21 +36,21 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.5 - SOTA Brother-Resolution & Defeat Penalty)...")
+log("🔌 Initialisiere Neural Scout (V150.6 - SOTA OpenRouter & 1WIN SUPREMACY & OVERRIDE)...")
 
 # Secrets Load
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-if not GROQ_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/Groq Secrets.")
+if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
+    log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter Secrets.")
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# SOTA Model Selection - Free Tier Optimized
-MODEL_NAME = 'llama-3.1-8b-instant'
+# SOTA Model Selection - OpenRouter Elite Tier (Günstig & Extrem Stark)
+MODEL_NAME = 'meta-llama/llama-3.3-70b-instruct'
 
 # Global Caches & Dynamic Memory
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
@@ -888,13 +888,15 @@ class NeuralOptimizer:
                     log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
 
 # =================================================================
-# 6. GROQ ENGINE
+# 6. OPENROUTER AI ENGINE (SOTA)
 # =================================================================
-async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
-    url = "https://api.groq.com/openai/v1/chat/completions"
+async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
+    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://neuralscout.com",
+        "X-Title": "NeuralScout"
     }
     payload = {
         "model": model,
@@ -909,11 +911,11 @@ async def call_groq(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> 
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=45.0)
             if response.status_code != 200: 
-                log(f"⚠️ Groq API Error: {response.status_code} - {response.text}")
+                log(f"⚠️ OpenRouter API Error: {response.status_code} - {response.text}")
                 return None
             return response.json()['choices'][0]['message']['content']
         except Exception as e: 
-            log(f"⚠️ Groq Exception: {e}")
+            log(f"⚠️ OpenRouter Exception: {e}")
             return None
 
 # =================================================================
@@ -1727,7 +1729,7 @@ async def build_country_city_map(browser: Browser):
         await page.goto(url, timeout=20000, wait_until="networkidle")
         text_content = await page.inner_text("body")
         prompt = f"TASK: Map Country to City (United Cup). Text: {text_content[:20000]}. JSON ONLY."
-        res = await call_groq(prompt)
+        res = await call_openrouter(prompt)
         if res:
             try:
                 data = json.loads(res.replace("json", "").replace("```", "").strip())
@@ -1748,7 +1750,7 @@ async def resolve_united_cup_via_country(p1):
     if cache_key in TOURNAMENT_LOC_CACHE: 
         country = TOURNAMENT_LOC_CACHE[cache_key]
     else:
-        res = await call_groq(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
+        res = await call_openrouter(f"Country of player {p1}? JSON: {{'country': 'Name'}}")
         try:
             data = json.loads(res.replace("json", "").replace("```", "").strip())
             data = ensure_dict(data)
@@ -1767,7 +1769,7 @@ async def resolve_ambiguous_tournament(p1, p2, scraped_name, p1_country, p2_coun
         return TOURNAMENT_LOC_CACHE[scraped_name]
         
     prompt = f"TASK: Identify tournament location. MATCH: {p1} ({p1_country}) vs {p2} ({p2_country}). SOURCE: '{scraped_name}'. OUTPUT JSON: {{ 'city': 'Name', 'surface': 'Hard/Clay/Grass', 'indoor': true/false }}"
-    res = await call_groq(prompt)
+    res = await call_openrouter(prompt)
     
     if res:
         try: 
@@ -1910,7 +1912,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     }}
     """
     
-    res = await call_groq(prompt)
+    res = await call_openrouter(prompt)
     default_text = f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}."
     
     if not res: 
@@ -2200,7 +2202,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.5 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.6 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
