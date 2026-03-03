@@ -82,12 +82,15 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     return score
 
-def find_player_smart(scraped_name_raw: str, db_players: List[Dict]) -> Optional[Dict]:
+# 🚀 SOTA FIX: Brother Resolution Engine in Oracle
+def find_player_smart(scraped_name_raw: str, db_players: List[Dict]) -> Any:
     if not scraped_name_raw or not db_players: return None
     clean_scrape = clean_player_name(scraped_name_raw)
     parts = clean_scrape.split()
     scrape_last = ""
     scrape_initial = ""
+    scrape_full_first = ""
+    
     if len(parts) >= 2:
         last_token = parts[-1].replace('.', '')
         if len(last_token) == 1 and last_token.isalpha():
@@ -95,27 +98,45 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict]) -> Optional
             scrape_last = " ".join(parts[:-1]) 
         else:
             scrape_last = parts[-1]
+            scrape_full_first = parts[0].lower() if parts[0] else ""
             scrape_initial = parts[0][0].lower() if parts[0] else ""
     else:
         scrape_last = clean_scrape
 
     target_last = normalize_db_name(scrape_last)
     candidates = []
+    
     for p in db_players:
         db_last_raw = p.get('last_name', '')
         db_last = normalize_db_name(db_last_raw)
+        db_first = normalize_db_name(p.get('first_name', ''))
+        
         match_score = 0
         if db_last == target_last: match_score = 100
         elif target_last in db_last or db_last in target_last: 
             if len(target_last) > 3 and len(db_last) > 3: match_score = 80
+            
         if match_score > 0:
-            db_first = p.get('first_name', '').lower()
-            if scrape_initial and db_first:
-                if db_first.startswith(scrape_initial): match_score += 20 
-                else: match_score -= 50 
+            if scrape_full_first and db_first:
+                if scrape_full_first == db_first or scrape_full_first in db_first:
+                    match_score += 80 # Perfekter Vorname
+                elif db_first.startswith(scrape_initial):
+                    match_score += 15 # Nur Initiale matcht
+                else:
+                    match_score -= 100 # Falscher Bruder
+            elif scrape_initial and db_first:
+                if db_first.startswith(scrape_initial): match_score += 15 
+                else: match_score -= 100 
+                
             if match_score > 50: candidates.append((p, match_score))
+            
     if not candidates: return None
     candidates.sort(key=lambda x: x[1], reverse=True)
+    
+    # Tie-Breaker
+    if len(candidates) > 1 and candidates[0][1] == candidates[1][1]:
+        return "TIE_BREAKER"
+        
     return candidates[0][0]
 
 def parse_draws_locally(html):
@@ -258,6 +279,11 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 
             p1_obj = find_player_smart(m['p1_raw'], db_players)
             p2_obj = find_player_smart(m['p2_raw'], db_players)
+            
+            # 🚀 SOTA FIX: Hard Abort bei TIE_BREAKER
+            if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
+                log(f"🚨 Tie-Breaker Alarm im Oracle! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']}).")
+                continue
             
             if p1_obj and p2_obj and p1_obj['id'] != p2_obj['id']:
                 n1 = p1_obj['last_name']
