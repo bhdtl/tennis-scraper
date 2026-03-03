@@ -33,7 +33,7 @@ GLOBAL_SURFACE_MAP: Dict[str, str] = {}
 # =================================================================
 # 2. SOTA MOMENTUM V3 ENGINE (xG Model)
 # =================================================================
-class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der Rest des Codes nicht bricht!
+class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
         if not matches: 
@@ -47,12 +47,29 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
         total_weight = 0.0
         history_log = []
         
-        search_name = player_name.split()[-1].lower() if player_name else ""
+        # 🚀 SOTA FIX: Brother-Bleeding Prevention in History Engine
+        p_name_low = player_name.lower()
+        search_name_last = player_name.split()[-1].lower() if player_name else ""
+        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
 
         for idx, m in enumerate(chrono_matches):
-            is_p1 = search_name in str(m.get('player1_name', '')).lower()
+            p1_str = str(m.get('player1_name', '')).lower()
+            p2_str = str(m.get('player2_name', '')).lower()
+            
+            # Strict Matching, um Historien von Brüdern nicht zu mischen
+            is_p1 = (p_name_low in p1_str) or (search_name_last in p1_str and search_name_first_init and p1_str.startswith(search_name_first_init))
+            is_p2 = (p_name_low in p2_str) or (search_name_last in p2_str and search_name_first_init and p2_str.startswith(search_name_first_init))
+            
+            # Fallback falls Namen abweichen
+            if not is_p1 and not is_p2:
+                is_p1 = search_name_last in p1_str
+            
             winner = str(m.get('actual_winner_name', '')).lower()
-            won = search_name in winner
+            won = (is_p1 and search_name_last in winner and (search_name_first_init in winner or p_name_low in winner)) or \
+                  (not is_p1 and search_name_last in winner and (search_name_first_init in winner or p_name_low in winner))
+            
+            if not won and search_name_last in winner:
+                won = True # Fallback für reine Nachnamen im Winner-Feld
             
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
             if odds <= 1.01: odds = 1.85
@@ -113,13 +130,14 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
                             elif game_diff <= 7: actual_perf = 0.10   
                             else: actual_perf = 0.0                   
 
-                        # --- 3. THE DELTA (Reality vs. Expectation) ---
-            # Positiv = Overperformance / Negativ = Underperformance
+            # --- 3. THE DELTA (Reality vs. Expectation) ---
             match_edge = actual_perf - expected_perf 
             
-            # 🚀 DEIN NEUER SIEG-BONUS (Win-Override)
+            # 🚀 SOTA FIX: SIEG/NIEDERLAGE-BONUS (Asymmetrische Bestrafung)
             if won:
-                match_edge += 0.40  # <--- HIER: Erhöhe diese Zahl nach Belieben!
+                match_edge += 0.40  
+            else:
+                match_edge -= 0.20  # Harte Bestrafung für Niederlagen
             
             # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
@@ -221,8 +239,10 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
-        # 🚀 SOTA FIX: Smart Matcher
-        search_name = player_name.split()[-1].lower() if player_name else ""
+        # 🚀 SOTA FIX: Brother-Bleeding Prevention
+        p_name_low = player_name.lower()
+        search_name_last = player_name.split()[-1].lower() if player_name else ""
+        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
 
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
@@ -230,7 +250,13 @@ class SurfaceIntelligence:
                 profile[surf] = {"rating": 3.5, "color": "#808080", "matches_tracked": 0, "text": "No Experience"}
                 continue
                 
-            wins = sum(1 for m in surf_matches if search_name in str(m.get('actual_winner_name', '')).lower())
+            wins = 0
+            for m in surf_matches:
+                winner = str(m.get('actual_winner_name', '')).lower()
+                # Strict check
+                if (p_name_low in winner) or (search_name_last in winner and search_name_first_init and winner.startswith(search_name_first_init)) or (search_name_last in winner and not search_name_first_init):
+                    wins += 1
+
             win_rate = wins / n_surf
             
             vol_score = min(1.0, n_surf / 30.0) * 1.95
@@ -270,21 +296,20 @@ async def run_recalibration():
     
     updated_count = 0
     for i, p in enumerate(players):
-        full_name = p.get('last_name')
-        if not full_name:
+        full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+        last_name = p.get('last_name')
+        if not last_name:
             continue
             
         try:
-            # 🚀 SOTA FIX: Suche in der Match-Historie nach dem letzten Namensteil
-            search_name = full_name.split()[-1]
-            
+            # SOTA FIX: Hole History via exaktem Namen, um Bruder-Konflikte zu minimieren
             hist_res = supabase.table("market_odds").select("*").or_(
-                f"player1_name.ilike.%{search_name}%,player2_name.ilike.%{search_name}%"
+                f"player1_name.ilike.%{last_name}%,player2_name.ilike.%{last_name}%"
             ).order("created_at", desc=True).limit(40).execute()
             
             matches = hist_res.data or []
             
-            # Berechne neue Ratings (Die Engine verarbeitet die Namen jetzt richtig!)
+            # Berechne neue Ratings
             new_form = MomentumV2Engine.calculate_rating(matches, full_name)
             new_surface = SurfaceIntelligence.compute_player_surface_profile(matches, full_name)
             
