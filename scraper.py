@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.6 - SOTA OpenRouter & 1WIN SUPREMACY & OVERRIDE)...")
+log("🔌 Initialisiere Neural Scout (V150.7 - SOTA OpenRouter & BROTHER-SUPREMACY)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -157,13 +157,37 @@ def ensure_dict(data: Any) -> Dict:
 def normalize_db_name(name: str) -> str:
     if not name: 
         return ""
-    n = name.lower().strip()
+    # 🚀 SOTA FIX 1: Zwingende Entfernung von Accents (Cerúndolo -> cerundolo)
+    n = "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
+    n = n.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
+
+# 🚀 SOTA FIX 3: HISTORY ENGINE BROTHER-PROOF MATCHING
+def is_same_player(target_name: str, db_name: str) -> bool:
+    t_norm = normalize_db_name(target_name)
+    d_norm = normalize_db_name(db_name)
+    if t_norm == d_norm: return True
+    
+    t_parts = t_norm.split()
+    d_parts = d_norm.split()
+    if not t_parts or not d_parts: return False
+    
+    # Nachname muss matchen
+    if t_parts[-1] != d_parts[-1]: return False
+    
+    t_first = t_parts[0] if len(t_parts) > 1 else ""
+    d_first = d_parts[0] if len(d_parts) > 1 else ""
+    
+    # Initiale vergleichen (J vs F) -> Verhindert History Bleeding!
+    if t_first and d_first:
+        return t_first[0] == d_first[0]
+        
+    return True
 
 def parse_te_name(raw: str):
     """Extrahiert aus 'Cerundolo F.' -> Nachname: 'cerundolo', Initiale: 'f'"""
@@ -247,7 +271,9 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
                         score -= 100 # Contradiction -> Falscher Bruder!
         else:
-            if all(t in scrape_tokens for t in db_last_tokens):
+            # 🚀 SOTA FIX 2: Hispanic Last Name Matching
+            # Nur das letzte Wort des Nachnamens muss matchen (verhindert dass Manuel Cerundolo 0 Punkte kriegt)
+            if db_last_tokens and db_last_tokens[-1] in scrape_tokens:
                 score += 60
                 last_matched = True
             elif len(db_last) >= 6:
@@ -274,19 +300,20 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     score -= 50 
                     
                 if db_first and score >= 60:
-                    # 🚀 SOTA FIX: Vornamen strikt matchen ohne Cross-Contamination
                     if any(ft in scrape_tokens for ft in db_first_tokens) or (scrape_first_part and scrape_first_part in db_first):
                         score += 80 
                     else:
+                        # 🚀 SOTA FIX: Double Initial Fix (J.M. Cerundolo)
                         db_f_init = db_first[0]
                         has_contradicting = False
                         has_matching = False
                         for st in scrape_tokens:
-                            if len(st) <= 2:
-                                c_st = st.replace('.', '')
-                                if len(c_st) == 1:
-                                    if c_st == db_f_init: has_matching = True
-                                    else: has_contradicting = True
+                            c_st = st.replace('.', '')
+                            if 0 < len(c_st) <= 2: # Erlaubt "f", "jm"
+                                if c_st[0] == db_f_init: 
+                                    has_matching = True
+                                else: 
+                                    has_contradicting = True
                         if has_matching: 
                             score += 15
                         elif has_contradicting: 
@@ -304,10 +331,8 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         top_score = candidates[0][1]
         second_score = candidates[1][1]
         
+        # 🚀 TIE BREAKER ALARM (Works flawlessly now because scores are normalized)
         if top_score == second_score:
-            top_has_report = candidates[0][0]['id'] in report_ids
-            second_has_report = candidates[1][0]['id'] in report_ids
-            
             p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
             p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
             log(f"🚨 TIE-BREAKER ALARM: '{scraped_name_raw}' ist mehrdeutig zwischen {p1_n} und {p2_n}. Match wird sicherheitshalber ignoriert!")
@@ -444,7 +469,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 # =================================================================
 # 3. SOTA MOMENTUM V3 ENGINE (xG Model)
 # =================================================================
-class MomentumV2Engine:  # Name bleibt V2, damit Aufrufe nicht kaputt gehen
+class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
         if not matches: 
@@ -458,22 +483,18 @@ class MomentumV2Engine:  # Name bleibt V2, damit Aufrufe nicht kaputt gehen
         total_weight = 0.0
         history_log = []
         
-        # 🚀 SOTA FIX: Strenge Brother-Resolution in der Historie
-        p_name_low = player_name.lower()
-        search_name_last = player_name.split()[-1].lower() if player_name else ""
-        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
-
         for idx, m in enumerate(chrono_matches):
-            p1_str = str(m.get('player1_name', '')).lower()
-            p2_str = str(m.get('player2_name', '')).lower()
+            p1_str = str(m.get('player1_name', ''))
+            p2_str = str(m.get('player2_name', ''))
             
-            is_p1 = (p_name_low in p1_str) or (search_name_last in p1_str and search_name_first_init and p1_str.startswith(search_name_first_init))
-            is_p2 = (p_name_low in p2_str) or (search_name_last in p2_str and search_name_first_init and p2_str.startswith(search_name_first_init))
-            if not is_p1 and not is_p2:
-                is_p1 = search_name_last in p1_str
+            # 🚀 SOTA FIX 3: No more Brother-Bleeding! Use strict matching!
+            is_p1 = is_same_player(player_name, p1_str)
+            is_p2 = is_same_player(player_name, p2_str)
+            
+            if not is_p1 and not is_p2: continue # Überspringen, wenn es gar nicht sein Match ist!
 
-            winner = str(m.get('actual_winner_name', '')).lower()
-            won = (is_p1 and search_name_last in winner) or (not is_p1 and search_name_last in winner)
+            winner = str(m.get('actual_winner_name', ''))
+            won = is_same_player(player_name, winner)
             
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
             if odds <= 1.01: odds = 1.85
@@ -534,17 +555,13 @@ class MomentumV2Engine:  # Name bleibt V2, damit Aufrufe nicht kaputt gehen
                             elif game_diff <= 7: actual_perf = 0.10   
                             else: actual_perf = 0.0                   
 
-                        # --- 3. THE DELTA (Reality vs. Expectation) ---
-            # Positiv = Overperformance / Negativ = Underperformance
             match_edge = actual_perf - expected_perf 
             
-            # 🚀 SOTA FIX: ASYMMETRISCHE BESTRAFUNG FÜR NIEDERLAGEN
             if won:
                 match_edge += 0.40  
             else:
                 match_edge -= 0.20
             
-            # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
@@ -668,11 +685,6 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
-        # 🚀 SOTA FIX: Strenge Brother-Resolution
-        p_name_low = player_name.lower()
-        search_name_last = player_name.split()[-1].lower() if player_name else ""
-        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
-
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
@@ -687,8 +699,9 @@ class SurfaceIntelligence:
                 
             wins = 0
             for m in surf_matches:
-                winner = str(m.get('actual_winner_name', "") or "").lower()
-                if (p_name_low in winner) or (search_name_last in winner and search_name_first_init and winner.startswith(search_name_first_init)) or (search_name_last in winner and not search_name_first_init):
+                winner = str(m.get('actual_winner_name', ""))
+                # 🚀 SOTA FIX 3: No History Bleeding
+                if is_same_player(player_name, winner):
                     wins += 1
                     
             win_rate = wins / n_surf
@@ -1414,6 +1427,7 @@ async def update_past_results(browser: Browser, players: List[Dict]):
 
                             for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                                 p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
+                                # Voller Name in History Loop ist wichtig für SOTA FIX 3 (aber hier nicht kritisch weil Auditor den p_name_hook nutzt)
                                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook)
                                 p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                                 
@@ -2202,7 +2216,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.6 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V150.7 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2318,15 +2332,19 @@ async def run_pipeline():
                         report1 = next((r for r in all_reports if r.get('player_id') == p1_obj['id']), None)
                         report2 = next((r for r in all_reports if r.get('player_id') == p2_obj['id']), None)
                         
+                        # Wir generieren die vollen Namen für den strikten Abgleich!
+                        full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
+                        full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
+
                         p1_history = await fetch_player_history_extended(n1, limit=80)
                         p2_history = await fetch_player_history_extended(n2, limit=80)
                         
-                        p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, n1)
-                        p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, n2)
-                        p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], n1)
-                        p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], n2)
+                        # Nutzen der strikten History-Match Logik!
+                        p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1)
+                        p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2)
+                        p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
+                        p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
 
-                        # 🚀 SOTA FIX 4: Der Ghost-Override Filter
                         is_shadow_match = existing_match and (existing_match.get('is_visible_in_scanner') is False or "[BACKGROUND DATA]" in existing_match.get('ai_analysis_text', ''))
 
                         should_run_ai = True
