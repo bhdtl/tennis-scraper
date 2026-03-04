@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V158.0 - Elite Master-Slave Sync COMPLETE)...")
+log("🔌 Initialisiere Neural Scout (V159.0 - Elite Master-Slave Sync COMPLETE)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -297,6 +297,71 @@ def has_active_signal(text: Optional[str]) -> bool:
     if "[" in text and "]" in text:
         if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]): return True
     return False
+
+# =================================================================
+# 2.5 INTEGRITY ENGINE (WURDE VERMISST)
+# =================================================================
+def validate_market_integrity(o1: float, o2: float) -> bool:
+    if o1 <= 1.01 or o2 <= 1.01: return False 
+    if o1 > 200 or o2 > 200: return False 
+    implied_prob = (1/o1) + (1/o2)
+    if implied_prob < 0.92 or implied_prob > 1.45: return False
+    return True
+
+def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
+    if old_o1 == 0 or old_o2 == 0: return False 
+    if abs(new_o1 - old_o2) < 0.15 and abs(new_o2 - old_o1) < 0.15: return False
+    change_p1 = abs(new_o1 - old_o1) / old_o1
+    change_p2 = abs(new_o2 - old_o2) / old_o2
+    if change_p1 > 0.60 or change_p2 > 0.60:
+        if old_o1 < 1.10 or old_o2 < 1.10: return False
+        return True
+    return False
+
+# --- SOTA WEATHER SERVICE ---
+async def fetch_weather_data(location_name: str) -> Optional[Dict]:
+    if not location_name or location_name == "Unknown": return None
+    clean_location = re.sub(r'a-zA-Z0-9\s,', '', location_name).strip()
+    if len(clean_location) > 50: clean_location = clean_location[:50] 
+    
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    cache_key = f"{clean_location}_{today_str}"
+    if cache_key in WEATHER_CACHE: return WEATHER_CACHE[cache_key]
+
+    try:
+        async with httpx.AsyncClient() as client:
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={clean_location}&count=1&language=en&format=json"
+            geo_res = await client.get(geo_url)
+            geo_data = geo_res.json()
+            if not geo_data.get('results'): 
+                WEATHER_CACHE[cache_key] = None
+                return None
+
+            loc = geo_data['results'][0]
+            lat, lon = loc['latitude'], loc['longitude']
+
+            w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
+            w_res = await client.get(w_url)
+            w_data = w_res.json()
+            
+            curr = w_data.get('current', {})
+            if not curr: return None
+
+            impact = "Neutral conditions."
+            temp = curr.get('temperature_2m', 20)
+            hum = curr.get('relative_humidity_2m', 50)
+            wind = curr.get('wind_speed_10m', 10)
+
+            if temp > 30: impact = "EXTREME HEAT: Ball flies fast, physically draining."
+            elif temp < 12: impact = "COLD: Low bounce, heavy conditions."
+            if hum > 70: impact += " HIGH HUMIDITY: Air is heavy, ball travels slower."
+            if wind > 20: impact += " WINDY: Serve toss difficult, high variance."
+
+            result = {"summary": f"{temp}°C, {hum}% Hum, Wind: {wind} km/h", "impact_note": impact}
+            WEATHER_CACHE[cache_key] = result
+            return result
+    except: return None
+
 
 # =================================================================
 # 3. SOTA MOMENTUM V3 ENGINE (xG Model)
@@ -665,9 +730,7 @@ class QuantumGamesSimulator:
             }
         }
 
-# =================================================================
-# 11. LIVE SKILL ENGINE
-# =================================================================
+
 class LiveSkillEngine:
     @staticmethod
     def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
@@ -727,9 +790,7 @@ class LiveSkillEngine:
 
         return new_skills
 
-# =================================================================
-# 12. FANTASY SETTLEMENT ENGINE
-# =================================================================
+
 class FantasySettlementEngine:
     @staticmethod
     def run_settlement():
@@ -1097,6 +1158,7 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
 
     try:
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
+        
         title = await page.title()
         if "Just a moment" in title or "Cloudflare" in title:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
@@ -1423,79 +1485,120 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     except: 
         return "Unknown"
 
-async def fetch_elo_ratings(browser: Browser):
-    log("📊 Lade Elo Ratings...")
-    urls = {"ATP": "https://tennisabstract.com/reports/atp_elo_ratings.html", "WTA": "https://tennisabstract.com/reports/wta_elo_ratings.html"}
+async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
+    s_low = clean_tournament_name(tour).lower().strip()
+    best_match = None
+    best_score = 0
     
-    for tour, url in urls.items():
-        page = await browser.new_page()
-        try:
-            await page.goto(f"{url}?t={int(time.time())}", wait_until="domcontentloaded", timeout=60000)
-            soup = BeautifulSoup(await page.content(), 'html.parser')
-            table = soup.find('table', {'id': 'reportable'})
-            if table:
-                for row in table.find_all('tr')[1:]:
-                    cols = row.find_all('td')
-                    if len(cols) > 4:
-                        name = normalize_text(cols[0].get_text(strip=True)).lower()
-                        last_name = name.split()[-1] if " " in name else name
-                        ELO_CACHE[tour][last_name] = {
-                            'Hard': to_float(cols[3].get_text(strip=True), 1500),
-                            'Clay': to_float(cols[4].get_text(strip=True), 1500),
-                            'Grass': to_float(cols[5].get_text(strip=True), 1500)
-                        }
-        except: 
-            pass
-        finally: 
-            await page.close()
-
-async def get_db_data():
-    try:
-        weights_res = supabase.table("ai_system_weights").select("*").execute()
-        if weights_res.data:
-            for w in weights_res.data:
-                tour = w.get("tour", "ATP")
-                DYNAMIC_WEIGHTS[tour] = {
-                    "SKILL": to_float(w.get("weight_skill"), 0.50), 
-                    "FORM": to_float(w.get("weight_form"), 0.35), 
-                    "SURFACE": to_float(w.get("weight_surface"), 0.15), 
-                    "MC_VARIANCE": to_float(w.get("mc_variance"), 1.20)
-                }
-
-        players = supabase.table("players").select("*").execute().data or []
-        skills = supabase.table("player_skills").select("*").execute().data or []
-        reports = supabase.table("scouting_reports").select("*").execute().data or []
-        tournaments = supabase.table("tournaments").select("*").execute().data or []
-        
-        for t in tournaments:
-            t_name = clean_tournament_name(t.get('name', ''))
-            t_loc = t.get('location', '')
-            t_surf = t.get('surface', 'Unknown')
+    for t in db_tours:
+        score = calculate_fuzzy_score(s_low, t['name'])
+        if score > best_score: 
+            best_score = score
+            best_match = t
             
-            if t_name and t_surf: 
-                GLOBAL_SURFACE_MAP[t_name.lower()] = t_surf
-            if t_loc and t_surf:
-                for part in t_loc.split(','):
-                    if part.strip().lower() and len(part.strip()) > 2: 
-                        GLOBAL_SURFACE_MAP[part.strip().lower()] = t_surf
-                            
-        clean_skills = {}
-        for s in skills:
-            if isinstance(s, dict) and s.get('player_id'):
-                clean_skills[s['player_id']] = {
-                    k: to_float(s.get(k, 50)) for k in ['serve', 'power', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'mental', 'overall_rating']
-                }
-                
-        return players, clean_skills, reports, tournaments
-    except Exception as e:
-        log(f"❌ DB Load Error: {e}")
-        return [], {}, [], []
+    if best_match and best_score >= 20: 
+        loc = best_match.get('location', '')
+        if loc:
+            city = loc.split(',')[0]
+        else:
+            city = best_match['name']
+        return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', ''), city, best_match['name']
+        
+    return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0], tour
+
+def format_skills(s: Dict) -> str:
+    if not s: 
+        return "No granular skill data."
+    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
+
+async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
+    fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
+    fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
+    
+    if weather_data:
+        weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}" 
+    else:
+        weather_str = "Weather: Neutral/No Data."
+        
+    current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
+    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
+    
+    if report1:
+        scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." 
+    else:
+        scoutA = "No scouting report available for Player A."
+        
+    if report2:
+        scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." 
+    else:
+        scoutB = "No scouting report available for Player B."
+        
+    validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
+    
+    aWins = mc_results['probA'] > mc_results['probB']
+    
+    if aWins:
+        predictedMCWinner = p1['last_name']
+        predictedMCLoser = p2['last_name']
+        finalProb_val = float(mc_results['probA'])
+    else:
+        predictedMCWinner = p2['last_name']
+        predictedMCLoser = p1['last_name']
+        finalProb_val = float(mc_results['probB'])
+    
+    if "WTA" in tour_name.upper():
+        tour_label = "WTA"
+    else:
+        tour_label = "ATP"
+        
+    sys_acc = SYSTEM_ACCURACY.get(tour_label, 65.0)
+    
+    convictionDirective = ""
+    if finalProb_val >= 65.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) ***\nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING." 
+    elif finalProb_val >= 58.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model gives {predictedMCWinner} a clear edge ({finalProb_val:.1f}%). Write confidently about why {predictedMCWinner} is the favorite to win, focusing on the tactical mismatch. Avoid 50/50 language." 
+    else:
+        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model sees this as a tight battle ({finalProb_val:.1f}% for {predictedMCWinner}). Write an analysis highlighting the fine margins that will decide this match."
+
+    prompt = f"""You are an elite Senior Tennis Analyst (Style: Gil Gross). 
+    *** SYSTEM SELF-REFLECTION (CRITICAL) ***
+    Our internal neural network has an active prediction accuracy of {sys_acc}%. 
+    *** DATA GROUNDING (SOURCE OF TRUTH) ***
+    Player A ({p1['last_name']}): Style: {p1.get('play_style', 'Unknown')} | Form: {form1_data['text']} | Surface Rating: {p1_s_rating}/10 | Granular Skills: {format_skills(s1)} | Scouting: {scoutA} | Fatigue: {fatigueA}
+    Player B ({p2['last_name']}): Style: {p2.get('play_style', 'Unknown')} | Form: {form2_data['text']} | Surface Rating: {p2_s_rating}/10 | Granular Skills: {format_skills(s2)} | Scouting: {scoutB} | Fatigue: {fatigueB}
+    Match Conditions: Surface: {surface} (BSI: {bsi}) | Notes: {validCourtNotes} | {weather_str}
+    *** INTERNAL MATCHUP DATA ***
+    Winner: {predictedMCWinner} (Win Probability: {finalProb_val:.1f}%)
+    {convictionDirective}
+    *** CRITICAL DIRECTIVES (MUST OBEY) ***
+    1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages, numerical ratings, or skill points in 'prediction_text' and 'key_factor'.
+    2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics".
+    3. FACTUAL INTEGRITY: Ground analysis in the provided 'Weaknesses'.
+    4. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
+    OUTPUT JSON:
+    {{"winner_prediction": "{predictedMCWinner}", "key_factor": "One sharp tactical sentence focusing on the primary technical mismatch (NO NUMBERS).", "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.", "tactical_bullets": ["Tactic 1 based on report", "Tactic 2 based on report", "Tactic 3 based on report"]}}"""
+    
+    res = await call_openrouter(prompt)
+    if not res: 
+        return {'ai_text': f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}.", 'mc_prob_a': mc_results['probA']}
+        
+    try:
+        data = ensure_dict(json.loads(res.replace("json", "").replace("```", "").strip()))
+        bullets_str = "\n".join([f"- {b}" for b in data.get('tactical_bullets', [])])
+        return {
+            'ai_text': f"🔑 {data.get('key_factor', '')}\n\n📝 {data.get('prediction_text', '')}\n\n🎯 Tactical Keys:\n{bullets_str}", 
+            'mc_prob_a': mc_results['probA']
+        }
+    except: 
+        return {'ai_text': f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}.", 'mc_prob_a': mc_results['probA']}
 
 # =================================================================
 # PIPELINE EXECUTION (MASTER-SLAVE ARCHITECTURE)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V158.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
+    log(f"🚀 Neural Scout V159.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
     
     TARGET_TABLE = "market_odds_demo" # 🔴 SOTA: Demo/Staging Environment für den Test
     
