@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V150.7 - SOTA OpenRouter & BROTHER-SUPREMACY)...")
+log("🔌 Initialisiere Neural Scout (V151.0 - SOTA Markov Chain Synergy & Level Gap Alpha)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -49,7 +49,7 @@ if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# SOTA Model Selection - OpenRouter Elite Tier (Günstig & Extrem Stark)
+# SOTA Model Selection - OpenRouter Elite Tier
 MODEL_NAME = 'meta-llama/llama-3.3-70b-instruct'
 
 # Global Caches & Dynamic Memory
@@ -157,7 +157,6 @@ def ensure_dict(data: Any) -> Dict:
 def normalize_db_name(name: str) -> str:
     if not name: 
         return ""
-    # 🚀 SOTA FIX 1: Zwingende Entfernung von Accents (Cerúndolo -> cerundolo)
     n = "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
     n = n.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
@@ -167,7 +166,6 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
-# 🚀 SOTA FIX 3: HISTORY ENGINE BROTHER-PROOF MATCHING
 def is_same_player(target_name: str, db_name: str) -> bool:
     t_norm = normalize_db_name(target_name)
     d_norm = normalize_db_name(db_name)
@@ -177,20 +175,17 @@ def is_same_player(target_name: str, db_name: str) -> bool:
     d_parts = d_norm.split()
     if not t_parts or not d_parts: return False
     
-    # Nachname muss matchen
     if t_parts[-1] != d_parts[-1]: return False
     
     t_first = t_parts[0] if len(t_parts) > 1 else ""
     d_first = d_parts[0] if len(d_parts) > 1 else ""
     
-    # Initiale vergleichen (J vs F) -> Verhindert History Bleeding!
     if t_first and d_first:
         return t_first[0] == d_first[0]
         
     return True
 
 def parse_te_name(raw: str):
-    """Extrahiert aus 'Cerundolo F.' -> Nachname: 'cerundolo', Initiale: 'f'"""
     clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
     parts = clean.split()
     if not parts: return "", ""
@@ -234,7 +229,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     else:
         scrape_last_part = clean_scrape
         scrape_first_part = ""
-        # Extrahiere potenziellen Vornamen aus dem Scrape-Token, falls klassisches Format
         if len(scrape_tokens) > 1:
             scrape_first_part = scrape_tokens[0]
     
@@ -259,7 +253,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 continue 
                 
             if last_matched and db_first and scrape_first_part:
-                # 🚀 SOTA FIX: Brother Resolution Check (Strikter Bonus)
                 if db_first == scrape_first_part or scrape_first_part in db_first:
                     score += 80 
                 elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80:
@@ -267,12 +260,10 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 else:
                     sf_tokens = scrape_first_part.split()
                     if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
-                        score += 15 # Nur Initiale matcht -> Risiko für Tie-Break!
+                        score += 15 
                     elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
-                        score -= 100 # Contradiction -> Falscher Bruder!
+                        score -= 100 
         else:
-            # 🚀 SOTA FIX 2: Hispanic Last Name Matching
-            # Nur das letzte Wort des Nachnamens muss matchen (verhindert dass Manuel Cerundolo 0 Punkte kriegt)
             if db_last_tokens and db_last_tokens[-1] in scrape_tokens:
                 score += 60
                 last_matched = True
@@ -303,13 +294,12 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                     if any(ft in scrape_tokens for ft in db_first_tokens) or (scrape_first_part and scrape_first_part in db_first):
                         score += 80 
                     else:
-                        # 🚀 SOTA FIX: Double Initial Fix (J.M. Cerundolo)
                         db_f_init = db_first[0]
                         has_contradicting = False
                         has_matching = False
                         for st in scrape_tokens:
                             c_st = st.replace('.', '')
-                            if 0 < len(c_st) <= 2: # Erlaubt "f", "jm"
+                            if 0 < len(c_st) <= 2: 
                                 if c_st[0] == db_f_init: 
                                     has_matching = True
                                 else: 
@@ -331,7 +321,6 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
         top_score = candidates[0][1]
         second_score = candidates[1][1]
         
-        # 🚀 TIE BREAKER ALARM (Works flawlessly now because scores are normalized)
         if top_score == second_score:
             p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
             p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
@@ -487,11 +476,10 @@ class MomentumV2Engine:
             p1_str = str(m.get('player1_name', ''))
             p2_str = str(m.get('player2_name', ''))
             
-            # 🚀 SOTA FIX 3: No more Brother-Bleeding! Use strict matching!
             is_p1 = is_same_player(player_name, p1_str)
             is_p2 = is_same_player(player_name, p2_str)
             
-            if not is_p1 and not is_p2: continue # Überspringen, wenn es gar nicht sein Match ist!
+            if not is_p1 and not is_p2: continue
 
             winner = str(m.get('actual_winner_name', ''))
             won = is_same_player(player_name, winner)
@@ -700,7 +688,6 @@ class SurfaceIntelligence:
             wins = 0
             for m in surf_matches:
                 winner = str(m.get('actual_winner_name', ""))
-                # 🚀 SOTA FIX 3: No History Bleeding
                 if is_same_player(player_name, winner):
                     wins += 1
                     
@@ -743,50 +730,124 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. MONTE CARLO & TACTICAL EDGE ENGINE (NEW & DYNAMIC)
+# 5. SOTA MARKOV CHAIN ENGINE (Replaces Old Monte Carlo Engine)
 # =================================================================
-class MonteCarloEngine:
+class MarkovChainEngine:
     @staticmethod
-    def run_simulation(tour: str, skillA: float, formA: float, surfaceA: float, 
-                       skillB: float, formB: float, surfaceB: float, 
-                       iterations: int = 1000) -> Dict[str, float]:
+    def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
+                       bsi: float, styleA: str, styleB: str, 
+                       iterations: int = 2500) -> Dict[str, Any]:
         
-        # SOTA FIX: Dynamic Weights Retrieval
-        weights = DYNAMIC_WEIGHTS.get(tour, DYNAMIC_WEIGHTS["ATP"])
-        w_skill = weights["SKILL"]
-        w_form = weights["FORM"]
-        w_surf = weights["SURFACE"]
-        variance = weights.get("MC_VARIANCE", 1.20)
-        
-        baseA = (skillA / 10) * w_skill + formA * w_form + surfaceA * w_surf
-        baseB = (skillB / 10) * w_skill + formB * w_form + surfaceB * w_surf
-        
-        # Fish out of water penalty
-        if surfaceA < 4.5:
-            baseA -= (4.5 - surfaceA) * 1.5
-        if surfaceB < 4.5:
-            baseB -= (4.5 - surfaceB) * 1.5
+        def get_serve_prob(serve_skill, power_skill):
+            return 0.50 + (((serve_skill * 0.7) + (power_skill * 0.3)) / 100.0) * 0.25
             
-        winsA = 0
-        winsB = 0
-        
+        def get_return_def(speed_skill, backhand_skill, forehand_skill):
+            return (((speed_skill * 0.4) + (backhand_skill * 0.3) + (forehand_skill * 0.3)) / 100.0)
+
+        base_serve_win_A = get_serve_prob(s1.get('serve', 50), s1.get('power', 50))
+        base_serve_win_B = get_serve_prob(s2.get('serve', 50), s2.get('power', 50))
+
+        return_def_A = get_return_def(s1.get('speed', 50), s1.get('backhand', 50), s1.get('forehand', 50))
+        return_def_B = get_return_def(s2.get('speed', 50), s2.get('backhand', 50), s2.get('forehand', 50))
+
+        p_A_wins_on_serve = base_serve_win_A - (return_def_B * 0.12)
+        p_B_wins_on_serve = base_serve_win_B - (return_def_A * 0.12)
+
+        # 🔴 THE SKILL GAP ALPHA
+        overall_A = s1.get('overall_rating', 50)
+        overall_B = s2.get('overall_rating', 50)
+        overall_gap_delta = (overall_A - overall_B) * 0.0035
+
+        p_A_wins_on_serve += overall_gap_delta
+        p_B_wins_on_serve -= overall_gap_delta
+
+        # --- SOTA: PLAY STYLE & BSI SYNERGY ---
+        bsi_modifier_A = (bsi - 6.5) * 0.015
+        bsi_modifier_B = bsi_modifier_A
+
+        safe_style_A = (styleA or "").lower()
+        safe_style_B = (styleB or "").lower()
+
+        if "big server" in safe_style_A or "first-strike" in safe_style_A:
+            bsi_modifier_A *= (2.5 if bsi < 6.0 else 1.5)
+        if "big server" in safe_style_B or "first-strike" in safe_style_B:
+            bsi_modifier_B *= (2.5 if bsi < 6.0 else 1.5)
+
+        if ("counter puncher" in safe_style_A or "grinder" in safe_style_A) and bsi < 6.0:
+            return_def_A *= 1.20
+            p_B_wins_on_serve -= 0.03
+        if ("counter puncher" in safe_style_B or "grinder" in safe_style_B) and bsi < 6.0:
+            return_def_B *= 1.20
+            p_A_wins_on_serve -= 0.03
+
+        p_A_wins_on_serve += bsi_modifier_A
+        p_B_wins_on_serve += bsi_modifier_B
+
+        # Form Injection
+        p_A_wins_on_serve += ((formA - 5) * 0.008)
+        p_B_wins_on_serve += ((formB - 5) * 0.008)
+
+        p_A_wins_on_serve = max(0.40, min(0.92, p_A_wins_on_serve))
+        p_B_wins_on_serve = max(0.40, min(0.92, p_B_wins_on_serve))
+
+        def simulate_game(prob_serve_win):
+            pts_srv, pts_ret = 0, 0
+            while True:
+                if random.random() < prob_serve_win: pts_srv += 1
+                else: pts_ret += 1
+                if pts_srv >= 4 and pts_srv - pts_ret >= 2: return True
+                if pts_ret >= 4 and pts_ret - pts_srv >= 2: return False
+
+        def simulate_tiebreak(prob_A, prob_B):
+            pts_A, pts_B = 0, 0
+            serves_A = True
+            pts_played = 0
+            while True:
+                if serves_A:
+                    if random.random() < prob_A: pts_A += 1
+                    else: pts_B += 1
+                else:
+                    if random.random() < prob_B: pts_B += 1
+                    else: pts_A += 1
+                pts_played += 1
+                if pts_played % 2 == 1: serves_A = not serves_A
+
+                if pts_A >= 7 and pts_A - pts_B >= 2: return True
+                if pts_B >= 7 and pts_B - pts_A >= 2: return False
+
+        def simulate_set():
+            games_A, games_B = 0, 0
+            serves_A = True
+            while True:
+                if serves_A:
+                    if simulate_game(p_A_wins_on_serve): games_A += 1
+                    else: games_B += 1
+                else:
+                    if simulate_game(p_B_wins_on_serve): games_B += 1
+                    else: games_A += 1
+                serves_A = not serves_A
+
+                if games_A == 6 and games_B == 6: return simulate_tiebreak(p_A_wins_on_serve, p_B_wins_on_serve)
+                if games_A >= 6 and games_A - games_B >= 2: return True
+                if games_B >= 6 and games_B - games_A >= 2: return False
+
+        match_wins_A, match_wins_B = 0, 0
         for _ in range(iterations):
-            simA = random.gauss(baseA, variance)
-            simB = random.gauss(baseB, variance)
-            
-            if simA > simB:
-                winsA += 1
-            else:
-                winsB += 1
-                
-        probA = (winsA / iterations) * 100
-        probB = (winsB / iterations) * 100
-        
+            sets_A, sets_B = 0, 0
+            while sets_A < 2 and sets_B < 2:
+                if simulate_set(): sets_A += 1
+                else: sets_B += 1
+            if sets_A == 2: match_wins_A += 1
+            else: match_wins_B += 1
+
+        prob_A = (match_wins_A / iterations) * 100
+        prob_B = (match_wins_B / iterations) * 100
+
         return {
-            "probA": round(probA, 1),
-            "probB": round(probB, 1),
-            "scoreA": baseA,
-            "scoreB": baseB
+            "probA": round(prob_A, 1),
+            "probB": round(prob_B, 1),
+            "scoreA": overall_A,
+            "scoreB": overall_B
         }
 
 # =================================================================
@@ -800,7 +861,6 @@ class NeuralOptimizer:
         best_weights = current_weights
         best_brier_score = float('inf') 
         
-        # GRID SEARCH: Wir testen verschiedene Gewichtungen auf vergangenen Daten
         for w_skill in np.arange(0.30, 0.70, 0.05):
             for w_form in np.arange(0.20, 0.50, 0.05):
                 w_surf = 1.0 - (w_skill + w_form)
@@ -841,7 +901,6 @@ class NeuralOptimizer:
             tour_players = [p['id'] for p in players if p.get('tour') == tour]
             if not tour_players: continue
             
-            # Hole die letzten beendeten Matches für diese Tour
             recent_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(200).execute()
             recent_matches = recent_res.data or []
             
@@ -854,7 +913,6 @@ class NeuralOptimizer:
                 p2_name = m.get('player2_name', '')
                 winner = m.get('actual_winner_name', '')
                 
-                # Check System Accuracy
                 fair1 = to_float(m.get('ai_fair_odds1'), 0)
                 fair2 = to_float(m.get('ai_fair_odds2'), 0)
                 if fair1 > 0 and fair2 > 0:
@@ -862,7 +920,6 @@ class NeuralOptimizer:
                     if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()):
                         correct_predictions += 1
 
-                # Build Grid Search History
                 p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
                 p2_obj = next((p for p in players if p.get('last_name') == p2_name and p['id'] in tour_players), None)
                 
@@ -875,18 +932,15 @@ class NeuralOptimizer:
                         "winner_is_A": p1_name.lower() in winner.lower()
                     })
 
-            # 1. Update Global Accuracy
             if total_predictions > 0:
                 acc = (correct_predictions / total_predictions) * 100
                 SYSTEM_ACCURACY[tour] = round(acc, 1)
                 log(f"🎯 {tour} System Accuracy Rating: {SYSTEM_ACCURACY[tour]}% ({correct_predictions}/{total_predictions})")
 
-            # 2. Run Grid Search
             if len(history_data) >= 20:
                 new_weights = NeuralOptimizer.optimize_ai_weights(history_data, DYNAMIC_WEIGHTS[tour])
                 DYNAMIC_WEIGHTS[tour] = new_weights
                 
-                # 3. Save to Supabase
                 try:
                     supabase.table("ai_system_weights").upsert({
                         "tour": tour,
@@ -937,12 +991,10 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
 def extract_time_context(lines_slice: List[str]) -> str:
     full_text = " ".join(lines_slice)
     
-    # 1. Prio: SOTA Methode für das exakte "Zeit • Datum" Format
     sota_match = re.search(r'(\d{1,2}:\d{2})\s*[•\.\-|]\s*(\d{1,2}\.\d{1,2}\.\d{2,4})', full_text)
     if sota_match:
         return f"{sota_match.group(2)} {sota_match.group(1)}"
 
-    # 2. Prio: HYBRID Fallback für "Heute", "Morgen" oder fehlende Trennzeichen
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
         r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
@@ -983,7 +1035,7 @@ def parse_time_to_iso(raw_time_str: str) -> str:
             day, month, year = d_match.groups()
             y = int(year)
             if y < 100: 
-                y += 2000 # Korrigiert 2-stellige Jahre (26 -> 2026)
+                y += 2000
             dt = datetime(y, int(month), int(day), int(h), int(m_min), tzinfo=timezone.utc)
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif t_match:
@@ -1427,7 +1479,6 @@ async def update_past_results(browser: Browser, players: List[Dict]):
 
                             for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                                 p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
-                                # Voller Name in History Loop ist wichtig für SOTA FIX 3 (aber hier nicht kritisch weil Auditor den p_name_hook nutzt)
                                 p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook)
                                 p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                                 
@@ -1872,10 +1923,20 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     aWins = mc_results['probA'] > mc_results['probB']
     predictedMCWinner = p1['last_name'] if aWins else p2['last_name']
     predictedMCLoser = p2['last_name'] if aWins else p1['last_name']
-    finalProb = f"{mc_results['probA']}%" if aWins else f"{mc_results['probB']}%"
+    finalProb_val = float(mc_results['probA']) if aWins else float(mc_results['probB'])
+    finalProb = f"{finalProb_val:.1f}%"
 
     tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
+
+    # 🔴 SOTA: CONVICTION DIRECTIVE FOR THE SCRAPER
+    convictionDirective = ""
+    if finalProb_val >= 65.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) ***\nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING."
+    elif finalProb_val >= 58.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model gives {predictedMCWinner} a clear edge ({finalProb_val:.1f}%). Write confidently about why {predictedMCWinner} is the favorite to win, focusing on the tactical mismatch. Avoid 50/50 language."
+    else:
+        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model sees this as a tight battle ({finalProb_val:.1f}% for {predictedMCWinner}). Write an analysis highlighting the fine margins that will decide this match."
 
     prompt = f"""
     You are an elite Senior Tennis Analyst (Style: Gil Gross). 
@@ -1910,11 +1971,13 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     *** INTERNAL MATCHUP DATA (FOR LOGIC ONLY, DO NOT OUTPUT THESE NUMBERS) ***
     Winner: {predictedMCWinner} (Internal Win Probability: {finalProb})
     
+    {convictionDirective}
+    
     *** CRITICAL DIRECTIVES (MUST OBEY) ***
     1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages (%), numerical ratings (e.g., 8/10), or skill points in 'prediction_text' and 'key_factor'.
     2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics". Explain how the specific "Court Notes" (bounce height, court speed) amplify a player's strengths or expose their weaknesses.
     3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses'.
-    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions.
+    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions. If a player is a heavy favorite due to the OVR rating, emphasize their superior "baseline quality" or "fundamental consistency".
     5. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
     
     OUTPUT JSON:
@@ -2393,20 +2456,22 @@ async def run_pipeline():
                                     pass
 
                         else:
-                            log(f"   🧠 Fresh AI Gil Gross Analysis & Monte Carlo Sim: {n1} vs {n2} | T: {matched_tour_name}")
+                            log(f"   🧠 Fresh AI Gil Gross Analysis & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
                             
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                             
                             current_surf_key = SurfaceIntelligence.normalize_surface_key(surf)
-                            surf_rating_a = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
-                            surf_rating_b = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
                             
                             tour_identifier = "WTA" if "WTA" in matched_tour_name.upper() else "ATP"
                             
-                            mc_results = MonteCarloEngine.run_simulation(
-                                tour=tour_identifier,
-                                skillA=s1.get('overall_rating', 50), formA=p1_form_v2['score'], surfaceA=surf_rating_a,
-                                skillB=s2.get('overall_rating', 50), formB=p2_form_v2['score'], surfaceB=surf_rating_b
+                            styleA = p1_obj.get('play_style', '')
+                            styleB = p2_obj.get('play_style', '')
+                            
+                            mc_results = MarkovChainEngine.run_simulation(
+                                s1=s1, s2=s2,
+                                formA=p1_form_v2['score'], formB=p2_form_v2['score'],
+                                bsi=bsi, styleA=styleA, styleB=styleB,
+                                iterations=2500
                             )
                             
                             ai = await analyze_match_with_ai(
@@ -2443,7 +2508,7 @@ async def run_pipeline():
                                 "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final, 
                                 "games_prediction": sim_result, 
-                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), # SOTA: Updatet Timestamp, Match rückt nach oben!
+                                "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
                                 "match_time": final_time_str, 
                                 "odds1": m['odds1'], 
                                 "odds2": m['odds2'],
