@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V153.5 - Elite Time-Sync & Relative Date Override)...")
+log("🔌 Initialisiere Neural Scout (V153.6 - Elite Time-Sync 1:1 Fix)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1039,7 +1039,6 @@ def parse_time_to_iso(raw_time_str: str) -> str:
             now = datetime.now(timezone.utc)
             raw_lower = raw_time_str.lower()
             
-            # 🔴 SOTA FIX: RELATIVE TIME PARSING FOR 1WIN
             days_add = 0
             if "morgen" in raw_lower or "tomorrow" in raw_lower:
                 days_add = 1
@@ -1250,7 +1249,8 @@ async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
                         h, m = current_time_str.split(':')
                         dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
                         
-                        dt = dt - timedelta(hours=1)
+                        # SOTA FIX: Keine künstliche Zeitverschiebung mehr. 
+                        # Wir übernehmen die Zeit 1:1 exakt so, wie sie das Oracle ausgibt.
                         iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         
                         key = f"{p1_last}__{p2_last}"
@@ -2342,7 +2342,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V153.5 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V153.6 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
