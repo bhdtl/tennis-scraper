@@ -26,7 +26,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V153.6 SOTA Parity - Markov Chain Integrated)...")
+log("🔮 Initializing Oracle Pre-Warmer (V153.7 SOTA Parity - Strict Brother Resolution)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -38,14 +38,8 @@ if not SUPABASE_URL or not SUPABASE_KEY or not FUNCTION_URL:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# SOTA: DYNAMIC WEIGHTS ALIGNMENT
-DYNAMIC_WEIGHTS = {
-    "ATP": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20},
-    "WTA": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20}
-}
-
 # =================================================================
-# 2. HELPERS & SOTA PLAYER MATCHING
+# 2. HELPERS & SOTA PLAYER MATCHING (TE FORMAT)
 # =================================================================
 def normalize_text(text: str) -> str:
     if not text: return ""
@@ -77,9 +71,6 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-def get_similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, a, b).ratio()
-
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
@@ -94,126 +85,71 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
     return score
 
-# 🚀 SOTA FIX: Elite Player Matching (1:1 Parity with Hauptscraper)
-def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
-    if report_ids is None: report_ids = set()
-    if not scraped_name_raw or len(scraped_name_raw) < 3 or re.search(r'\d', scraped_name_raw): return None 
+# -----------------------------------------------------------------
+# 🚀 SOTA FIX: TE BROTHER-RESOLUTION ENGINE (Fixes McDonald & Cerundolo)
+# -----------------------------------------------------------------
+def parse_te_name(raw: str):
+    clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
+    parts = clean.split()
+    if not parts: return "", ""
     
-    bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream', 'stats', 'tv']
-    if any(w in scraped_name_raw.lower() for w in bad_words): return None
-
-    clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
-    scrape_tokens = clean_scrape.split()
-    if not scrape_tokens: return None
-
-    candidates = []
-    has_comma = "," in scraped_name_raw
+    initial = ""
+    last_name_parts = []
     
-    if has_comma:
-        parts = scraped_name_raw.split(',')
-        scrape_last_part = normalize_db_name(parts[0])
-        scrape_first_part = normalize_db_name(parts[1]) if len(parts) > 1 else ""
-    else:
-        scrape_last_part = clean_scrape
-        scrape_first_part = ""
-        if len(scrape_tokens) > 1:
-            scrape_first_part = scrape_tokens[0]
-    
-    for p in db_players:
-        db_last = normalize_db_name(p.get('last_name', ''))
-        db_first = normalize_db_name(p.get('first_name', ''))
-        
-        db_last_tokens = db_last.split()
-        db_first_tokens = db_first.split()
-        
-        score = 0
-        last_matched = False
-        
-        if has_comma:
-            if db_last == scrape_last_part:
-                score += 60
-                last_matched = True
-            elif len(db_last) >= 5 and get_similarity(db_last, scrape_last_part) >= 0.80:
-                score += 60
-                last_matched = True
-                
-            if last_matched and db_first and scrape_first_part:
-                if db_first == scrape_first_part or scrape_first_part in db_first:
-                    score += 80 
-                elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80:
-                    score += 50
-                else:
-                    sf_tokens = scrape_first_part.split()
-                    if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]:
-                        score += 15 
-                    elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]:
-                        score -= 100 
+    for p in parts:
+        if (len(p) <= 2 and p.endswith('.')) or (len(p) == 1 and p.isalpha()):
+            if not initial:
+                initial = p[0].lower()
         else:
-            if db_last_tokens and db_last_tokens[-1] in scrape_tokens:
-                score += 60
-                last_matched = True
-            elif len(db_last) >= 6:
-                for t in scrape_tokens:
-                    if len(t) >= 6 and get_similarity(db_last, t) >= 0.85:
-                        score += 60
-                        last_matched = True
-                        break
-                        
-            if last_matched:
-                toxic_leftover = False
-                for st in scrape_tokens:
-                    if len(st) > 3: 
-                        explained = False
-                        for dt in db_last_tokens + db_first_tokens:
-                            if st == dt or get_similarity(st, dt) > 0.80:
-                                explained = True
-                                break
-                        if not explained:
-                            toxic_leftover = True
-                            break
-                
-                if toxic_leftover:
-                    score -= 50 
-                    
-                if db_first and score >= 60:
-                    if any(ft in scrape_tokens for ft in db_first_tokens) or (scrape_first_part and scrape_first_part in db_first):
-                        score += 80 
-                    else:
-                        db_f_init = db_first[0]
-                        has_contradicting = False
-                        has_matching = False
-                        for st in scrape_tokens:
-                            c_st = st.replace('.', '')
-                            if 0 < len(c_st) <= 2: 
-                                if c_st[0] == db_f_init: 
-                                    has_matching = True
-                                else: 
-                                    has_contradicting = True
-                        if has_matching: 
-                            score += 15
-                        elif has_contradicting: 
-                            score -= 100 
-                            
-        if score >= 60: 
-            candidates.append((p, score))
-                
-    if not candidates: 
-        return None
+            last_name_parts.append(p)
+            
+    last_name = " ".join(last_name_parts)
+    if not initial and len(parts) > 1:
+        initial = parts[0][0].lower()
+        last_name = " ".join(parts[1:])
         
-    # SOTA: Tie-Breaker basierend auf vorhandenem Scouting Report
-    candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
+    return normalize_db_name(last_name), initial
+
+def match_player_db_te(db_full_name, te_last, te_init):
+    db_n = normalize_db_name(db_full_name)
+    db_parts = db_n.split()
+    db_last = db_parts[-1] if db_parts else ""
+    db_first = db_parts[0] if len(db_parts) > 1 else ""
     
+    te_last_tokens = set(te_last.split())
+    db_n_tokens = set(db_parts)
+
+    is_last_match = False
+    
+    if te_last == db_last:
+        is_last_match = True
+    elif db_n_tokens.intersection(te_last_tokens):
+        is_last_match = True
+    elif (len(te_last) >= 5 and te_last in db_n) or (len(db_last) >= 5 and db_last in te_last):
+        is_last_match = True
+
+    if is_last_match:
+        if te_init and db_first:
+            if db_first.startswith(te_init): return True
+            else: return False 
+        return True
+    return False
+
+def find_te_player_in_db(raw_name: str, db_players: List[Dict]) -> Any:
+    te_last, te_init = parse_te_name(raw_name)
+    if not te_last: return None
+    
+    candidates = []
+    for p in db_players:
+        full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+        if match_player_db_te(full_name, te_last, te_init):
+            candidates.append(p)
+            
+    if not candidates: return None
     if len(candidates) > 1:
-        top_score = candidates[0][1]
-        second_score = candidates[1][1]
+        return "TIE_BREAKER"
         
-        if top_score == second_score:
-            p1_n = f"{candidates[0][0].get('first_name')} {candidates[0][0].get('last_name')}"
-            p2_n = f"{candidates[1][0].get('first_name')} {candidates[1][0].get('last_name')}"
-            log(f"🚨 TIE-BREAKER ALARM: '{scraped_name_raw}' ist mehrdeutig zwischen {p1_n} und {p2_n}. Match wird ignoriert!")
-            return "TIE_BREAKER"
-                
-    return candidates[0][0]
+    return candidates[0]
 
 def parse_draws_locally(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -300,7 +236,7 @@ def get_surface_rating(surface_ratings: Any, surface_type: str) -> float:
     return 5.0
 
 # =================================================================
-# 3. SOTA MARKOV CHAIN ENGINE (Ported to Oracle)
+# 3. SOTA MARKOV CHAIN ENGINE (Local Physics)
 # =================================================================
 class MarkovChainEngine:
     @staticmethod
@@ -417,13 +353,6 @@ class MarkovChainEngine:
             "scoreB": overall_B
         }
 
-# 🚀 SOTA FIX: Dynamic Base Power Calculation (Using Neural Weights)
-def get_player_base_power(skill: float, form: float, surface: float, tour: str = "ATP") -> float:
-    weights = DYNAMIC_WEIGHTS.get(tour, DYNAMIC_WEIGHTS["ATP"])
-    power = (skill / 10) * weights["SKILL"] + form * weights["FORM"] + surface * weights["SURFACE"]
-    if surface < 4.5: power -= (4.5 - surface) * weights["MC_VARIANCE"]
-    return max(1.0, power)
-
 async def call_edge_function(payload: dict):
     headers = {
         "Authorization": f"Bearer {SUPABASE_KEY}",
@@ -444,7 +373,6 @@ async def call_edge_function(payload: dict):
 # =================================================================
 async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime, db_data: Dict):
     page = await browser.new_page()
-    tournament_pools = {} 
 
     try:
         url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
@@ -473,8 +401,9 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
             
             if best_score < 20 or not best_tour: continue
                 
-            p1_obj = find_player_smart(m['p1_raw'], db_players)
-            p2_obj = find_player_smart(m['p2_raw'], db_players)
+            # 🚀 SOTA FIX: Using the strict TE Brother Resolution Engine
+            p1_obj = find_te_player_in_db(m['p1_raw'], db_players)
+            p2_obj = find_te_player_in_db(m['p2_raw'], db_players)
             
             if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
                 log(f"🚨 Tie-Breaker Alarm im Oracle! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']}).")
@@ -486,10 +415,8 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 tour_name = best_tour['name']
                 tour_surface = best_tour['surface']
                 bsi_rating = best_tour.get('bsi_rating', 5.0)
-                is_wta = "WTA" in tour_name.upper()
-                tour_key = "WTA" if is_wta else "ATP"
 
-                # 🚀 SOTA FIX: Calculate Markov Chain locally to feed the AI Edge Function
+                # Fetch Player Skills & Ratings for Physics Engine
                 s1_data = db_skills.get(p1_obj['id'], {})
                 s2_data = db_skills.get(p2_obj['id'], {})
                 f1_score = extract_rating(p1_obj.get('form_rating'))
@@ -549,41 +476,8 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 else:
                     log(f"   ⚠️ Edge Function failed for {n1} vs {n2}. Skipping.")
 
-                if tour_name not in tournament_pools:
-                    tournament_pools[tour_name] = {"surface": tour_surface, "tour_key": tour_key, "players": {}}
-                
-                # 🚀 SOTA FIX: Dynamic Base Power for Outrights
-                baseA = get_player_base_power(float(s1_data.get('overall_rating', 50)), f1_score, get_surface_rating(p1_obj.get('surface_ratings'), tour_surface), tour_key)
-                baseB = get_player_base_power(float(s2_data.get('overall_rating', 50)), f2_score, get_surface_rating(p2_obj.get('surface_ratings'), tour_surface), tour_key)
-                
-                tournament_pools[tour_name]["players"][n1] = baseA
-                tournament_pools[tour_name]["players"][n2] = baseB
-
         log(f"✅ Synced {inserted_matches} matches via Edge Function.")
-
-        inserted_outrights = 0
-        for tour_name, tour_data in tournament_pools.items():
-            players_dict = tour_data["players"]
-            surface = tour_data["surface"]
-            if len(players_dict) < 4: continue
-            
-            total_power_pool = sum(power**3 for power in players_dict.values())
-            for player_name, power in players_dict.items():
-                trophy_prob = ((power**3) / total_power_pool) * 100
-                if trophy_prob >= 2.0:
-                    outright_payload = {
-                        "tournament_name": tour_name,
-                        "player_name": player_name,
-                        "trophy_probability": round(trophy_prob, 1),
-                        "surface": surface,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }
-                    supabase.table("tournament_outrights").upsert(
-                        outright_payload, on_conflict="tournament_name,player_name"
-                    ).execute()
-                    inserted_outrights += 1
-                    
-        log(f"🏆 Calculated {inserted_outrights} Deep Run Outrights.")
+        # NOTE: Tournament Outrights calculation removed globally.
 
     except Exception as e: 
         log(f"⚠️ Scraping Error: {e}")
@@ -592,18 +486,6 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
 
 async def run_pipeline():
     try:
-        # Load Weights first for SOTA alignment
-        weights_res = supabase.table("ai_system_weights").select("*").execute()
-        if weights_res.data:
-            for w in weights_res.data:
-                tour = w.get("tour", "ATP")
-                DYNAMIC_WEIGHTS[tour] = {
-                    "SKILL": float(w.get("weight_skill", 0.50)),
-                    "FORM": float(w.get("weight_form", 0.35)),
-                    "SURFACE": float(w.get("weight_surface", 0.15)),
-                    "MC_VARIANCE": float(w.get("mc_variance", 1.20))
-                }
-
         log("📥 Loading DB Context (Players)...")
         try:
             res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute()
