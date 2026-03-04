@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V157.0 - Elite Master-Slave Sync & Full Engines Restored)...")
+log("🔌 Initialisiere Neural Scout (V158.0 - Elite Master-Slave Sync COMPLETE)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -72,6 +72,29 @@ CITY_TO_DB_STRING = {
     "Melbourne": "Rod Laver Arena"
 }
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
+
+# =================================================================
+# 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
+# =================================================================
+async def fetch_tml_database():
+    log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
+    loaded_matches = 0
+    async with httpx.AsyncClient() as client:
+        try:
+            tml_api_url = "https://stats.tennismylife.org/api/data-files"
+            res = await client.get(tml_api_url, timeout=15.0)
+            if res.status_code == 200:
+                files = res.json().get('files', [])
+                for f in files:
+                    if f['name'] in ['2025.csv', '2026.csv', 'ongoing_tourneys.csv']:
+                        csv_res = await client.get(f['url'], timeout=30.0)
+                        reader = csv.DictReader(io.StringIO(csv_res.text))
+                        for row in reader:
+                            TML_MATCH_CACHE.append(row)
+                            loaded_matches += 1
+                log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
+        except Exception as e:
+            log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
 
 # =================================================================
 # 2. HELPER FUNCTIONS
@@ -276,251 +299,8 @@ def has_active_signal(text: Optional[str]) -> bool:
     return False
 
 # =================================================================
-# 3. ENGINES & SIMULATORS (WURDEN WIEDERHERGESTELLT)
+# 3. SOTA MOMENTUM V3 ENGINE (xG Model)
 # =================================================================
-
-class QuantumGamesSimulator:
-    @staticmethod
-    def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
-        p_hold = 67.0 
-        p_hold += (server_skills.get('serve', 50) - 50) * 0.35 
-        p_hold += (server_skills.get('power', 50) - 50) * 0.10
-        p_hold -= (returner_skills.get('speed', 50) - 50) * 0.15 
-        p_hold -= (returner_skills.get('mental', 50) - 50) * 0.08
-        p_hold += (bsi - 6.0) * 1.4 
-        return max(52.0, min(94.0, p_hold)) / 100.0
-
-    @staticmethod
-    def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
-        g1, g2 = 0, 0
-        while True:
-            if random.random() < p1_prob: g1 += 1
-            else: g2 += 1 
-            
-            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
-            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
-            
-            if g1 == 6 and g2 == 6:
-                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
-                else: return (2, 13)
-            
-            if random.random() < p2_prob: g2 += 1
-            else: g1 += 1 
-            
-            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
-            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
-            
-            if g1 == 6 and g2 == 6:
-                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
-                else: return (2, 13)
-
-    @staticmethod
-    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
-        p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
-        p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
-        
-        total_games_log = []
-        for _ in range(iterations):
-            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-            p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
-            p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
-            
-            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
-            total = games_s1 + games_s2
-            
-            if winner_s1 != winner_s2:
-                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-                total += games_s3
-                
-            total_games_log.append(total)
-            
-        total_games_log.sort()
-        
-        return {
-            "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
-            "median_games": total_games_log[len(total_games_log)//2],
-            "probabilities": {
-                "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
-                "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
-                "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
-                "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
-            },
-            "sim_details": {
-                "p1_est_hold_pct": round(p1_hold_prob * 100, 1), 
-                "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
-            }
-        }
-
-
-class LiveSkillEngine:
-    @staticmethod
-    def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
-        if not current_skills: return {}
-
-        base_shift = 0.0
-        if is_winner:
-            if odds <= 1.30: base_shift = 0.1
-            elif odds <= 1.701: base_shift = 0.2
-            elif odds <= 1.850: base_shift = 0.3
-            elif odds <= 2.2501: base_shift = 0.4
-            else: base_shift = 0.6
-        else:
-            if odds <= 1.30: base_shift = -0.8
-            elif odds <= 1.701: base_shift = -0.4
-            elif odds <= 1.850: base_shift = -0.3
-            elif odds <= 2.2501: base_shift = -0.2
-            else: base_shift = -0.1
-
-        skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
-        new_skills = {}
-        for k in skill_fields:
-            if k in current_skills and current_skills[k] is not None:
-                new_skills[k] = float(current_skills[k]) + base_shift
-
-        if not new_skills: return {}
-
-        score_lower = str(score).lower()
-        sets = re.findall(r'(\d+)-(\d+)', score_lower)
-
-        if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
-            for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
-                if skill in new_skills: new_skills[skill] += 0.2
-
-        if is_winner and len(sets) >= 3:
-            if 'mental' in new_skills: new_skills['mental'] += 0.3
-            if 'stamina' in new_skills: new_skills['stamina'] += 0.3
-
-        lost_tiebreak = False
-        for s in sets:
-            l, r = int(s[0]), int(s[1])
-            if is_player1 and l < r and r == 7: lost_tiebreak = True
-            if not is_player1 and r < l and l == 7: lost_tiebreak = True
-
-        if not is_winner and lost_tiebreak:
-             if 'mental' in new_skills: new_skills['mental'] -= 0.2
-
-        if not is_winner and "ret." in score_lower:
-             if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
-             if 'speed' in new_skills: new_skills['speed'] -= 0.5
-
-        new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
-        new_skills['overall_rating'] = new_overall
-
-        for k, v in new_skills.items():
-            new_skills[k] = max(1.0, min(99.0, round(v, 2)))
-
-        return new_skills
-
-
-class FantasySettlementEngine:
-    @staticmethod
-    def run_settlement():
-        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
-        now = datetime.now(timezone.utc)
-        
-        res_active = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
-        active_gws = res_active.data or []
-        
-        for gw in active_gws:
-            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
-            end_of_week = deadline + timedelta(days=7) 
-            if now > end_of_week: 
-                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
-                
-        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
-        latest_gw = res_latest.data[0] if res_latest.data else None
-        
-        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
-            if latest_gw:
-                next_week_num = latest_gw['week_number'] + 1
-                next_year = latest_gw['year']
-            else:
-                next_week_num = int(now.strftime("%V"))
-                next_year = now.year
-                
-            if next_week_num > 52: 
-                next_week_num = 1
-                next_year += 1
-                
-            days_ahead = 0 - now.weekday()
-            if days_ahead <= 0: 
-                days_ahead += 7
-                
-            next_monday = now + timedelta(days=days_ahead)
-            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
-            
-            new_gw = {
-                "week_number": next_week_num, 
-                "year": next_year, 
-                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                "status": "active"
-            }
-            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
-            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
-
-    @staticmethod
-    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
-        res_lineups = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw['id']).execute()
-        lineups = res_lineups.data or []
-        
-        if not lineups:
-            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
-            return
-
-        res_matches = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
-        matches = res_matches.data or []
-        
-        res_players = supabase.table("players").select("id, last_name, first_name").execute()
-        players_map = {p['id']: p for p in (res_players.data or [])}
-
-        for lineup in lineups:
-            total_pts = 0
-            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
-                if not pid or pid not in players_map: 
-                    continue
-                    
-                p_name = players_map[pid]['last_name'].lower()
-                
-                p_matches = []
-                for m in matches:
-                    if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower():
-                        p_matches.append(m)
-                        
-                for m in p_matches:
-                    won = p_name in str(m.get('actual_winner_name')).lower()
-                    
-                    if p_name in str(m.get('player1_name')).lower():
-                        odds = float(m.get('odds1', 1.5))
-                    else:
-                        odds = float(m.get('odds2', 1.5))
-                        
-                    if won: 
-                        total_pts += (50 + max(0, (odds - 1.5) * 20))
-                    else: 
-                        total_pts -= 10
-                        
-            total_pts = round(max(0, total_pts), 1)
-            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
-            
-            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", lineup['user_id']).execute()
-            if prof_res.data: 
-                old_xp = prof_res.data[0].get('total_xp', 0)
-                supabase.table("fantasy_profiles").update({"total_xp": old_xp + int(total_pts * 10)}).eq("user_id", lineup['user_id']).execute()
-            else: 
-                supabase.table("fantasy_profiles").insert({"user_id": lineup['user_id'], "total_xp": int(total_pts * 10)}).execute()
-                
-            try:
-                main_prof_res = supabase.table("profiles").select("credits").eq("id", lineup['user_id']).execute()
-                if main_prof_res.data: 
-                    old_credits = main_prof_res.data[0].get('credits') or 0
-                    supabase.table("profiles").update({"credits": old_credits + int(total_pts / 5)}).eq("id", lineup['user_id']).execute()
-            except: 
-                pass
-                
-        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
-
-
 class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
@@ -630,6 +410,9 @@ class MomentumV2Engine:
 
         return {"score": round(final_rating, 2), "text": desc, "color_hex": color_hex, "history_summary": "".join(history_log[-5:])}
 
+# =================================================================
+# 4. SURFACE INTELLIGENCE ENGINE
+# =================================================================
 class SurfaceIntelligence:
     @staticmethod
     def normalize_surface_key(raw_surface: str) -> str:
@@ -710,6 +493,9 @@ class SurfaceIntelligence:
         profile['_v95_mastery_applied'] = True
         return profile
 
+# =================================================================
+# 5. SOTA MARKOV CHAIN ENGINE
+# =================================================================
 class MarkovChainEngine:
     @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
@@ -804,16 +590,272 @@ class MarkovChainEngine:
             "scoreB": s2.get('overall_rating', 50)
         }
 
+# =================================================================
+# 10. QUANTUM GAMES SIMULATOR
+# =================================================================
+class QuantumGamesSimulator:
+    @staticmethod
+    def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
+        p_hold = 67.0 
+        p_hold += (server_skills.get('serve', 50) - 50) * 0.35 
+        p_hold += (server_skills.get('power', 50) - 50) * 0.10
+        p_hold -= (returner_skills.get('speed', 50) - 50) * 0.15 
+        p_hold -= (returner_skills.get('mental', 50) - 50) * 0.08
+        p_hold += (bsi - 6.0) * 1.4 
+        return max(52.0, min(94.0, p_hold)) / 100.0
+
+    @staticmethod
+    def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
+        g1, g2 = 0, 0
+        while True:
+            if random.random() < p1_prob: g1 += 1
+            else: g2 += 1 
+            
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
+            if g1 == 6 and g2 == 6:
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
+            
+            if random.random() < p2_prob: g2 += 1
+            else: g1 += 1 
+            
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
+            if g1 == 6 and g2 == 6:
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
+
+    @staticmethod
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
+        p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
+        p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
+        
+        total_games_log = []
+        for _ in range(iterations):
+            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
+            p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
+            
+            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
+            total = games_s1 + games_s2
+            
+            if winner_s1 != winner_s2:
+                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+                total += games_s3
+                
+            total_games_log.append(total)
+            
+        total_games_log.sort()
+        
+        return {
+            "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
+            "median_games": total_games_log[len(total_games_log)//2],
+            "probabilities": {
+                "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
+                "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
+                "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
+                "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
+            },
+            "sim_details": {
+                "p1_est_hold_pct": round(p1_hold_prob * 100, 1), 
+                "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
+            }
+        }
+
+# =================================================================
+# 11. LIVE SKILL ENGINE
+# =================================================================
+class LiveSkillEngine:
+    @staticmethod
+    def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
+        if not current_skills: return {}
+
+        base_shift = 0.0
+        if is_winner:
+            if odds <= 1.30: base_shift = 0.1
+            elif odds <= 1.701: base_shift = 0.2
+            elif odds <= 1.850: base_shift = 0.3
+            elif odds <= 2.2501: base_shift = 0.4
+            else: base_shift = 0.6
+        else:
+            if odds <= 1.30: base_shift = -0.8
+            elif odds <= 1.701: base_shift = -0.4
+            elif odds <= 1.850: base_shift = -0.3
+            elif odds <= 2.2501: base_shift = -0.2
+            else: base_shift = -0.1
+
+        skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
+        new_skills = {}
+        for k in skill_fields:
+            if k in current_skills and current_skills[k] is not None:
+                new_skills[k] = float(current_skills[k]) + base_shift
+
+        if not new_skills: return {}
+
+        score_lower = str(score).lower()
+        sets = re.findall(r'(\d+)-(\d+)', score_lower)
+
+        if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
+            for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
+                if skill in new_skills: new_skills[skill] += 0.2
+
+        if is_winner and len(sets) >= 3:
+            if 'mental' in new_skills: new_skills['mental'] += 0.3
+            if 'stamina' in new_skills: new_skills['stamina'] += 0.3
+
+        lost_tiebreak = False
+        for s in sets:
+            l, r = int(s[0]), int(s[1])
+            if is_player1 and l < r and r == 7: lost_tiebreak = True
+            if not is_player1 and r < l and l == 7: lost_tiebreak = True
+
+        if not is_winner and lost_tiebreak:
+             if 'mental' in new_skills: new_skills['mental'] -= 0.2
+
+        if not is_winner and "ret." in score_lower:
+             if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
+             if 'speed' in new_skills: new_skills['speed'] -= 0.5
+
+        new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
+        new_skills['overall_rating'] = new_overall
+
+        for k, v in new_skills.items():
+            new_skills[k] = max(1.0, min(99.0, round(v, 2)))
+
+        return new_skills
+
+# =================================================================
+# 12. FANTASY SETTLEMENT ENGINE
+# =================================================================
+class FantasySettlementEngine:
+    @staticmethod
+    def run_settlement():
+        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
+        now = datetime.now(timezone.utc)
+        
+        res_active = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
+        active_gws = res_active.data or []
+        
+        for gw in active_gws:
+            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
+            end_of_week = deadline + timedelta(days=7) 
+            if now > end_of_week: 
+                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
+                
+        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
+        latest_gw = res_latest.data[0] if res_latest.data else None
+        
+        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
+            if latest_gw:
+                next_week_num = latest_gw['week_number'] + 1
+                next_year = latest_gw['year']
+            else:
+                next_week_num = int(now.strftime("%V"))
+                next_year = now.year
+                
+            if next_week_num > 52: 
+                next_week_num = 1
+                next_year += 1
+                
+            days_ahead = 0 - now.weekday()
+            if days_ahead <= 0: 
+                days_ahead += 7
+                
+            next_monday = now + timedelta(days=days_ahead)
+            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
+            
+            new_gw = {
+                "week_number": next_week_num, 
+                "year": next_year, 
+                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"), 
+                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"), 
+                "status": "active"
+            }
+            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
+            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
+
+    @staticmethod
+    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
+        res_lineups = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw['id']).execute()
+        lineups = res_lineups.data or []
+        
+        if not lineups:
+            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
+            return
+
+        res_matches = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
+        matches = res_matches.data or []
+        
+        res_players = supabase.table("players").select("id, last_name, first_name").execute()
+        players_map = {p['id']: p for p in (res_players.data or [])}
+
+        for lineup in lineups:
+            total_pts = 0
+            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
+                if not pid or pid not in players_map: 
+                    continue
+                    
+                p_name = players_map[pid]['last_name'].lower()
+                
+                p_matches = []
+                for m in matches:
+                    if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower():
+                        p_matches.append(m)
+                        
+                for m in p_matches:
+                    won = p_name in str(m.get('actual_winner_name')).lower()
+                    
+                    if p_name in str(m.get('player1_name')).lower():
+                        odds = float(m.get('odds1', 1.5))
+                    else:
+                        odds = float(m.get('odds2', 1.5))
+                        
+                    if won: 
+                        total_pts += (50 + max(0, (odds - 1.5) * 20))
+                    else: 
+                        total_pts -= 10
+                        
+            total_pts = round(max(0, total_pts), 1)
+            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
+            
+            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", lineup['user_id']).execute()
+            if prof_res.data: 
+                old_xp = prof_res.data[0].get('total_xp', 0)
+                supabase.table("fantasy_profiles").update({"total_xp": old_xp + int(total_pts * 10)}).eq("user_id", lineup['user_id']).execute()
+            else: 
+                supabase.table("fantasy_profiles").insert({"user_id": lineup['user_id'], "total_xp": int(total_pts * 10)}).execute()
+                
+            try:
+                main_prof_res = supabase.table("profiles").select("credits").eq("id", lineup['user_id']).execute()
+                if main_prof_res.data: 
+                    old_credits = main_prof_res.data[0].get('credits') or 0
+                    supabase.table("profiles").update({"credits": old_credits + int(total_pts / 5)}).eq("id", lineup['user_id']).execute()
+            except: 
+                pass
+                
+        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
+
+# =================================================================
+# 5.5 SOTA: SELF-LEARNING NEURAL OPTIMIZER
+# =================================================================
 class NeuralOptimizer:
     @staticmethod
     def optimize_ai_weights(matches_history: List[Dict], current_weights: Dict) -> Dict:
         log("🧠 Starte Neural Weight Optimization (Backpropagation Simulation)...")
-        best_weights, best_brier_score = current_weights, float('inf') 
+        best_weights = current_weights
+        best_brier_score = float('inf') 
+        
         for w_skill in np.arange(0.30, 0.70, 0.05):
             for w_form in np.arange(0.20, 0.50, 0.05):
                 w_surf = 1.0 - (w_skill + w_form)
-                if w_surf < 0.05 or w_surf > 0.30: continue 
-                current_brier_score, valid_matches = 0.0, 0
+                if w_surf < 0.05 or w_surf > 0.30: 
+                    continue 
+                    
+                current_brier_score = 0.0
+                valid_matches = 0
                 for m in matches_history:
                     baseA = (m['skillA']/10) * w_skill + m['formA'] * w_form + m['surfA'] * w_surf
                     baseB = (m['skillB']/10) * w_skill + m['formB'] * w_form + m['surfB'] * w_surf
@@ -821,6 +863,7 @@ class NeuralOptimizer:
                     actual_result = 1.0 if m['winner_is_A'] else 0.0
                     current_brier_score += (prob_a - actual_result)**2
                     valid_matches += 1
+                    
                 if valid_matches > 0:
                     avg_brier = current_brier_score / valid_matches
                     if avg_brier < best_brier_score:
@@ -837,40 +880,79 @@ class NeuralOptimizer:
         log("🔄 Initiating Weekly Self-Learning Routine...")
         for tour in ["ATP", "WTA"]:
             tour_players = [p['id'] for p in players if p.get('tour') == tour]
-            if not tour_players: continue
+            if not tour_players: 
+                continue
+                
             recent_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(200).execute()
-            recent_matches, history_data, correct_predictions, total_predictions = recent_res.data or [], [], 0, 0
+            recent_matches = recent_res.data or []
+            
+            history_data = []
+            correct_predictions = 0
+            total_predictions = 0
+            
             for m in recent_matches:
-                p1_name, p2_name, winner = m.get('player1_name', ''), m.get('player2_name', ''), m.get('actual_winner_name', '')
-                fair1, fair2 = to_float(m.get('ai_fair_odds1'), 0), to_float(m.get('ai_fair_odds2'), 0)
+                p1_name = m.get('player1_name', '')
+                p2_name = m.get('player2_name', '')
+                winner = m.get('actual_winner_name', '')
+                
+                fair1 = to_float(m.get('ai_fair_odds1'), 0)
+                fair2 = to_float(m.get('ai_fair_odds2'), 0)
+                
                 if fair1 > 0 and fair2 > 0:
                     total_predictions += 1
-                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()): correct_predictions += 1
+                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()): 
+                        correct_predictions += 1
+                        
                 p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
                 p2_obj = next((p for p in players if p.get('last_name') == p2_name and p['id'] in tour_players), None)
+                
                 if p1_obj and p2_obj:
                     history_data.append({
                         "skillA": all_skills.get(p1_obj['id'], {}).get('overall_rating', 50), "formA": 5.5, "surfA": 5.5,
                         "skillB": all_skills.get(p2_obj['id'], {}).get('overall_rating', 50), "formB": 5.5, "surfB": 5.5,
                         "winner_is_A": p1_name.lower() in winner.lower()
                     })
+                    
             if total_predictions > 0:
                 SYSTEM_ACCURACY[tour] = round((correct_predictions / total_predictions) * 100, 1)
                 log(f"🎯 {tour} System Accuracy Rating: {SYSTEM_ACCURACY[tour]}% ({correct_predictions}/{total_predictions})")
+                
             if len(history_data) >= 20:
                 DYNAMIC_WEIGHTS[tour] = NeuralOptimizer.optimize_ai_weights(history_data, DYNAMIC_WEIGHTS[tour])
                 try:
-                    supabase.table("ai_system_weights").upsert({"tour": tour, "weight_skill": DYNAMIC_WEIGHTS[tour]["SKILL"], "weight_form": DYNAMIC_WEIGHTS[tour]["FORM"], "weight_surface": DYNAMIC_WEIGHTS[tour]["SURFACE"], "mc_variance": DYNAMIC_WEIGHTS[tour]["MC_VARIANCE"], "last_optimized": datetime.now(timezone.utc).isoformat()}).execute()
+                    supabase.table("ai_system_weights").upsert({
+                        "tour": tour, 
+                        "weight_skill": DYNAMIC_WEIGHTS[tour]["SKILL"], 
+                        "weight_form": DYNAMIC_WEIGHTS[tour]["FORM"], 
+                        "weight_surface": DYNAMIC_WEIGHTS[tour]["SURFACE"], 
+                        "mc_variance": DYNAMIC_WEIGHTS[tour]["MC_VARIANCE"], 
+                        "last_optimized": datetime.now(timezone.utc).isoformat()
+                    }).execute()
                     log(f"💾 {tour} Gewichte erfolgreich in Supabase gesichert.")
-                except Exception as e: log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
+                except Exception as e: 
+                    log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
 
 # =================================================================
 # 6. OPENROUTER AI ENGINE (SOTA)
 # =================================================================
 async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://neuralscout.com", "X-Title": "NeuralScout"}
-    payload = {"model": model, "messages": [{"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."}, {"role": "user", "content": prompt}], "temperature": temp, "response_format": {"type": "json_object"}}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
+        "Content-Type": "application/json", 
+        "HTTP-Referer": "https://neuralscout.com", 
+        "X-Title": "NeuralScout"
+    }
+    payload = {
+        "model": model, 
+        "messages": [
+            {"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."}, 
+            {"role": "user", "content": prompt}
+        ], 
+        "temperature": temp, 
+        "response_format": {"type": "json_object"}
+    }
+    
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=45.0)
@@ -883,69 +965,124 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
             return None
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE (MASTER-SLAVE ARCHITECTURE)
+# 7. DATA FETCHING & ORACLE (TE AS MASTER / 1WIN AS SLAVE)
 # =================================================================
 
-async def fetch_te_master_schedule(browser: Browser) -> List[Dict]:
-    log("🕒 [TE MASTER] Erstelle Master-Schedule aus TennisExplorer (Source of Truth)...")
-    schedule = []
+async def scrape_tennis_odds_for_date(browser: Browser, target_date: datetime):
     context = await browser.new_context()
     await context.add_cookies([{"name": "tz", "value": "1", "domain": ".tennisexplorer.com", "path": "/"}])
+    page = await context.new_page()
     
-    for day_offset in range(-1, 4):
-        t_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
-        page = await context.new_page()
-        try:
-            url = f"https://www.tennisexplorer.com/matches/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
-            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            soup = BeautifulSoup(await page.content(), 'html.parser')
-            table = soup.find('table', class_='result')
+    try:
+        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
+        log(f"📡 Scanning TE Master Schedule: {target_date.strftime('%Y-%m-%d')}")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        return await page.content()
+    except Exception as e: 
+        log(f"⚠️ TE Scrape Error for {target_date}: {e}")
+        return None
+    finally: 
+        await page.close()
+        await context.close()
+
+def parse_matches_locally_v5(html: str) -> List[Dict]:
+    soup = BeautifulSoup(html, 'html.parser')
+    found = []
+    
+    for table in soup.find_all("table", class_="result"):
+        rows = table.find_all("tr")
+        current_tour = "Unknown"
+        pending_p1_raw = None
+        pending_p1_href = None
+        pending_time = "00:00"
+        
+        i = 0
+        while i < len(rows):
+            row = rows[i]
             
-            if not table: 
+            if "head" in row.get("class", []): 
+                tour_td = row.find('td', class_='t-name')
+                if tour_td: 
+                    current_tour = clean_tournament_name(tour_td.get_text(strip=True))
+                pending_p1_raw = None
+                i += 1
                 continue
             
-            current_tour = "Unknown"
-            for row in table.find_all('tr'):
-                if 'head' in row.get('class', []):
-                    tour_name_td = row.find('td', class_='t-name')
-                    if tour_name_td: 
-                        current_tour = clean_tournament_name(tour_name_td.get_text(strip=True))
-                    continue
-                
-                time_td = row.find('td', class_='time')
-                if not time_td: 
-                    continue
-                    
-                time_str = time_td.get_text(strip=True)
-                if ":" not in time_str: 
-                    continue
-                
-                links = [l for l in row.find_all('a') if 'player/' in l.get('href', '')]
-                if len(links) >= 2:
-                    p1_raw = links[0].get_text(strip=True)
-                    p2_raw = links[1].get_text(strip=True)
-                    p1_last, _ = parse_te_name(p1_raw)
-                    p2_last, _ = parse_te_name(p2_raw)
-                    
-                    if p1_last and p2_last:
-                        h, m = time_str.split(':')
-                        dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-                        dt = dt - timedelta(hours=1)
-                        iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                        
-                        schedule.append({
-                            'p1': p1_last, 'p1_raw': p1_raw,
-                            'p2': p2_last, 'p2_raw': p2_raw,
-                            'time': iso_time, 'tour': current_tour
-                        })
-        except Exception as e: 
-            pass
-        finally: 
-            await page.close()
+            cols = row.find_all('td')
+            if len(cols) < 2: 
+                i += 1
+                continue
             
-    await context.close()
-    log(f"✅ [TE MASTER] {len(schedule)} offizielle Matches im System-Speicher hinterlegt.")
-    return schedule
+            first_cell = row.find('td', class_='first')
+            if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
+                tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
+                if tm: 
+                    pending_time = tm.group(1).zfill(5)
+            
+            p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
+            if not p_cell: 
+                i += 1
+                continue
+                
+            p_raw = clean_player_name(p_cell.get_text(strip=True))
+            p_href = p_cell.find('a')['href'] if p_cell.find('a') else ""
+            
+            raw_odds = []
+            for c in row.find_all('td', class_=re.compile(r'course')):
+                try:
+                    val = float(c.get_text(strip=True))
+                    if 1.01 <= val <= 100.0: 
+                        raw_odds.append(val)
+                except: 
+                    pass
+
+            if pending_p1_raw:
+                p2_raw = p_raw
+                p2_href = p_href
+                
+                if '/' in pending_p1_raw or '/' in p2_raw: 
+                    pending_p1_raw = None
+                    i += 1
+                    continue
+                
+                prev_row = rows[i-1]
+                prev_odds = []
+                for c in prev_row.find_all('td', class_=re.compile(r'course')):
+                    try:
+                        val = float(c.get_text(strip=True))
+                        if 1.01 <= val <= 100.0: 
+                            prev_odds.append(val)
+                    except: 
+                        pass
+                
+                all_odds = prev_odds + raw_odds
+                
+                if len(all_odds) >= 2:
+                    final_o1 = all_odds[0]
+                    final_o2 = all_odds[1]
+                    
+                    found.append({
+                        "p1_raw": pending_p1_raw, 
+                        "p2_raw": p2_raw, 
+                        "tour": current_tour, 
+                        "time": pending_time, 
+                        "odds1": final_o1, 
+                        "odds2": final_o2,
+                        "p1_href": pending_p1_href, 
+                        "p2_href": p2_href
+                    })
+                    
+                pending_p1_raw = None
+            else:
+                if first_cell and first_cell.get('rowspan') == '2': 
+                    pending_p1_raw = p_raw
+                    pending_p1_href = p_href
+                else: 
+                    pending_p1_raw = p_raw
+                    pending_p1_href = p_href
+            i += 1
+            
+    return found
 
 async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
     log("🚀 [1WIN GHOST] Extrahiere rohen DOM-Text (Slave Feed)...")
@@ -960,8 +1097,8 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
 
     try:
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
-        
-        if "Just a moment" in await page.title() or "Cloudflare" in await page.title():
+        title = await page.title()
+        if "Just a moment" in title or "Cloudflare" in title:
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
@@ -987,7 +1124,8 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
                         }
                     }
                 """)
-                all_raw_text_blocks.append(await page.evaluate("document.body.innerText"))
+                text_dump = await page.evaluate("document.body.innerText")
+                all_raw_text_blocks.append(text_dump)
                 await page.mouse.wheel(delta_x=0, delta_y=500)
                 await asyncio.sleep(0.5) 
             except: 
@@ -1354,207 +1492,10 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE
-# =================================================================
-def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float: 
-    return 1 / (1 + math.exp(-sensitivity * diff))
-    
-def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float: 
-    return 0.5 * (1 + math.erf(elo_diff / (sigma * math.sqrt(2))))
-
-def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
-    if market_odds <= 1.01 or fair_prob <= 0: 
-        return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
-        
-    edge_percent = round(((fair_prob * min(market_odds, 100.0)) - 1) * 100, 1)
-    if edge_percent <= 0.5: 
-        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
-        
-    if edge_percent >= 15.0: 
-        label = "🔥 HIGH VALUE" 
-    elif edge_percent >= 8.0: 
-        label = "✨ GOOD VALUE" 
-    elif edge_percent >= 2.0: 
-        label = "📈 THIN VALUE" 
-    else: 
-        label = "👀 WATCH"
-        
-    return {"type": label, "edge_percent": edge_percent, "is_value": True}
-
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2):
-    tour = "ATP"
-    n1 = get_last_name(p1_name)
-    n2 = get_last_name(p2_name)
-    
-    elo_surf = 'Clay' if 'clay' in surface.lower() else ('Grass' if 'grass' in surface.lower() else 'Hard')
-    elo_diff_model = ELO_CACHE.get(tour, {}).get(n1, {}).get(elo_surf, 1500) - ELO_CACHE.get(tour, {}).get(n2, {}).get(elo_surf, 1500)
-    
-    if market_odds1 > 0 and market_odds2 > 0:
-        implied_p1 = (1/market_odds1) / ((1/market_odds1) + (1/market_odds2))
-        try: 
-            if 0.01 < implied_p1 < 0.99:
-                elo_diff_market = -400 * math.log10(1/implied_p1 - 1) 
-            else:
-                elo_diff_market = elo_diff_model
-        except: 
-            elo_diff_market = elo_diff_model
-            
-        elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
-    else: 
-        elo_diff_final = elo_diff_model
-        
-    prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
-    prob_alpha = (prob_elo * 0.35) + (max(0.01, min(0.99, mc_prob_a / 100.0)) * 0.65)
-    
-    if market_odds1 > 1 and market_odds2 > 1:
-        prob_market = (1/market_odds1) / ((1/market_odds1) + (1/market_odds2)) 
-    else: 
-        prob_market = 0.5
-        
-    return (prob_alpha * 0.35) + (prob_market * 0.65)
-
-def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
-    try:
-        if old_market_odds1 > 1 and old_market_odds2 > 1:
-            old_prob_market = (1/old_market_odds1) / ((1/old_market_odds1) + (1/old_market_odds2)) 
-        else: 
-            old_prob_market = 0.5
-            
-        if old_fair_odds1 <= 1.01: 
-            return 0.5
-            
-        old_final_prob = 1 / old_fair_odds1
-        alpha_part = old_final_prob - (old_prob_market * 0.40)
-        prob_alpha = alpha_part / 0.60
-        
-        if new_market_odds1 > 1 and new_market_odds2 > 1:
-            new_prob_market = (1/new_market_odds1) / ((1/new_market_odds1) + (1/new_market_odds2)) 
-        else: 
-            new_prob_market = 0.5
-            
-        new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
-        
-        if new_market_odds1 < 1.10:
-             new_final_prob = (new_final_prob * 0.15) + ((1/new_market_odds1) * 0.85) 
-             
-        return new_final_prob
-    except: 
-        return 0.5
-
-async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknown", p2_country="Unknown", match_date: datetime = None): 
-    s_low = clean_tournament_name(tour).lower().strip()
-    best_match = None
-    best_score = 0
-    
-    for t in db_tours:
-        score = calculate_fuzzy_score(s_low, t['name'])
-        if score > best_score: 
-            best_score = score
-            best_match = t
-            
-    if best_match and best_score >= 20: 
-        loc = best_match.get('location', '')
-        if loc:
-            city = loc.split(',')[0]
-        else:
-            city = best_match['name']
-        return best_match['surface'], best_match['bsi_rating'], best_match.get('notes', ''), city, best_match['name']
-        
-    return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0], tour
-
-def format_skills(s: Dict) -> str:
-    if not s: 
-        return "No granular skill data."
-    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
-
-async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
-    fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
-    fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
-    
-    if weather_data:
-        weather_str = f"WEATHER: {weather_data['summary']}. IMPACT: {weather_data['impact_note']}" 
-    else:
-        weather_str = "Weather: Neutral/No Data."
-        
-    current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
-    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
-    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
-    
-    if report1:
-        scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." 
-    else:
-        scoutA = "No scouting report available for Player A."
-        
-    if report2:
-        scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." 
-    else:
-        scoutB = "No scouting report available for Player B."
-        
-    validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
-    
-    aWins = mc_results['probA'] > mc_results['probB']
-    
-    if aWins:
-        predictedMCWinner = p1['last_name']
-        predictedMCLoser = p2['last_name']
-        finalProb_val = float(mc_results['probA'])
-    else:
-        predictedMCWinner = p2['last_name']
-        predictedMCLoser = p1['last_name']
-        finalProb_val = float(mc_results['probB'])
-    
-    if "WTA" in tour_name.upper():
-        tour_label = "WTA"
-    else:
-        tour_label = "ATP"
-        
-    sys_acc = SYSTEM_ACCURACY.get(tour_label, 65.0)
-    
-    convictionDirective = ""
-    if finalProb_val >= 65.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) ***\nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING." 
-    elif finalProb_val >= 58.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model gives {predictedMCWinner} a clear edge ({finalProb_val:.1f}%). Write confidently about why {predictedMCWinner} is the favorite to win, focusing on the tactical mismatch. Avoid 50/50 language." 
-    else:
-        convictionDirective = f"*** CONVICTION DIRECTIVE ***\nThe mathematical model sees this as a tight battle ({finalProb_val:.1f}% for {predictedMCWinner}). Write an analysis highlighting the fine margins that will decide this match."
-
-    prompt = f"""You are an elite Senior Tennis Analyst (Style: Gil Gross). 
-    *** SYSTEM SELF-REFLECTION (CRITICAL) ***
-    Our internal neural network has an active prediction accuracy of {sys_acc}%. 
-    *** DATA GROUNDING (SOURCE OF TRUTH) ***
-    Player A ({p1['last_name']}): Style: {p1.get('play_style', 'Unknown')} | Form: {form1_data['text']} | Surface Rating: {p1_s_rating}/10 | Granular Skills: {format_skills(s1)} | Scouting: {scoutA} | Fatigue: {fatigueA}
-    Player B ({p2['last_name']}): Style: {p2.get('play_style', 'Unknown')} | Form: {form2_data['text']} | Surface Rating: {p2_s_rating}/10 | Granular Skills: {format_skills(s2)} | Scouting: {scoutB} | Fatigue: {fatigueB}
-    Match Conditions: Surface: {surface} (BSI: {bsi}) | Notes: {validCourtNotes} | {weather_str}
-    *** INTERNAL MATCHUP DATA ***
-    Winner: {predictedMCWinner} (Win Probability: {finalProb_val:.1f}%)
-    {convictionDirective}
-    *** CRITICAL DIRECTIVES (MUST OBEY) ***
-    1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages, numerical ratings, or skill points in 'prediction_text' and 'key_factor'.
-    2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics".
-    3. FACTUAL INTEGRITY: Ground analysis in the provided 'Weaknesses'.
-    4. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
-    OUTPUT JSON:
-    {{"winner_prediction": "{predictedMCWinner}", "key_factor": "One sharp tactical sentence focusing on the primary technical mismatch (NO NUMBERS).", "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.", "tactical_bullets": ["Tactic 1 based on report", "Tactic 2 based on report", "Tactic 3 based on report"]}}"""
-    
-    res = await call_openrouter(prompt)
-    if not res: 
-        return {'ai_text': f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}.", 'mc_prob_a': mc_results['probA']}
-        
-    try:
-        data = ensure_dict(json.loads(res.replace("json", "").replace("```", "").strip()))
-        bullets_str = "\n".join([f"- {b}" for b in data.get('tactical_bullets', [])])
-        return {
-            'ai_text': f"🔑 {data.get('key_factor', '')}\n\n📝 {data.get('prediction_text', '')}\n\n🎯 Tactical Keys:\n{bullets_str}", 
-            'mc_prob_a': mc_results['probA']
-        }
-    except: 
-        return {'ai_text': f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}.", 'mc_prob_a': mc_results['probA']}
-
-# =================================================================
 # PIPELINE EXECUTION (MASTER-SLAVE ARCHITECTURE)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V157.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
+    log(f"🚀 Neural Scout V158.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
     
     TARGET_TABLE = "market_odds_demo" # 🔴 SOTA: Demo/Staging Environment für den Test
     
@@ -1601,7 +1542,6 @@ async def run_pipeline():
                         te_o2 = match['odds2']
                         tour_name = match['tour']
                         
-                        # 🔴 Calculate Exact ISO Time from TE
                         try:
                             h, m_min = time_str.split(':')
                             dt = target_date.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
@@ -1610,7 +1550,6 @@ async def run_pipeline():
                         except:
                             iso_time = f"{target_date.strftime('%Y-%m-%d')}T00:00:00Z"
                         
-                        # 🔴 SOTA: The 1Win Merge Lookup
                         o1_1w, o2_1w = find_odds_in_lines(p1_raw, p2_raw, onewin_lines)
                         
                         if o1_1w and o2_1w and validate_market_integrity(o1_1w, o2_1w):
@@ -1709,6 +1648,7 @@ async def run_pipeline():
                             full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
                             full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
                             
+                            # READ FROM PRODUCTION TABLE FOR RATINGS
                             p1_history = await fetch_player_history_extended(n1, limit=80)
                             p2_history = await fetch_player_history_extended(n2, limit=80)
                             
