@@ -23,9 +23,9 @@ from playwright.async_api import async_playwright, Browser, Page
 from bs4 import BeautifulSoup
 from supabase import create_client, Client
 
-=================================================================
-1. CONFIGURATION & LOGGING
-=================================================================
+# =================================================================
+# 1. CONFIGURATION & LOGGING
+# =================================================================
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] %(levelname)s: %(message)s',
@@ -38,7 +38,7 @@ def log(msg: str):
 
 log("🔌 Initialisiere Neural Scout (V153.6 - Elite Time-Sync 1:1 Fix)...")
 
-Secrets Load
+# Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -49,10 +49,10 @@ if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SOTA Model Selection
+# SOTA Model Selection
 MODEL_NAME = 'meta-llama/llama-3.3-70b-instruct'
 
-Global Caches & Dynamic Memory
+# Global Caches & Dynamic Memory
 ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
@@ -61,7 +61,7 @@ WEATHER_CACHE: Dict[str, Any] = {}
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 TML_MATCH_CACHE: List[Dict] = [] 
 
-SELF LEARNING STATE MEMORY
+# SELF LEARNING STATE MEMORY
 DYNAMIC_WEIGHTS = {
     "ATP": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20},
     "WTA": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20}
@@ -75,9 +75,9 @@ CITY_TO_DB_STRING = {
 }
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
-=================================================================
-1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
-=================================================================
+# =================================================================
+# 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
+# =================================================================
 async def fetch_tml_database():
     log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
     loaded_matches = 0
@@ -98,9 +98,9 @@ async def fetch_tml_database():
         except Exception as e:
             log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
 
-=================================================================
-2. HELPER FUNCTIONS
-=================================================================
+# =================================================================
+# 2. HELPER FUNCTIONS
+# =================================================================
 def to_float(val: Any, default: float = 0.0) -> float:
     if val is None: 
         return default
@@ -364,7 +364,7 @@ def has_active_signal(text: Optional[str]) -> bool:
             return True
     return False
 
---- SOTA WEATHER SERVICE ---
+# --- SOTA WEATHER SERVICE ---
 async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     if not location_name or location_name == "Unknown": 
         return None
@@ -425,7 +425,7 @@ async def fetch_weather_data(location_name: str) -> Optional[Dict]:
     except Exception as e:
         return None
 
---- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
+# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
 def validate_market_integrity(o1: float, o2: float) -> bool:
     if o1 <= 1.01 or o2 <= 1.01: 
         return False 
@@ -455,9 +455,9 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         
     return False
 
-=================================================================
-3. SOTA MOMENTUM V3 ENGINE (xG Model)
-=================================================================
+# =================================================================
+# 3. SOTA MOMENTUM V3 ENGINE (xG Model)
+# =================================================================
 class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
@@ -598,9 +598,9 @@ class MomentumV2Engine:
             "history_summary": "".join(history_log[-5:])
         }
 
-=================================================================
-4. SURFACE INTELLIGENCE ENGINE
-=================================================================
+# =================================================================
+# 4. SURFACE INTELLIGENCE ENGINE
+# =================================================================
 class SurfaceIntelligence:
     @staticmethod
     def normalize_surface_key(raw_surface: str) -> str:
@@ -729,9 +729,9 @@ class SurfaceIntelligence:
         profile['_v95_mastery_applied'] = True
         return profile
 
-=================================================================
-5. SOTA MARKOV CHAIN ENGINE
-=================================================================
+# =================================================================
+# 5. SOTA MARKOV CHAIN ENGINE
+# =================================================================
 class MarkovChainEngine:
     @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
@@ -847,9 +847,9 @@ class MarkovChainEngine:
             "scoreB": overall_B
         }
 
-=================================================================
-5.5 SOTA: SELF-LEARNING NEURAL OPTIMIZER
-=================================================================
+# =================================================================
+# 5.5 SOTA: SELF-LEARNING NEURAL OPTIMIZER
+# =================================================================
 class NeuralOptimizer:
     @staticmethod
     def optimize_ai_weights(matches_history: List[Dict], current_weights: Dict) -> Dict:
@@ -951,9 +951,9 @@ class NeuralOptimizer:
                 except Exception as e:
                     log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
 
-=================================================================
-6. OPENROUTER AI ENGINE (SOTA)
-=================================================================
+# =================================================================
+# 6. OPENROUTER AI ENGINE (SOTA)
+# =================================================================
 async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -982,9 +982,9 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
             log(f"⚠️ OpenRouter Exception: {e}")
             return None
 
-=================================================================
-6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER)
-=================================================================
+# =================================================================
+# 6.5 1WIN SOTA MASTER FEED (ODDS SCRAPER)
+# =================================================================
 def extract_time_context(lines_slice: List[str]) -> str:
     full_text = " ".join(lines_slice)
     
@@ -1206,11 +1206,11 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
     log(f"✅ [1WIN GHOST] {len(parsed_matches)} saubere DB-Matches extrahiert (Memory-Pool).")
     return parsed_matches
 
-=================================================================
-7. DATA FETCHING & ORACLE (TE SETTLEMENT INTEGRATED)
-=================================================================
+# =================================================================
+# 7. DATA FETCHING & ORACLE (TE SETTLEMENT INTEGRATED)
+# =================================================================
 
-🔴 SOTA: DEEP TIME SYNC ORACLE (Range: Yesterday to +4 Days, Substring Matching)
+# 🔴 SOTA: DEEP TIME SYNC ORACLE (Range: Yesterday to +4 Days, Substring Matching)
 async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
     log("🕒 [TIME ORACLE] Deep-Sync echter Match-Zeiten von TennisExplorer (Tag -1 bis +4)...")
     time_map = {}
@@ -1357,7 +1357,7 @@ async def fetch_tennisexplorer_stats(browser: Browser, relative_url: str, surfac
         
     return 0.5
 
-L8 SOTA: THE RELIABLE RESULTS ENGINE (TE INTEGRATION)
+# L8 SOTA: THE RELIABLE RESULTS ENGINE (TE INTEGRATION)
 async def update_past_results(browser: Browser, players: List[Dict]):
     log("🏆 The Auditor: Checking Real-Time Results & Scores via TE...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
@@ -1738,9 +1738,9 @@ async def get_db_data():
         log(f"❌ DB Load Error: {e}")
         return [], {}, [], []
 
-=================================================================
-8. MATH CORE
-=================================================================
+# =================================================================
+# 8. MATH CORE
+# =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
 
@@ -1846,9 +1846,9 @@ def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds
     except: 
         return 0.5
 
-=================================================================
-9. PIPELINE UTILS
-=================================================================
+# =================================================================
+# 9. PIPELINE UTILS
+# =================================================================
 async def build_country_city_map(browser: Browser):
     if COUNTRY_TO_CITY_MAP: 
         return
@@ -2072,9 +2072,9 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     except: 
         return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
 
-=================================================================
-10. QUANTUM GAMES SIMULATOR (OVER/UNDER)
-=================================================================
+# =================================================================
+# 10. QUANTUM GAMES SIMULATOR (OVER/UNDER)
+# =================================================================
 class QuantumGamesSimulator:
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
@@ -2161,9 +2161,9 @@ class QuantumGamesSimulator:
             }
         }
 
-=================================================================
-11. LIVE SKILL ENGINE
-=================================================================
+# =================================================================
+# 11. LIVE SKILL ENGINE
+# =================================================================
 class LiveSkillEngine:
     @staticmethod
     def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
@@ -2224,9 +2224,9 @@ class LiveSkillEngine:
 
         return new_skills
 
-=================================================================
-12. FANTASY SETTLEMENT ENGINE
-=================================================================
+# =================================================================
+# 12. FANTASY SETTLEMENT ENGINE
+# =================================================================
 class FantasySettlementEngine:
     @staticmethod
     def run_settlement():
@@ -2338,9 +2338,9 @@ class FantasySettlementEngine:
         supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
         log(f"✅ [FANTASY ENGINE] Gameweek {gw['week_number']} settled für {len(lineups)} Scouts. Points & Credits verteilt.")
 
-=================================================================
-PIPELINE EXECUTION
-=================================================================
+# =================================================================
+# PIPELINE EXECUTION
+# =================================================================
 async def run_pipeline():
     log(f"🚀 Neural Scout V153.6 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
@@ -2649,5 +2649,5 @@ async def run_pipeline():
         
     log("🏁 Cycle Finished.")
 
-if name == "main":
+if __name__ == "__main__":
     asyncio.run(run_pipeline())
