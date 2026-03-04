@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V156.0 - Elite Master-Slave Sync Architecture)...")
+log("🔌 Initialisiere Neural Scout (V157.0 - Elite Master-Slave Sync & Full Engines Restored)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -74,55 +74,26 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
-# =================================================================
-async def fetch_tml_database():
-    log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
-    loaded_matches = 0
-    async with httpx.AsyncClient() as client:
-        try:
-            tml_api_url = "https://stats.tennismylife.org/api/data-files"
-            res = await client.get(tml_api_url, timeout=15.0)
-            if res.status_code == 200:
-                files = res.json().get('files', [])
-                for f in files:
-                    if f['name'] in ['2025.csv', '2026.csv', 'ongoing_tourneys.csv']:
-                        csv_res = await client.get(f['url'], timeout=30.0)
-                        reader = csv.DictReader(io.StringIO(csv_res.text))
-                        for row in reader:
-                            TML_MATCH_CACHE.append(row)
-                            loaded_matches += 1
-                log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
-        except Exception as e:
-            log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
-
-# =================================================================
 # 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 0.0) -> float:
-    if val is None: 
-        return default
-    try: 
-        return float(val)
-    except: 
-        return default
+    if val is None: return default
+    try: return float(val)
+    except: return default
 
 def normalize_text(text: str) -> str:
-    if not text: 
-        return ""
+    if not text: return ""
     return "".join(c for c in unicodedata.normalize('NFD', text.replace('æ', 'ae').replace('ø', 'o')) if unicodedata.category(c) != 'Mn')
 
 def clean_player_name(raw: str) -> str:
-    if not raw: 
-        return ""
+    if not raw: return ""
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', raw, flags=re.IGNORECASE)
     clean = re.sub(r'\s*\(\d+\)', '', clean) 
     clean = re.sub(r'\s*\(.*?\)', '', clean) 
     return clean.replace('|', '').strip()
 
 def clean_tournament_name(raw: str) -> str:
-    if not raw: 
-        return "Unknown"
+    if not raw: return "Unknown"
     clean = raw
     clean = re.sub(r'Live streams|1xBet|bwin|TV|Sky Sports|bet365', '', clean, flags=re.IGNORECASE)
     clean = re.sub(r'<.?>', '', clean)
@@ -133,28 +104,22 @@ def clean_tournament_name(raw: str) -> str:
     return clean.strip()
 
 def get_last_name(full_name: str) -> str:
-    if not full_name: 
-        return ""
+    if not full_name: return ""
     clean = re.sub(r'\b[A-Z]\.\s*', '', full_name).strip()
     parts = clean.split()
-    if parts: 
-        return parts[-1].lower()
+    if parts: return parts[-1].lower()
     return ""
 
 def ensure_dict(data: Any) -> Dict:
     try:
-        if isinstance(data, dict): 
-            return data
+        if isinstance(data, dict): return data
         if isinstance(data, list):
-            if len(data) > 0 and isinstance(data[0], dict): 
-                return data[0]
+            if len(data) > 0 and isinstance(data[0], dict): return data[0]
         return {}
-    except: 
-        return {}
+    except: return {}
 
 def normalize_db_name(name: str) -> str:
-    if not name: 
-        return ""
+    if not name: return ""
     n = "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
     n = n.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
@@ -167,72 +132,45 @@ def get_similarity(a: str, b: str) -> float:
 def is_same_player(target_name: str, db_name: str) -> bool:
     t_norm = normalize_db_name(target_name)
     d_norm = normalize_db_name(db_name)
-    
-    if t_norm == d_norm: 
-        return True
-        
+    if t_norm == d_norm: return True
     t_parts = t_norm.split()
     d_parts = d_norm.split()
-    
-    if not t_parts or not d_parts: 
-        return False
-        
-    if t_parts[-1] != d_parts[-1]: 
-        return False
-        
+    if not t_parts or not d_parts: return False
+    if t_parts[-1] != d_parts[-1]: return False
     t_first = t_parts[0] if len(t_parts) > 1 else ""
     d_first = d_parts[0] if len(d_parts) > 1 else ""
-    
-    if t_first and d_first: 
-        return t_first[0] == d_first[0]
-        
+    if t_first and d_first: return t_first[0] == d_first[0]
     return True
 
 def parse_te_name(raw: str):
     clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
     parts = clean.split()
-    
-    if not parts: 
-        return "", ""
-        
+    if not parts: return "", ""
     initial = ""
     last_name_parts = []
-    
     for p in parts:
         if (len(p) <= 2 and p.endswith('.')) or (len(p) == 1 and p.isalpha()):
-            if not initial: 
-                initial = p[0].lower()
+            if not initial: initial = p[0].lower()
         else:
             last_name_parts.append(p)
-            
     last_name = " ".join(last_name_parts)
-    
     if not initial and len(parts) > 1:
         initial = parts[0][0].lower()
         last_name = " ".join(parts[1:])
-        
     return normalize_db_name(last_name), initial
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
-    if report_ids is None: 
-        report_ids = set()
-        
-    if not scraped_name_raw or len(scraped_name_raw) < 3 or re.search(r'\d', scraped_name_raw): 
-        return None 
-        
+    if report_ids is None: report_ids = set()
+    if not scraped_name_raw or len(scraped_name_raw) < 3 or re.search(r'\d', scraped_name_raw): return None 
     bad_words = ['satz', 'set', 'game', 'über', 'unter', 'handicap', 'sieger', 'winner', 'tennis', 'live', 'stream', 'stats', 'tv']
-    if any(w in scraped_name_raw.lower() for w in bad_words): 
-        return None
+    if any(w in scraped_name_raw.lower() for w in bad_words): return None
 
     clean_scrape = normalize_db_name(clean_player_name(scraped_name_raw))
     scrape_tokens = clean_scrape.split()
-    
-    if not scrape_tokens: 
-        return None
+    if not scrape_tokens: return None
 
     candidates = []
     has_comma = "," in scraped_name_raw
-    
     if has_comma:
         parts = scraped_name_raw.split(',')
         scrape_last_part = normalize_db_name(parts[0])
@@ -240,8 +178,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
     else:
         scrape_last_part = clean_scrape
         scrape_first_part = ""
-        if len(scrape_tokens) > 1: 
-            scrape_first_part = scrape_tokens[0]
+        if len(scrape_tokens) > 1: scrape_first_part = scrape_tokens[0]
     
     for p in db_players:
         db_last = normalize_db_name(p.get('last_name', ''))
@@ -263,16 +200,12 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 continue 
                 
             if last_matched and db_first and scrape_first_part:
-                if db_first == scrape_first_part or scrape_first_part in db_first: 
-                    score += 80 
-                elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80: 
-                    score += 50
+                if db_first == scrape_first_part or scrape_first_part in db_first: score += 80 
+                elif len(db_first) >= 5 and get_similarity(db_first, scrape_first_part) >= 0.80: score += 50
                 else:
                     sf_tokens = scrape_first_part.split()
-                    if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]: 
-                        score += 15 
-                    elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]: 
-                        score -= 100 
+                    if sf_tokens and len(sf_tokens[0]) > 0 and sf_tokens[0][0] == db_first[0]: score += 15 
+                    elif sf_tokens and len(sf_tokens[0]) > 0 and db_first and sf_tokens[0][0] != db_first[0]: score -= 100 
         else:
             if db_last_tokens and db_last_tokens[-1] in scrape_tokens:
                 score += 60
@@ -296,10 +229,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         if not explained:
                             toxic_leftover = True
                             break
-                
-                if toxic_leftover: 
-                    score -= 50 
-                    
+                if toxic_leftover: score -= 50 
                 if db_first and score >= 60:
                     if any(ft in scrape_tokens for ft in db_first_tokens) or (scrape_first_part and scrape_first_part in db_first):
                         score += 80 
@@ -310,159 +240,291 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                         for st in scrape_tokens:
                             c_st = st.replace('.', '')
                             if 0 < len(c_st) <= 2: 
-                                if c_st[0] == db_f_init: 
-                                    has_matching = True
-                                else: 
-                                    has_contradicting = True
-                        
-                        if has_matching: 
-                            score += 15
-                        elif has_contradicting: 
-                            score -= 100 
+                                if c_st[0] == db_f_init: has_matching = True
+                                else: has_contradicting = True
+                        if has_matching: score += 15
+                        elif has_contradicting: score -= 100 
                             
-        if score >= 60: 
-            candidates.append((p, score))
+        if score >= 60: candidates.append((p, score))
                 
-    if not candidates: 
-        return None
-        
+    if not candidates: return None
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
-    
     if len(candidates) > 1:
-        if candidates[0][1] == candidates[1][1]: 
-            return "TIE_BREAKER"
-            
+        if candidates[0][1] == candidates[1][1]: return "TIE_BREAKER"
     return candidates[0][0]
 
 def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     s_norm = normalize_text(scraped_name).lower()
     d_norm = normalize_text(db_name).lower()
-    
-    if d_norm in s_norm and len(d_norm) > 3: 
-        return 100
-        
+    if d_norm in s_norm and len(d_norm) > 3: return 100
     s_tokens = set(re.findall(r'\w+', s_norm))
     d_tokens = set(re.findall(r'\w+', d_norm))
     stop_words = {'atp', 'wta', 'open', 'tour', '2025', '2026', 'challenger', 'itf', 'world', 'tennis'}
-    
     s_tokens -= stop_words
     d_tokens -= stop_words
-    
-    if not s_tokens or not d_tokens: 
-        return 0
-        
+    if not s_tokens or not d_tokens: return 0
     common = s_tokens.intersection(d_tokens)
     score = len(common) * 15
-    
-    if "indoor" in s_tokens and "indoor" in d_tokens: 
-        score += 20
-    if "canberra" in s_tokens and "canberra" in d_tokens: 
-        score += 30
-        
+    if "indoor" in s_tokens and "indoor" in d_tokens: score += 20
+    if "canberra" in s_tokens and "canberra" in d_tokens: score += 30
     return score
 
 def has_active_signal(text: Optional[str]) -> bool:
-    if not text: 
-        return False
+    if not text: return False
     if "[" in text and "]" in text:
-        if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]): 
-            return True
+        if any(icon in text for icon in ["💎", "🛡️", "⚖️", "💰", "🔥", "✨", "📈", "👀"]): return True
     return False
 
-# --- SOTA WEATHER SERVICE ---
-async def fetch_weather_data(location_name: str) -> Optional[Dict]:
-    if not location_name or location_name == "Unknown": 
-        return None
+# =================================================================
+# 3. ENGINES & SIMULATORS (WURDEN WIEDERHERGESTELLT)
+# =================================================================
+
+class QuantumGamesSimulator:
+    @staticmethod
+    def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
+        p_hold = 67.0 
+        p_hold += (server_skills.get('serve', 50) - 50) * 0.35 
+        p_hold += (server_skills.get('power', 50) - 50) * 0.10
+        p_hold -= (returner_skills.get('speed', 50) - 50) * 0.15 
+        p_hold -= (returner_skills.get('mental', 50) - 50) * 0.08
+        p_hold += (bsi - 6.0) * 1.4 
+        return max(52.0, min(94.0, p_hold)) / 100.0
+
+    @staticmethod
+    def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
+        g1, g2 = 0, 0
+        while True:
+            if random.random() < p1_prob: g1 += 1
+            else: g2 += 1 
+            
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
+            if g1 == 6 and g2 == 6:
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
+            
+            if random.random() < p2_prob: g2 += 1
+            else: g1 += 1 
+            
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
+            
+            if g1 == 6 and g2 == 6:
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
+
+    @staticmethod
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
+        p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
+        p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
         
-    clean_location = re.sub(r'a-zA-Z0-9\s,', '', location_name).strip()
-    if len(clean_location) > 50: 
-        clean_location = clean_location[:50] 
-    
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    cache_key = f"{clean_location}_{today_str}"
-    
-    if cache_key in WEATHER_CACHE: 
-        return WEATHER_CACHE[cache_key]
-
-    try:
-        async with httpx.AsyncClient() as client:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={clean_location}&count=1&language=en&format=json"
-            geo_res = await client.get(geo_url)
-            geo_data = geo_res.json()
+        total_games_log = []
+        for _ in range(iterations):
+            winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+            p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
+            p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
             
-            if not geo_data.get('results'): 
-                WEATHER_CACHE[cache_key] = None
-                return None
-
-            loc = geo_data['results'][0]
-            lat, lon = loc['latitude'], loc['longitude']
-
-            w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=auto"
-            w_res = await client.get(w_url)
-            w_data = w_res.json()
+            winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
+            total = games_s1 + games_s2
             
-            curr = w_data.get('current', {})
-            if not curr: 
-                return None
-
-            impact = "Neutral conditions."
-            temp = curr.get('temperature_2m', 20)
-            hum = curr.get('relative_humidity_2m', 50)
-            wind = curr.get('wind_speed_10m', 10)
-
-            if temp > 30: 
-                impact = "EXTREME HEAT: Ball flies fast, physically draining."
-            elif temp < 12: 
-                impact = "COLD: Low bounce, heavy conditions."
+            if winner_s1 != winner_s2:
+                winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
+                total += games_s3
                 
-            if hum > 70: 
-                impact += " HIGH HUMIDITY: Air is heavy, ball travels slower."
-            if wind > 20: 
-                impact += " WINDY: Serve toss difficult, high variance."
-
-            result = {"summary": f"{temp}°C, {hum}% Hum, Wind: {wind} km/h", "impact_note": impact}
-            WEATHER_CACHE[cache_key] = result
-            return result
-    except: 
-        return None
-
-# --- MARKET INTEGRITY & ANTI-SPIKE ENGINE ---
-def validate_market_integrity(o1: float, o2: float) -> bool:
-    if o1 <= 1.01 or o2 <= 1.01: 
-        return False 
-    if o1 > 200 or o2 > 200: 
-        return False 
-    implied_prob = (1/o1) + (1/o2)
-    if implied_prob < 0.92 or implied_prob > 1.45: 
-        return False
-    return True
-
-def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: float) -> bool:
-    if old_o1 == 0 or old_o2 == 0: 
-        return False 
+            total_games_log.append(total)
+            
+        total_games_log.sort()
         
-    if abs(new_o1 - old_o2) < 0.15 and abs(new_o2 - old_o1) < 0.15: 
-        return False
-        
-    change_p1 = abs(new_o1 - old_o1) / old_o1
-    change_p2 = abs(new_o2 - old_o2) / old_o2
-    
-    if change_p1 > 0.60 or change_p2 > 0.60:
-        if old_o1 < 1.10 or old_o2 < 1.10: 
-            return False
-        return True
-        
-    return False
+        return {
+            "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
+            "median_games": total_games_log[len(total_games_log)//2],
+            "probabilities": {
+                "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
+                "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
+                "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
+                "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
+            },
+            "sim_details": {
+                "p1_est_hold_pct": round(p1_hold_prob * 100, 1), 
+                "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
+            }
+        }
 
-# =================================================================
-# 3. SOTA MOMENTUM V3 ENGINE (xG Model)
-# =================================================================
+
+class LiveSkillEngine:
+    @staticmethod
+    def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
+        if not current_skills: return {}
+
+        base_shift = 0.0
+        if is_winner:
+            if odds <= 1.30: base_shift = 0.1
+            elif odds <= 1.701: base_shift = 0.2
+            elif odds <= 1.850: base_shift = 0.3
+            elif odds <= 2.2501: base_shift = 0.4
+            else: base_shift = 0.6
+        else:
+            if odds <= 1.30: base_shift = -0.8
+            elif odds <= 1.701: base_shift = -0.4
+            elif odds <= 1.850: base_shift = -0.3
+            elif odds <= 2.2501: base_shift = -0.2
+            else: base_shift = -0.1
+
+        skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
+        new_skills = {}
+        for k in skill_fields:
+            if k in current_skills and current_skills[k] is not None:
+                new_skills[k] = float(current_skills[k]) + base_shift
+
+        if not new_skills: return {}
+
+        score_lower = str(score).lower()
+        sets = re.findall(r'(\d+)-(\d+)', score_lower)
+
+        if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
+            for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
+                if skill in new_skills: new_skills[skill] += 0.2
+
+        if is_winner and len(sets) >= 3:
+            if 'mental' in new_skills: new_skills['mental'] += 0.3
+            if 'stamina' in new_skills: new_skills['stamina'] += 0.3
+
+        lost_tiebreak = False
+        for s in sets:
+            l, r = int(s[0]), int(s[1])
+            if is_player1 and l < r and r == 7: lost_tiebreak = True
+            if not is_player1 and r < l and l == 7: lost_tiebreak = True
+
+        if not is_winner and lost_tiebreak:
+             if 'mental' in new_skills: new_skills['mental'] -= 0.2
+
+        if not is_winner and "ret." in score_lower:
+             if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
+             if 'speed' in new_skills: new_skills['speed'] -= 0.5
+
+        new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
+        new_skills['overall_rating'] = new_overall
+
+        for k, v in new_skills.items():
+            new_skills[k] = max(1.0, min(99.0, round(v, 2)))
+
+        return new_skills
+
+
+class FantasySettlementEngine:
+    @staticmethod
+    def run_settlement():
+        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
+        now = datetime.now(timezone.utc)
+        
+        res_active = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
+        active_gws = res_active.data or []
+        
+        for gw in active_gws:
+            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
+            end_of_week = deadline + timedelta(days=7) 
+            if now > end_of_week: 
+                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
+                
+        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
+        latest_gw = res_latest.data[0] if res_latest.data else None
+        
+        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
+            if latest_gw:
+                next_week_num = latest_gw['week_number'] + 1
+                next_year = latest_gw['year']
+            else:
+                next_week_num = int(now.strftime("%V"))
+                next_year = now.year
+                
+            if next_week_num > 52: 
+                next_week_num = 1
+                next_year += 1
+                
+            days_ahead = 0 - now.weekday()
+            if days_ahead <= 0: 
+                days_ahead += 7
+                
+            next_monday = now + timedelta(days=days_ahead)
+            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
+            
+            new_gw = {
+                "week_number": next_week_num, 
+                "year": next_year, 
+                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"), 
+                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"), 
+                "status": "active"
+            }
+            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
+            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
+
+    @staticmethod
+    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
+        res_lineups = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw['id']).execute()
+        lineups = res_lineups.data or []
+        
+        if not lineups:
+            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
+            return
+
+        res_matches = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
+        matches = res_matches.data or []
+        
+        res_players = supabase.table("players").select("id, last_name, first_name").execute()
+        players_map = {p['id']: p for p in (res_players.data or [])}
+
+        for lineup in lineups:
+            total_pts = 0
+            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
+                if not pid or pid not in players_map: 
+                    continue
+                    
+                p_name = players_map[pid]['last_name'].lower()
+                
+                p_matches = []
+                for m in matches:
+                    if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower():
+                        p_matches.append(m)
+                        
+                for m in p_matches:
+                    won = p_name in str(m.get('actual_winner_name')).lower()
+                    
+                    if p_name in str(m.get('player1_name')).lower():
+                        odds = float(m.get('odds1', 1.5))
+                    else:
+                        odds = float(m.get('odds2', 1.5))
+                        
+                    if won: 
+                        total_pts += (50 + max(0, (odds - 1.5) * 20))
+                    else: 
+                        total_pts -= 10
+                        
+            total_pts = round(max(0, total_pts), 1)
+            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
+            
+            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", lineup['user_id']).execute()
+            if prof_res.data: 
+                old_xp = prof_res.data[0].get('total_xp', 0)
+                supabase.table("fantasy_profiles").update({"total_xp": old_xp + int(total_pts * 10)}).eq("user_id", lineup['user_id']).execute()
+            else: 
+                supabase.table("fantasy_profiles").insert({"user_id": lineup['user_id'], "total_xp": int(total_pts * 10)}).execute()
+                
+            try:
+                main_prof_res = supabase.table("profiles").select("credits").eq("id", lineup['user_id']).execute()
+                if main_prof_res.data: 
+                    old_credits = main_prof_res.data[0].get('credits') or 0
+                    supabase.table("profiles").update({"credits": old_credits + int(total_pts / 5)}).eq("id", lineup['user_id']).execute()
+            except: 
+                pass
+                
+        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
+
+
 class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
-        if not matches: 
-            return {"score": 6.5, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
-            
+        if not matches: return {"score": 6.5, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
         recent_matches = sorted(matches, key=lambda x: str(x.get('created_at', '')), reverse=True)[:max_matches]
         chrono_matches = recent_matches[::-1]
 
@@ -474,19 +536,14 @@ class MomentumV2Engine:
         for idx, m in enumerate(chrono_matches):
             p1_str = str(m.get('player1_name', ''))
             p2_str = str(m.get('player2_name', ''))
-            
             is_p1 = is_same_player(player_name, p1_str)
             is_p2 = is_same_player(player_name, p2_str)
-            
-            if not is_p1 and not is_p2: 
-                continue
+            if not is_p1 and not is_p2: continue
 
             winner = str(m.get('actual_winner_name', ''))
             won = is_same_player(player_name, winner)
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
-            
-            if odds <= 1.01: 
-                odds = 1.85
+            if odds <= 1.01: odds = 1.85
             
             expected_perf = 1 / odds 
             actual_perf = 0.5 
@@ -503,7 +560,6 @@ class MomentumV2Engine:
                     opp_sets_won = 0
                     player_games_won = 0
                     opp_games_won = 0
-                    
                     for s in sets:
                         try:
                             l, r = int(s[0]), int(s[1])
@@ -511,81 +567,53 @@ class MomentumV2Engine:
                             o_games = r if is_p1 else l
                             player_games_won += p_games
                             opp_games_won += o_games
-                            if p_games > o_games: 
-                                player_sets_won += 1
-                            elif o_games > p_games: 
-                                opp_sets_won += 1
-                        except: 
-                            pass
+                            if p_games > o_games: player_sets_won += 1
+                            elif o_games > p_games: opp_sets_won += 1
+                        except: pass
                     
                     if won:
                         if opp_sets_won == 0: 
                             game_diff = player_games_won - opp_games_won
-                            if game_diff >= 8: 
-                                actual_perf = 1.0      
-                            elif game_diff >= 5: 
-                                actual_perf = 0.9    
-                            elif game_diff >= 3: 
-                                actual_perf = 0.8    
-                            else: 
-                                actual_perf = 0.7                   
+                            if game_diff >= 8: actual_perf = 1.0      
+                            elif game_diff >= 5: actual_perf = 0.9    
+                            elif game_diff >= 3: actual_perf = 0.8    
+                            else: actual_perf = 0.7                   
                         else: 
                             game_diff = player_games_won - opp_games_won
-                            if game_diff >= 4: 
-                                actual_perf = 0.75     
-                            elif game_diff >= 1: 
-                                actual_perf = 0.65   
-                            else: 
-                                actual_perf = 0.55                  
+                            if game_diff >= 4: actual_perf = 0.75     
+                            elif game_diff >= 1: actual_perf = 0.65   
+                            else: actual_perf = 0.55                  
                     else:
                         if player_sets_won == 1: 
                             game_diff = opp_games_won - player_games_won
-                            if game_diff <= 1: 
-                                actual_perf = 0.45     
-                            elif game_diff <= 4: 
-                                actual_perf = 0.35   
-                            else: 
-                                actual_perf = 0.25                  
+                            if game_diff <= 1: actual_perf = 0.45     
+                            elif game_diff <= 4: actual_perf = 0.35   
+                            else: actual_perf = 0.25                  
                         else: 
                             game_diff = opp_games_won - player_games_won
-                            if game_diff <= 3: 
-                                actual_perf = 0.30     
-                            elif game_diff <= 5: 
-                                actual_perf = 0.20   
-                            elif game_diff <= 7: 
-                                actual_perf = 0.10   
-                            else: 
-                                actual_perf = 0.0                   
+                            if game_diff <= 3: actual_perf = 0.30     
+                            elif game_diff <= 5: actual_perf = 0.20   
+                            elif game_diff <= 7: actual_perf = 0.10   
+                            else: actual_perf = 0.0                   
 
             match_edge = actual_perf - expected_perf 
-            
-            if won: 
-                match_edge += 0.40  
-            else: 
-                match_edge -= 0.20
+            if won: match_edge += 0.40  
+            else: match_edge -= 0.20
             
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             cumulative_edge += (match_edge * time_weight)
             total_weight += time_weight
-            
-            if won:
-                history_log.append("W")
-            else:
-                history_log.append("L")
+            history_log.append("W" if won else "L")
 
         streak_bonus = 0.0
         if len(history_log) >= 3:
             recent_3 = history_log[-3:]
-            if recent_3 == ["W", "W", "W"]: 
-                streak_bonus = 0.4
-            elif recent_3 == ["L", "L", "L"]: 
-                streak_bonus = -0.4
+            if recent_3 == ["W", "W", "W"]: streak_bonus = 0.4
+            elif recent_3 == ["L", "L", "L"]: streak_bonus = -0.4
             if len(history_log) >= 5:
                 recent_5 = history_log[-5:]
-                if recent_5.count("W") == 5: 
-                    streak_bonus = 0.8
-                elif recent_5.count("L") == 5: 
-                    streak_bonus = -0.8
+                if recent_5.count("W") == 5: streak_bonus = 0.8
+                elif recent_5.count("L") == 5: streak_bonus = -0.8
 
         avg_edge = (cumulative_edge / total_weight) if total_weight > 0 else 0.0
         final_rating = base_rating + (avg_edge * 10.0) + streak_bonus
@@ -594,45 +622,27 @@ class MomentumV2Engine:
         desc = "Average"
         color_hex = "#F0C808" 
         
-        if final_rating >= 8.5: 
-            desc = "🔥 ELITE"
-            color_hex = "#FF00FF" 
-        elif final_rating >= 7.2: 
-            desc = "📈 Strong"
-            color_hex = "#3366FF" 
-        elif final_rating >= 6.0: 
-            desc = "Solid"
-            color_hex = "#00B25B" 
-        elif final_rating >= 4.5: 
-            desc = "⚠️ Vulnerable"
-            color_hex = "#FF9933" 
-        else: 
-            desc = "❄️ Cold"
-            color_hex = "#CC0000" 
+        if final_rating >= 8.5: desc, color_hex = "🔥 ELITE", "#FF00FF" 
+        elif final_rating >= 7.2: desc, color_hex = "📈 Strong", "#3366FF" 
+        elif final_rating >= 6.0: desc, color_hex = "Solid", "#00B25B" 
+        elif final_rating >= 4.5: desc, color_hex = "⚠️ Vulnerable", "#FF9933" 
+        else: desc, color_hex = "❄️ Cold", "#CC0000" 
 
         return {"score": round(final_rating, 2), "text": desc, "color_hex": color_hex, "history_summary": "".join(history_log[-5:])}
 
-# =================================================================
-# 4. SURFACE INTELLIGENCE ENGINE
-# =================================================================
 class SurfaceIntelligence:
     @staticmethod
     def normalize_surface_key(raw_surface: str) -> str:
-        if not raw_surface: 
-            return "unknown"
+        if not raw_surface: return "unknown"
         s = raw_surface.lower()
-        if "grass" in s: 
-            return "grass"
-        if "clay" in s or "sand" in s: 
-            return "clay"
-        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: 
-            return "hard"
+        if "grass" in s: return "grass"
+        if "clay" in s or "sand" in s: return "clay"
+        if "hard" in s or "carpet" in s or "acrylic" in s or "indoor" in s: return "hard"
         return "unknown"
 
     @staticmethod
     def clean_name_for_matching(name: str) -> str:
-        if not name: 
-            return ""
+        if not name: return ""
         n = name.lower()
         n = re.sub(r'\b(atp|wta|ch|challenger|tour|masters|1000|500|250|open|championships|intl|international|men|women|singles)\b', '', n)
         n = re.sub(r'\b(202[0-9])\b', '', n)
@@ -643,37 +653,27 @@ class SurfaceIntelligence:
     def get_matches_by_surface(all_matches: List[Dict], target_surface: str) -> List[Dict]:
         filtered = []
         target = SurfaceIntelligence.normalize_surface_key(target_surface)
-        
         for m in all_matches:
             tour_name = str(m.get('tournament', '')).lower()
             ai_text = str(m.get('ai_analysis_text', '')).lower()
             found_surface = "unknown"
             
             match_hist = re.search(r'surface:\s*(hard|clay|grass)', ai_text)
-            if match_hist: 
-                found_surface = match_hist.group(1)
-            elif "hard court" in ai_text or "hard surface" in ai_text: 
-                found_surface = "hard"
-            elif "red clay" in ai_text or "clay court" in ai_text: 
-                found_surface = "clay"
-            elif "grass court" in ai_text: 
-                found_surface = "grass"
-            elif "clay" in tour_name or "roland garros" in tour_name: 
-                found_surface = "clay"
-            elif "grass" in tour_name or "wimbledon" in tour_name: 
-                found_surface = "grass"
-            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: 
-                found_surface = "hard"
+            if match_hist: found_surface = match_hist.group(1)
+            elif "hard court" in ai_text or "hard surface" in ai_text: found_surface = "hard"
+            elif "red clay" in ai_text or "clay court" in ai_text: found_surface = "clay"
+            elif "grass court" in ai_text: found_surface = "grass"
+            elif "clay" in tour_name or "roland garros" in tour_name: found_surface = "clay"
+            elif "grass" in tour_name or "wimbledon" in tour_name: found_surface = "grass"
+            elif "hard" in tour_name or "us open" in tour_name or "australian open" in tour_name: found_surface = "hard"
             else:
                 for db_key, db_surf in GLOBAL_SURFACE_MAP.items():
                     if db_key in tour_name or tour_name in db_key:
                         if len(db_key) > 3:
                             found_surface = db_surf
                             break
-                            
             if SurfaceIntelligence.normalize_surface_key(found_surface) == target:
                 filtered.append(m)
-                
         return filtered
 
     @staticmethod
@@ -684,65 +684,38 @@ class SurfaceIntelligence:
             "clay": SurfaceIntelligence.get_matches_by_surface(matches, "clay"),
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
-        
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
-            
             if n_surf == 0:
                 profile[surf] = {"rating": 3.5, "color": "#808080", "matches_tracked": 0, "text": "No Experience"}
                 continue
-                
             wins = 0
             for m in surf_matches:
                 winner = str(m.get('actual_winner_name', ""))
-                if is_same_player(player_name, winner): 
-                    wins += 1
-                    
+                if is_same_player(player_name, winner): wins += 1
             win_rate = wins / n_surf
             vol_score = min(1.0, n_surf / 30.0) * 1.95
             win_score = win_rate * 4.55
             final_rating = max(1.0, min(10.0, 3.5 + vol_score + win_score))
             
-            desc = "Average"
-            color_hex = "#F0C808" 
-            
-            if final_rating >= 8.5: 
-                desc = "🔥 SPECIALIST"
-                color_hex = "#FF00FF" 
-            elif final_rating >= 7.5: 
-                desc = "📈 Strong"
-                color_hex = "#3366FF" 
-            elif final_rating >= 6.5: 
-                desc = "Solid"
-                color_hex = "#00B25B" 
-            elif final_rating >= 5.5: 
-                desc = "Solid"
-                color_hex = "#99CC33" 
-            elif final_rating <= 4.5: 
-                desc = "⚠️ Vulnerable"
-                color_hex = "#CC0000" 
-            elif final_rating < 5.5: 
-                desc = "❄️ Weakness"
-                color_hex = "#FF9933" 
+            desc, color_hex = "Average", "#F0C808" 
+            if final_rating >= 8.5: desc, color_hex = "🔥 SPECIALIST", "#FF00FF" 
+            elif final_rating >= 7.5: desc, color_hex = "📈 Strong", "#3366FF" 
+            elif final_rating >= 6.5: color_hex = "#00B25B" 
+            elif final_rating >= 5.5: desc, color_hex = "Solid", "#99CC33" 
+            elif final_rating <= 4.5: desc, color_hex = "⚠️ Vulnerable", "#CC0000" 
+            elif final_rating < 5.5: desc, color_hex = "❄️ Weakness", "#FF9933" 
 
             profile[surf] = {"rating": round(final_rating, 2), "color": color_hex, "matches_tracked": n_surf, "text": desc}
-            
         profile['_v95_mastery_applied'] = True
         return profile
 
-# =================================================================
-# 5. SOTA MARKOV CHAIN ENGINE
-# =================================================================
 class MarkovChainEngine:
     @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
                        bsi: float, styleA: str, styleB: str, iterations: int = 2500) -> Dict[str, Any]:
-                       
-        def get_serve_prob(serve_skill, power_skill): 
-            return 0.50 + (((serve_skill * 0.7) + (power_skill * 0.3)) / 100.0) * 0.25
-            
-        def get_return_def(speed_skill, backhand_skill, forehand_skill): 
-            return (((speed_skill * 0.4) + (backhand_skill * 0.3) + (forehand_skill * 0.3)) / 100.0)
+        def get_serve_prob(serve_skill, power_skill): return 0.50 + (((serve_skill * 0.7) + (power_skill * 0.3)) / 100.0) * 0.25
+        def get_return_def(speed_skill, backhand_skill, forehand_skill): return (((speed_skill * 0.4) + (backhand_skill * 0.3) + (forehand_skill * 0.3)) / 100.0)
 
         base_serve_win_A = get_serve_prob(s1.get('serve', 50), s1.get('power', 50))
         base_serve_win_B = get_serve_prob(s2.get('serve', 50), s2.get('power', 50))
@@ -754,39 +727,25 @@ class MarkovChainEngine:
         p_B_wins_on_serve = base_serve_win_B - (return_def_A * 0.12)
 
         overall_gap_delta = (s1.get('overall_rating', 50) - s2.get('overall_rating', 50)) * 0.0035
-        
         p_A_wins_on_serve += overall_gap_delta
         p_B_wins_on_serve -= overall_gap_delta
 
         bsi_modifier_A = (bsi - 6.5) * 0.015
         bsi_modifier_B = bsi_modifier_A
 
-        safe_style_A = (styleA or "").lower()
-        safe_style_B = (styleB or "").lower()
+        safe_style_A, safe_style_B = (styleA or "").lower(), (styleB or "").lower()
 
-        if "big server" in safe_style_A or "first-strike" in safe_style_A: 
-            if bsi < 6.0:
-                bsi_modifier_A *= 2.5
-            else:
-                bsi_modifier_A *= 1.5
-                
-        if "big server" in safe_style_B or "first-strike" in safe_style_B: 
-            if bsi < 6.0:
-                bsi_modifier_B *= 2.5
-            else:
-                bsi_modifier_B *= 1.5
-            
+        if "big server" in safe_style_A or "first-strike" in safe_style_A: bsi_modifier_A *= (2.5 if bsi < 6.0 else 1.5)
+        if "big server" in safe_style_B or "first-strike" in safe_style_B: bsi_modifier_B *= (2.5 if bsi < 6.0 else 1.5)
         if ("counter puncher" in safe_style_A or "grinder" in safe_style_A) and bsi < 6.0:
             return_def_A *= 1.20
             p_B_wins_on_serve -= 0.03
-            
         if ("counter puncher" in safe_style_B or "grinder" in safe_style_B) and bsi < 6.0:
             return_def_B *= 1.20
             p_A_wins_on_serve -= 0.03
 
         p_A_wins_on_serve += bsi_modifier_A
         p_B_wins_on_serve += bsi_modifier_B
-        
         p_A_wins_on_serve += ((formA - 5) * 0.008)
         p_B_wins_on_serve += ((formB - 5) * 0.008)
 
@@ -794,83 +753,49 @@ class MarkovChainEngine:
         p_B_wins_on_serve = max(0.40, min(0.92, p_B_wins_on_serve))
 
         def simulate_game(prob_serve_win):
-            pts_srv = 0
-            pts_ret = 0
+            pts_srv, pts_ret = 0, 0
             while True:
-                if random.random() < prob_serve_win: 
-                    pts_srv += 1
-                else: 
-                    pts_ret += 1
-                if pts_srv >= 4 and pts_srv - pts_ret >= 2: 
-                    return True
-                if pts_ret >= 4 and pts_ret - pts_srv >= 2: 
-                    return False
+                if random.random() < prob_serve_win: pts_srv += 1
+                else: pts_ret += 1
+                if pts_srv >= 4 and pts_srv - pts_ret >= 2: return True
+                if pts_ret >= 4 and pts_ret - pts_srv >= 2: return False
 
         def simulate_tiebreak(prob_A, prob_B):
-            pts_A = 0
-            pts_B = 0
-            serves_A = True
-            pts_played = 0
+            pts_A, pts_B, serves_A, pts_played = 0, 0, True, 0
             while True:
                 if serves_A:
-                    if random.random() < prob_A: 
-                        pts_A += 1
-                    else: 
-                        pts_B += 1
+                    if random.random() < prob_A: pts_A += 1
+                    else: pts_B += 1
                 else:
-                    if random.random() < prob_B: 
-                        pts_B += 1
-                    else: 
-                        pts_A += 1
-                        
+                    if random.random() < prob_B: pts_B += 1
+                    else: pts_A += 1
                 pts_played += 1
-                if pts_played % 2 == 1: 
-                    serves_A = not serves_A
-                    
-                if pts_A >= 7 and pts_A - pts_B >= 2: 
-                    return True
-                if pts_B >= 7 and pts_B - pts_A >= 2: 
-                    return False
+                if pts_played % 2 == 1: serves_A = not serves_A
+                if pts_A >= 7 and pts_A - pts_B >= 2: return True
+                if pts_B >= 7 and pts_B - pts_A >= 2: return False
 
         def simulate_set():
-            games_A = 0
-            games_B = 0
-            serves_A = True
+            games_A, games_B, serves_A = 0, 0, True
             while True:
                 if serves_A:
-                    if simulate_game(p_A_wins_on_serve): 
-                        games_A += 1
-                    else: 
-                        games_B += 1
+                    if simulate_game(p_A_wins_on_serve): games_A += 1
+                    else: games_B += 1
                 else:
-                    if simulate_game(p_B_wins_on_serve): 
-                        games_B += 1
-                    else: 
-                        games_A += 1
-                        
+                    if simulate_game(p_B_wins_on_serve): games_B += 1
+                    else: games_A += 1
                 serves_A = not serves_A
-                
-                if games_A == 6 and games_B == 6: 
-                    return simulate_tiebreak(p_A_wins_on_serve, p_B_wins_on_serve)
-                if games_A >= 6 and games_A - games_B >= 2: 
-                    return True
-                if games_B >= 6 and games_B - games_A >= 2: 
-                    return False
+                if games_A == 6 and games_B == 6: return simulate_tiebreak(p_A_wins_on_serve, p_B_wins_on_serve)
+                if games_A >= 6 and games_A - games_B >= 2: return True
+                if games_B >= 6 and games_B - games_A >= 2: return False
 
-        match_wins_A = 0
-        match_wins_B = 0
+        match_wins_A, match_wins_B = 0, 0
         for _ in range(iterations):
-            sets_A = 0
-            sets_B = 0
+            sets_A, sets_B = 0, 0
             while sets_A < 2 and sets_B < 2:
-                if simulate_set(): 
-                    sets_A += 1
-                else: 
-                    sets_B += 1
-            if sets_A == 2: 
-                match_wins_A += 1
-            else: 
-                match_wins_B += 1
+                if simulate_set(): sets_A += 1
+                else: sets_B += 1
+            if sets_A == 2: match_wins_A += 1
+            else: match_wins_B += 1
 
         return {
             "probA": round((match_wins_A / iterations) * 100, 1),
@@ -879,24 +804,16 @@ class MarkovChainEngine:
             "scoreB": s2.get('overall_rating', 50)
         }
 
-# =================================================================
-# 5.5 SOTA: SELF-LEARNING NEURAL OPTIMIZER
-# =================================================================
 class NeuralOptimizer:
     @staticmethod
     def optimize_ai_weights(matches_history: List[Dict], current_weights: Dict) -> Dict:
         log("🧠 Starte Neural Weight Optimization (Backpropagation Simulation)...")
-        best_weights = current_weights
-        best_brier_score = float('inf') 
-        
+        best_weights, best_brier_score = current_weights, float('inf') 
         for w_skill in np.arange(0.30, 0.70, 0.05):
             for w_form in np.arange(0.20, 0.50, 0.05):
                 w_surf = 1.0 - (w_skill + w_form)
-                if w_surf < 0.05 or w_surf > 0.30: 
-                    continue 
-                    
-                current_brier_score = 0.0
-                valid_matches = 0
+                if w_surf < 0.05 or w_surf > 0.30: continue 
+                current_brier_score, valid_matches = 0.0, 0
                 for m in matches_history:
                     baseA = (m['skillA']/10) * w_skill + m['formA'] * w_form + m['surfA'] * w_surf
                     baseB = (m['skillB']/10) * w_skill + m['formB'] * w_form + m['surfB'] * w_surf
@@ -904,16 +821,13 @@ class NeuralOptimizer:
                     actual_result = 1.0 if m['winner_is_A'] else 0.0
                     current_brier_score += (prob_a - actual_result)**2
                     valid_matches += 1
-                    
                 if valid_matches > 0:
                     avg_brier = current_brier_score / valid_matches
                     if avg_brier < best_brier_score:
                         best_brier_score = avg_brier
                         best_weights = {
-                            "SKILL": round(float(w_skill), 2), 
-                            "FORM": round(float(w_form), 2), 
-                            "SURFACE": round(float(w_surf), 2), 
-                            "MC_VARIANCE": current_weights.get("MC_VARIANCE", 1.20)
+                            "SKILL": round(float(w_skill), 2), "FORM": round(float(w_form), 2), 
+                            "SURFACE": round(float(w_surf), 2), "MC_VARIANCE": current_weights.get("MC_VARIANCE", 1.20)
                         }
         log(f"✅ Neues Gehirn-Setup gefunden! Brier Score: {round(best_brier_score, 4)} -> {best_weights}")
         return best_weights
@@ -923,79 +837,40 @@ class NeuralOptimizer:
         log("🔄 Initiating Weekly Self-Learning Routine...")
         for tour in ["ATP", "WTA"]:
             tour_players = [p['id'] for p in players if p.get('tour') == tour]
-            if not tour_players: 
-                continue
-                
+            if not tour_players: continue
             recent_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(200).execute()
-            recent_matches = recent_res.data or []
-            
-            history_data = []
-            correct_predictions = 0
-            total_predictions = 0
-            
+            recent_matches, history_data, correct_predictions, total_predictions = recent_res.data or [], [], 0, 0
             for m in recent_matches:
-                p1_name = m.get('player1_name', '')
-                p2_name = m.get('player2_name', '')
-                winner = m.get('actual_winner_name', '')
-                
-                fair1 = to_float(m.get('ai_fair_odds1'), 0)
-                fair2 = to_float(m.get('ai_fair_odds2'), 0)
-                
+                p1_name, p2_name, winner = m.get('player1_name', ''), m.get('player2_name', ''), m.get('actual_winner_name', '')
+                fair1, fair2 = to_float(m.get('ai_fair_odds1'), 0), to_float(m.get('ai_fair_odds2'), 0)
                 if fair1 > 0 and fair2 > 0:
                     total_predictions += 1
-                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()): 
-                        correct_predictions += 1
-                        
+                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()): correct_predictions += 1
                 p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
                 p2_obj = next((p for p in players if p.get('last_name') == p2_name and p['id'] in tour_players), None)
-                
                 if p1_obj and p2_obj:
                     history_data.append({
                         "skillA": all_skills.get(p1_obj['id'], {}).get('overall_rating', 50), "formA": 5.5, "surfA": 5.5,
                         "skillB": all_skills.get(p2_obj['id'], {}).get('overall_rating', 50), "formB": 5.5, "surfB": 5.5,
                         "winner_is_A": p1_name.lower() in winner.lower()
                     })
-                    
             if total_predictions > 0:
                 SYSTEM_ACCURACY[tour] = round((correct_predictions / total_predictions) * 100, 1)
                 log(f"🎯 {tour} System Accuracy Rating: {SYSTEM_ACCURACY[tour]}% ({correct_predictions}/{total_predictions})")
-                
             if len(history_data) >= 20:
                 DYNAMIC_WEIGHTS[tour] = NeuralOptimizer.optimize_ai_weights(history_data, DYNAMIC_WEIGHTS[tour])
                 try:
-                    supabase.table("ai_system_weights").upsert({
-                        "tour": tour, 
-                        "weight_skill": DYNAMIC_WEIGHTS[tour]["SKILL"], 
-                        "weight_form": DYNAMIC_WEIGHTS[tour]["FORM"], 
-                        "weight_surface": DYNAMIC_WEIGHTS[tour]["SURFACE"], 
-                        "mc_variance": DYNAMIC_WEIGHTS[tour]["MC_VARIANCE"], 
-                        "last_optimized": datetime.now(timezone.utc).isoformat()
-                    }).execute()
+                    supabase.table("ai_system_weights").upsert({"tour": tour, "weight_skill": DYNAMIC_WEIGHTS[tour]["SKILL"], "weight_form": DYNAMIC_WEIGHTS[tour]["FORM"], "weight_surface": DYNAMIC_WEIGHTS[tour]["SURFACE"], "mc_variance": DYNAMIC_WEIGHTS[tour]["MC_VARIANCE"], "last_optimized": datetime.now(timezone.utc).isoformat()}).execute()
                     log(f"💾 {tour} Gewichte erfolgreich in Supabase gesichert.")
-                except Exception as e: 
-                    log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
+                except Exception as e: log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
 
 # =================================================================
 # 6. OPENROUTER AI ENGINE (SOTA)
 # =================================================================
 async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.1) -> Optional[str]:
     url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}", 
-        "Content-Type": "application/json", 
-        "HTTP-Referer": "https://neuralscout.com", 
-        "X-Title": "NeuralScout"
-    }
-    payload = {
-        "model": model, 
-        "messages": [
-            {"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."}, 
-            {"role": "user", "content": prompt}
-        ], 
-        "temperature": temp, 
-        "response_format": {"type": "json_object"}
-    }
-    
+    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://neuralscout.com", "X-Title": "NeuralScout"}
+    payload = {"model": model, "messages": [{"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."}, {"role": "user", "content": prompt}], "temperature": temp, "response_format": {"type": "json_object"}}
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=45.0)
@@ -1008,124 +883,69 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
             return None
 
 # =================================================================
-# 7. DATA FETCHING & ORACLE (TE AS MASTER / 1WIN AS SLAVE)
+# 7. DATA FETCHING & ORACLE (MASTER-SLAVE ARCHITECTURE)
 # =================================================================
 
-async def scrape_tennis_odds_for_date(browser: Browser, target_date: datetime):
-    """SOTA: Scrapes the raw HTML of TennisExplorer for a given date, injecting timezone cookies."""
+async def fetch_te_master_schedule(browser: Browser) -> List[Dict]:
+    log("🕒 [TE MASTER] Erstelle Master-Schedule aus TennisExplorer (Source of Truth)...")
+    schedule = []
     context = await browser.new_context()
     await context.add_cookies([{"name": "tz", "value": "1", "domain": ".tennisexplorer.com", "path": "/"}])
-    page = await context.new_page()
     
-    try:
-        url = f"https://www.tennisexplorer.com/matches/?type=all&year={target_date.year}&month={target_date.month}&day={target_date.day}"
-        log(f"📡 Scanning TE Master Schedule: {target_date.strftime('%Y-%m-%d')}")
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        return await page.content()
-    except Exception as e: 
-        log(f"⚠️ TE Scrape Error for {target_date}: {e}")
-        return None
-    finally: 
-        await page.close()
-        await context.close()
-
-def parse_matches_locally_v5(html: str) -> List[Dict]:
-    """SOTA: Parses the TE HTML and extracts the matches, times, AND the TE baseline odds."""
-    soup = BeautifulSoup(html, 'html.parser')
-    found = []
-    
-    for table in soup.find_all("table", class_="result"):
-        rows = table.find_all("tr")
-        current_tour = "Unknown"
-        pending_p1_raw = None
-        pending_p1_href = None
-        pending_time = "00:00"
-        
-        i = 0
-        while i < len(rows):
-            row = rows[i]
+    for day_offset in range(-1, 4):
+        t_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
+        page = await context.new_page()
+        try:
+            url = f"https://www.tennisexplorer.com/matches/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+            table = soup.find('table', class_='result')
             
-            if "head" in row.get("class", []): 
-                current_tour = row.get_text(strip=True)
-                pending_p1_raw = None
-                i += 1
+            if not table: 
                 continue
             
-            cols = row.find_all('td')
-            if len(cols) < 2: 
-                i += 1
-                continue
-            
-            first_cell = row.find('td', class_='first')
-            if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
-                tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
-                if tm: 
-                    pending_time = tm.group(1).zfill(5)
-            
-            p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
-            if not p_cell: 
-                i += 1
-                continue
-                
-            p_raw = clean_player_name(p_cell.get_text(strip=True))
-            p_href = p_cell.find('a')['href'] if p_cell.find('a') else ""
-            
-            raw_odds = []
-            for c in row.find_all('td', class_=re.compile(r'course')):
-                try:
-                    val = float(c.get_text(strip=True))
-                    if 1.01 <= val <= 100.0: 
-                        raw_odds.append(val)
-                except: 
-                    pass
-
-            if pending_p1_raw:
-                p2_raw = p_raw
-                p2_href = p_href
-                
-                if '/' in pending_p1_raw or '/' in p2_raw: 
-                    pending_p1_raw = None
-                    i += 1
+            current_tour = "Unknown"
+            for row in table.find_all('tr'):
+                if 'head' in row.get('class', []):
+                    tour_name_td = row.find('td', class_='t-name')
+                    if tour_name_td: 
+                        current_tour = clean_tournament_name(tour_name_td.get_text(strip=True))
                     continue
                 
-                prev_row = rows[i-1]
-                prev_odds = []
-                for c in prev_row.find_all('td', class_=re.compile(r'course')):
-                    try:
-                        val = float(c.get_text(strip=True))
-                        if 1.01 <= val <= 100.0: 
-                            prev_odds.append(val)
-                    except: 
-                        pass
-                
-                all_odds = prev_odds + raw_odds
-                
-                if len(all_odds) >= 2:
-                    final_o1 = all_odds[0]
-                    final_o2 = all_odds[1]
+                time_td = row.find('td', class_='time')
+                if not time_td: 
+                    continue
                     
-                    found.append({
-                        "p1_raw": pending_p1_raw, 
-                        "p2_raw": p2_raw, 
-                        "tour": clean_tournament_name(current_tour), 
-                        "time": pending_time, 
-                        "odds1": final_o1, 
-                        "odds2": final_o2,
-                        "p1_href": pending_p1_href, 
-                        "p2_href": p2_href
-                    })
+                time_str = time_td.get_text(strip=True)
+                if ":" not in time_str: 
+                    continue
+                
+                links = [l for l in row.find_all('a') if 'player/' in l.get('href', '')]
+                if len(links) >= 2:
+                    p1_raw = links[0].get_text(strip=True)
+                    p2_raw = links[1].get_text(strip=True)
+                    p1_last, _ = parse_te_name(p1_raw)
+                    p2_last, _ = parse_te_name(p2_raw)
                     
-                pending_p1_raw = None
-            else:
-                if first_cell and first_cell.get('rowspan') == '2': 
-                    pending_p1_raw = p_raw
-                    pending_p1_href = p_href
-                else: 
-                    pending_p1_raw = p_raw
-                    pending_p1_href = p_href
-            i += 1
+                    if p1_last and p2_last:
+                        h, m = time_str.split(':')
+                        dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+                        dt = dt - timedelta(hours=1)
+                        iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        
+                        schedule.append({
+                            'p1': p1_last, 'p1_raw': p1_raw,
+                            'p2': p2_last, 'p2_raw': p2_raw,
+                            'time': iso_time, 'tour': current_tour
+                        })
+        except Exception as e: 
+            pass
+        finally: 
+            await page.close()
             
-    return found
+    await context.close()
+    log(f"✅ [TE MASTER] {len(schedule)} offizielle Matches im System-Speicher hinterlegt.")
+    return schedule
 
 async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
     log("🚀 [1WIN GHOST] Extrahiere rohen DOM-Text (Slave Feed)...")
@@ -1140,8 +960,8 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
 
     try:
         await page.goto("https://1win.io/betting/prematch/tennis-33", wait_until="networkidle", timeout=60000)
-        title = await page.title()
-        if "Just a moment" in title or "Cloudflare" in title:
+        
+        if "Just a moment" in await page.title() or "Cloudflare" in await page.title():
             log("🛑 WARNUNG: Cloudflare Challenge aktiv! Warte 5 Sekunden...")
             await asyncio.sleep(5)
             
@@ -1167,8 +987,7 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
                         }
                     }
                 """)
-                text_dump = await page.evaluate("document.body.innerText")
-                all_raw_text_blocks.append(text_dump)
+                all_raw_text_blocks.append(await page.evaluate("document.body.innerText"))
                 await page.mouse.wheel(delta_x=0, delta_y=500)
                 await asyncio.sleep(0.5) 
             except: 
@@ -1189,7 +1008,6 @@ async def fetch_1win_raw_lines(browser: Browser) -> List[str]:
     return unified_lines
 
 def find_odds_in_lines(p1_name: str, p2_name: str, lines: List[str]) -> tuple:
-    """SOTA: Scans the raw 1Win text for the two player names and extracts their odds."""
     p1_norm = normalize_db_name(p1_name)
     p2_norm = normalize_db_name(p2_name)
     
@@ -1307,6 +1125,7 @@ async def update_past_results(browser: Browser, players: List[Dict]):
             
             while i < len(rows):
                 row = rows[i]
+                
                 if 'head' in row.get('class', []): 
                     pending_p1_raw = None
                     i += 1
@@ -1432,6 +1251,7 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
                 sets = len(re.findall(r'(\d+)-(\d+)', score_str))
                 tiebreaks = len(re.findall(r'7-6|6-7', score_str))
                 total_games = sum(int(s[0]) + int(s[1]) for s in re.findall(r'(\d+)-(\d+)', score_str) if s[0].isdigit() and s[1].isdigit())
+                
                 if sets >= 3: 
                     fatigue_score += 20
                     details.append("Last match 3+ sets")
@@ -1460,17 +1280,8 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
             fatigue_score += 15
             details.append(f"Heavy leg load ({sets_in_week} sets in 7 days)")
             
-        status = "Fresh"
-        if fatigue_score > 75: 
-            status = "CRITICAL FATIGUE"
-        elif fatigue_score > 50: 
-            status = "Heavy Legs"
-        elif fatigue_score > 30: 
-            status = "In Rhythm (Active)"
-            
-        if details: 
-            return f"{status} [{', '.join(details)}]"
-        return status
+        status = "CRITICAL FATIGUE" if fatigue_score > 75 else "Heavy Legs" if fatigue_score > 50 else "In Rhythm (Active)" if fatigue_score > 30 else "Fresh"
+        return f"{status} [{', '.join(details)}]" if details else status
     except: 
         return "Unknown"
 
@@ -1740,121 +1551,10 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
         return {'ai_text': f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}.", 'mc_prob_a': mc_results['probA']}
 
 # =================================================================
-# 12. FANTASY SETTLEMENT ENGINE
-# =================================================================
-class FantasySettlementEngine:
-    @staticmethod
-    def run_settlement():
-        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
-        now = datetime.now(timezone.utc)
-        
-        res_active = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
-        active_gws = res_active.data or []
-        
-        for gw in active_gws:
-            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
-            end_of_week = deadline + timedelta(days=7) 
-            if now > end_of_week: 
-                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
-                
-        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
-        latest_gw = res_latest.data[0] if res_latest.data else None
-        
-        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
-            if latest_gw:
-                next_week_num = latest_gw['week_number'] + 1
-                next_year = latest_gw['year']
-            else:
-                next_week_num = int(now.strftime("%V"))
-                next_year = now.year
-                
-            if next_week_num > 52: 
-                next_week_num = 1
-                next_year += 1
-                
-            days_ahead = 0 - now.weekday()
-            if days_ahead <= 0: 
-                days_ahead += 7
-                
-            next_monday = now + timedelta(days=days_ahead)
-            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
-            
-            new_gw = {
-                "week_number": next_week_num, 
-                "year": next_year, 
-                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                "status": "active"
-            }
-            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
-            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
-
-    @staticmethod
-    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
-        res_lineups = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw['id']).execute()
-        lineups = res_lineups.data or []
-        
-        if not lineups:
-            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
-            return
-
-        res_matches = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
-        matches = res_matches.data or []
-        
-        res_players = supabase.table("players").select("id, last_name, first_name").execute()
-        players_map = {p['id']: p for p in (res_players.data or [])}
-
-        for lineup in lineups:
-            total_pts = 0
-            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
-                if not pid or pid not in players_map: 
-                    continue
-                    
-                p_name = players_map[pid]['last_name'].lower()
-                
-                p_matches = []
-                for m in matches:
-                    if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower():
-                        p_matches.append(m)
-                        
-                for m in p_matches:
-                    won = p_name in str(m.get('actual_winner_name')).lower()
-                    
-                    if p_name in str(m.get('player1_name')).lower():
-                        odds = float(m.get('odds1', 1.5))
-                    else:
-                        odds = float(m.get('odds2', 1.5))
-                        
-                    if won: 
-                        total_pts += (50 + max(0, (odds - 1.5) * 20))
-                    else: 
-                        total_pts -= 10
-                        
-            total_pts = round(max(0, total_pts), 1)
-            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
-            
-            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", lineup['user_id']).execute()
-            if prof_res.data: 
-                old_xp = prof_res.data[0].get('total_xp', 0)
-                supabase.table("fantasy_profiles").update({"total_xp": old_xp + int(total_pts * 10)}).eq("user_id", lineup['user_id']).execute()
-            else: 
-                supabase.table("fantasy_profiles").insert({"user_id": lineup['user_id'], "total_xp": int(total_pts * 10)}).execute()
-                
-            try:
-                main_prof_res = supabase.table("profiles").select("credits").eq("id", lineup['user_id']).execute()
-                if main_prof_res.data: 
-                    old_credits = main_prof_res.data[0].get('credits') or 0
-                    supabase.table("profiles").update({"credits": old_credits + int(total_pts / 5)}).eq("id", lineup['user_id']).execute()
-            except: 
-                pass
-                
-        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw['id']).execute()
-
-# =================================================================
 # PIPELINE EXECUTION (MASTER-SLAVE ARCHITECTURE)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V156.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
+    log(f"🚀 Neural Scout V157.0 (MASTER-SLAVE ARCHITECTURE FULL) Starting...")
     
     TARGET_TABLE = "market_odds_demo" # 🔴 SOTA: Demo/Staging Environment für den Test
     
@@ -1875,23 +1575,19 @@ async def run_pipeline():
             report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
             
             # 🔴 SOTA PHASE 2: SLAVE FEED (1WIN RAW HTML)
-            # Wir machen das zuerst, damit wir es nur EINMAL laden müssen.
             onewin_lines = await fetch_1win_raw_lines(browser)
             
             log(f"🔍 Starte Synergy Merge: Matche Master-Zeiten mit 1Win-Quoten...")
             db_matched_count = 0
             
             # 🔴 SOTA PHASE 1 & 3: MASTER SCHEDULE (TE) + MERGE
-            # Wir iterieren durch die Tage (Heute bis in 3 Tage)
             for day_offset in range(0, 4):
                 target_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
                 
-                # Fetch the TE master schedule for this specific day
                 html = await scrape_tennis_odds_for_date(browser, target_date)
                 if not html: 
                     continue
                     
-                # Parse all matches natively from TE (this gets us perfect names, time, and fallback odds)
                 te_matches = parse_matches_locally_v5(html)
                 
                 for match in te_matches:
@@ -1900,7 +1596,7 @@ async def run_pipeline():
                         
                         p1_raw = match['p1_raw']
                         p2_raw = match['p2_raw']
-                        time_str = match['time'] # e.g. "14:00"
+                        time_str = match['time'] 
                         te_o1 = match['odds1']
                         te_o2 = match['odds2']
                         tour_name = match['tour']
@@ -1909,7 +1605,6 @@ async def run_pipeline():
                         try:
                             h, m_min = time_str.split(':')
                             dt = target_date.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
-                            # Remove the injected CET +1 to get pure UTC
                             dt = dt - timedelta(hours=1) 
                             iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         except:
@@ -1918,7 +1613,6 @@ async def run_pipeline():
                         # 🔴 SOTA: The 1Win Merge Lookup
                         o1_1w, o2_1w = find_odds_in_lines(p1_raw, p2_raw, onewin_lines)
                         
-                        # Decide which odds to use (1Win wins if valid, otherwise TE fallback)
                         if o1_1w and o2_1w and validate_market_integrity(o1_1w, o2_1w):
                             final_o1 = o1_1w
                             final_o2 = o2_1w
@@ -1926,7 +1620,6 @@ async def run_pipeline():
                             final_o1 = te_o1
                             final_o2 = te_o2
                             
-                        # If we have absolutely no valid odds for this match, skip it
                         if not final_o1 or not final_o2 or not validate_market_integrity(final_o1, final_o2):
                             continue 
                             
