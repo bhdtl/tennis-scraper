@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V151.0 - SOTA Markov Chain Synergy & Level Gap Alpha)...")
+log("🔌 Initialisiere Neural Scout (V152.0 - SOTA Markov Chain Synergy & Time Sync Oracle)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1199,6 +1199,60 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
 # =================================================================
 # 7. DATA FETCHING & ORACLE (TE SETTLEMENT INTEGRATED)
 # =================================================================
+
+# 🚀 SOTA TIME SYNC ORACLE (Replaces 1Win's broken times)
+async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
+    log("🕒 [TIME ORACLE] Synchronisiere echte Match-Zeiten von TennisExplorer...")
+    time_map = {}
+    for day_offset in [0, 1, 2]: 
+        t_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
+        page = await browser.new_page()
+        try:
+            url = f"https://www.tennisexplorer.com/matches/?type=all&year={t_date.year}&month={t_date.month}&day={t_date.day}"
+            await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            soup = BeautifulSoup(await page.content(), 'html.parser')
+            table = soup.find('table', class_='result')
+            if not table: continue
+            
+            rows = table.find_all('tr')
+            current_time_str = "00:00"
+            for row in rows:
+                if 'head' in row.get('class', []): continue
+                
+                time_td = row.find('td', class_='time')
+                if time_td:
+                    txt = time_td.get_text(strip=True)
+                    if ":" in txt: current_time_str = txt
+                
+                links = row.find_all('a')
+                valid_links = [l for l in links if 'player/' in l.get('href', '')]
+                
+                if len(valid_links) >= 2:
+                    p1_raw = valid_links[0].get_text(strip=True)
+                    p2_raw = valid_links[1].get_text(strip=True)
+                    
+                    p1_last, _ = parse_te_name(p1_raw)
+                    p2_last, _ = parse_te_name(p2_raw)
+                    
+                    if p1_last and p2_last and ":" in current_time_str:
+                        h, m = current_time_str.split(':')
+                        dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+                        # TennisExplorer defaults to CET without cookies, convert to rough UTC (-1h)
+                        dt = dt - timedelta(hours=1)
+                        iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        
+                        key1 = f"{p1_last}_{p2_last}"
+                        key2 = f"{p2_last}_{p1_last}"
+                        time_map[key1] = iso_time
+                        time_map[key2] = iso_time
+        except Exception as e:
+            pass
+        finally:
+            await page.close()
+    
+    log(f"✅ [TIME ORACLE] {len(time_map)//2} exakte Match-Zeiten synchronisiert.")
+    return time_map
+
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
     date_str = target_date.strftime('%Y-%m-%d')
     url = f"https://de.tennistemple.com/matches/{date_str}"
@@ -1900,7 +1954,7 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
 def format_skills(s: Dict) -> str:
     if not s: 
         return "No granular skill data."
-    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}"
+    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
 
 async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
@@ -2279,7 +2333,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V150.7 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V152.0 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2302,6 +2356,9 @@ async def run_pipeline():
             if not matches:
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
                 return
+                
+            # 🔴 SOTA TIME SYNC ORACLE 
+            true_times_oracle = await fetch_oracle_match_times(browser)
                 
             log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
             
@@ -2350,6 +2407,14 @@ async def run_pipeline():
                     db_match_id = existing_match['id'] if existing_match else None
                     if existing_match and existing_match.get('actual_winner_name'): 
                         continue 
+                        
+                    # 🔴 SOTA: TIME OVERRIDE LOGIC
+                    final_time_str = parse_time_to_iso(m['time']) # Fallback 1Win
+                    match_key_for_time = f"{normalize_db_name(n1)}_{normalize_db_name(n2)}"
+                    if match_key_for_time in true_times_oracle:
+                        final_time_str = true_times_oracle[match_key_for_time]
+                    elif f"{normalize_db_name(n2)}_{normalize_db_name(n1)}" in true_times_oracle:
+                        final_time_str = true_times_oracle[f"{normalize_db_name(n2)}_{normalize_db_name(n1)}"]
 
                     hist_fair1, hist_fair2 = 0, 0
                     hist_is_value, hist_pick_player = False, None
@@ -2358,7 +2423,11 @@ async def run_pipeline():
                     if is_signal_locked:
                         log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
                         update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True}
-                        if m['time'] and m['time'] != "00:00": 
+                        
+                        # Only update time if we have a valid override or non-zero 1win time
+                        if final_time_str and not final_time_str.endswith("T00:00:00Z"):
+                            update_data["match_time"] = final_time_str
+                        elif m['time'] and m['time'] != "00:00": 
                             update_data["match_time"] = parse_time_to_iso(m['time'])
                         
                         op1 = to_float(existing_match.get('opening_odds1'), 0)
@@ -2395,14 +2464,12 @@ async def run_pipeline():
                         report1 = next((r for r in all_reports if r.get('player_id') == p1_obj['id']), None)
                         report2 = next((r for r in all_reports if r.get('player_id') == p2_obj['id']), None)
                         
-                        # Wir generieren die vollen Namen für den strikten Abgleich!
                         full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
                         full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
 
                         p1_history = await fetch_player_history_extended(n1, limit=80)
                         p2_history = await fetch_player_history_extended(n2, limit=80)
                         
-                        # Nutzen der strikten History-Match Logik!
                         p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1)
                         p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2)
                         p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
@@ -2450,6 +2517,7 @@ async def run_pipeline():
                                         "ai_fair_odds1": fair1, 
                                         "ai_fair_odds2": fair2,
                                         "ai_analysis_text": ai_text_final,
+                                        "match_time": final_time_str, # Synchronisiere Uhrzeit auch bei "Stale" updates!
                                         "is_visible_in_scanner": True
                                     }).eq("id", db_match_id).execute()
                                 except Exception as up_e:
@@ -2498,7 +2566,6 @@ async def run_pipeline():
                                 hist_pick_player = n2
                             
                             ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
-                            final_time_str = parse_time_to_iso(m['time'])
 
                             data = {
                                 "player1_name": n1, 
@@ -2509,7 +2576,7 @@ async def run_pipeline():
                                 "ai_analysis_text": ai_text_final, 
                                 "games_prediction": sim_result, 
                                 "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                                "match_time": final_time_str, 
+                                "match_time": final_time_str, # 🔴 SOTA: Hier greift die echte Zeit!
                                 "odds1": m['odds1'], 
                                 "odds2": m['odds2'],
                                 "is_visible_in_scanner": True 
