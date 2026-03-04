@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V153.0 - SOTA Markov Chain Synergy & V95-Time-Oracle)...")
+log("🔌 Initialisiere Neural Scout (V153.0 - SOTA Robust Time Sync & Fuzzy Match)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -730,7 +730,7 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. SOTA MARKOV CHAIN ENGINE (Replaces Old Monte Carlo Engine)
+# 5. SOTA MARKOV CHAIN ENGINE
 # =================================================================
 class MarkovChainEngine:
     @staticmethod
@@ -995,7 +995,7 @@ def extract_time_context(lines_slice: List[str]) -> str:
     date_patterns = [
         r'\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b',
         r'\b\d{1,2}[\./]\d{1,2}(?:\.\d{2,4})?\b',
-        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b',
+        r'\bToday\b', r'\bTomorrow\b', r'\bHeute\b', r'\bMorgen\b', r'\bÜbermorgen\b', r'\bYesterday\b', r'\bGestern\b',
         r'\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b'
     ]
     time_patterns = [r'\b\d{1,2}:\d{2}\b']
@@ -1037,9 +1037,24 @@ def parse_time_to_iso(raw_time_str: str) -> str:
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
         elif t_match:
             now = datetime.now(timezone.utc)
+            raw_lower = raw_time_str.lower()
+            
+            # 🔴 SOTA FIX: RELATIVE TIME PARSING FOR 1WIN
+            days_add = 0
+            if "morgen" in raw_lower or "tomorrow" in raw_lower:
+                days_add = 1
+            elif "übermorgen" in raw_lower:
+                days_add = 2
+            elif "gestern" in raw_lower or "yesterday" in raw_lower:
+                days_add = -1
+                
             dt = now.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
-            if dt < now - timedelta(hours=3): 
+            dt += timedelta(days=days_add)
+            
+            # Midnight Wrap-Around nur wenn "Heute" impliziert ist
+            if days_add == 0 and dt < now - timedelta(hours=3): 
                 dt += timedelta(days=1)
+                
             return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     except:
         pass
@@ -1197,11 +1212,13 @@ async def fetch_1win_markets_spatial_stream(browser: Browser, db_players: List[D
 # 7. DATA FETCHING & ORACLE (TE SETTLEMENT INTEGRATED)
 # =================================================================
 
-# 🚀 SOTA TIME SYNC ORACLE (Replaces 1Win's broken times with V95 Row-State Logic)
+# 🔴 SOTA: DEEP TIME SYNC ORACLE (Range: Yesterday to +4 Days, Substring Matching)
 async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
-    log("🕒 [TIME ORACLE] Synchronisiere echte Match-Zeiten von TennisExplorer...")
+    log("🕒 [TIME ORACLE] Deep-Sync echter Match-Zeiten von TennisExplorer (Tag -1 bis +4)...")
     time_map = {}
-    for day_offset in [0, 1, 2]: 
+    
+    # Wir scannen einen extrem weiten Zeitraum, um Zeitzonen-Overlaps und verschobene Matches zu erfassen.
+    for day_offset in range(-1, 5): 
         t_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
         page = await browser.new_page()
         try:
@@ -1213,60 +1230,41 @@ async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
             
             rows = table.find_all('tr')
             current_time_str = "00:00"
-            pending_p1_last = None
-            
             for row in rows:
-                if 'head' in row.get('class', []):
-                    pending_p1_last = None
-                    continue
+                if 'head' in row.get('class', []): continue
                 
-                cols = row.find_all('td')
-                if len(cols) < 2: continue
+                time_td = row.find('td', class_='time')
+                if time_td:
+                    txt = time_td.get_text(strip=True)
+                    if ":" in txt: current_time_str = txt
                 
-                # 1. Check for time in the "first" cell
-                first_cell = row.find('td', class_='first')
-                if first_cell and ('time' in first_cell.get('class', []) or 't-name' in first_cell.get('class', [])):
-                    tm = re.search(r'(\d{1,2}:\d{2})', first_cell.get_text(strip=True))
-                    if tm: current_time_str = tm.group(1).zfill(5)
+                links = row.find_all('a')
+                valid_links = [l for l in links if 'player/' in l.get('href', '')]
+                
+                if len(valid_links) >= 2:
+                    p1_raw = valid_links[0].get_text(strip=True)
+                    p2_raw = valid_links[1].get_text(strip=True)
                     
-                # 2. Find player name
-                p_cell = next((c for c in cols if c.find('a') and 'time' not in c.get('class', [])), None)
-                if not p_cell: continue
-                
-                p_raw = p_cell.get_text(strip=True)
-                if '/' in p_raw: # Skip doubles matches
-                    pending_p1_last = None
-                    continue
+                    p1_last, _ = parse_te_name(p1_raw)
+                    p2_last, _ = parse_te_name(p2_raw)
                     
-                p_last, _ = parse_te_name(p_raw)
-                if not p_last: continue
-                
-                # 3. Two-Row State Machine (Like in V95)
-                if pending_p1_last:
-                    p2_last = p_last
-                    
-                    if ":" in current_time_str:
+                    if p1_last and p2_last and ":" in current_time_str:
                         h, m = current_time_str.split(':')
                         dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-                        # TennisExplorer server is roughly CET -> Convert to UTC (-1h)
+                        
+                        # TennisExplorer nutzt normalerweise CET als Standard (UTC+1).
                         dt = dt - timedelta(hours=1)
                         iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         
-                        time_map[f"{pending_p1_last}_{p2_last}"] = iso_time
-                        time_map[f"{p2_last}_{pending_p1_last}"] = iso_time
-                        
-                    pending_p1_last = None
-                else:
-                    if first_cell and first_cell.get('rowspan') == '2':
-                        pending_p1_last = p_last
-                    else:
-                        pending_p1_last = p_last
+                        # Sicheres Trennzeichen für den Fuzzy-Match später
+                        key = f"{p1_last}__{p2_last}"
+                        time_map[key] = iso_time
         except Exception as e:
             pass
         finally:
             await page.close()
     
-    log(f"✅ [TIME ORACLE] {len(time_map)//2} exakte Match-Zeiten synchronisiert.")
+    log(f"✅ [TIME ORACLE] {len(time_map)} exakte Match-Zeiten aus dem globalen Netzwerk extrahiert.")
     return time_map
 
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
@@ -1999,7 +1997,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
 
-    # 🔴 SOTA: CONVICTION DIRECTIVE FOR THE SCRAPER
     convictionDirective = ""
     if finalProb_val >= 65.0:
         convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) ***\nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING."
@@ -2373,7 +2370,7 @@ async def run_pipeline():
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
                 return
                 
-            # 🔴 SOTA TIME SYNC ORACLE (Fixed via V95 State Tracker)
+            # 🔴 SOTA TIME SYNC ORACLE 
             true_times_oracle = await fetch_oracle_match_times(browser)
                 
             log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
@@ -2424,18 +2421,24 @@ async def run_pipeline():
                     if existing_match and existing_match.get('actual_winner_name'): 
                         continue 
                         
-                    # 🔴 SOTA: TIME OVERRIDE LOGIC
-                    final_time_str = parse_time_to_iso(m['time']) # Fallback 1Win
+                    # 🔴 SOTA: ROBUST FUZZY TIME SYNC OVERRIDE
+                    final_time_str = parse_time_to_iso(m['time']) # Der jetzt reparierte 1Win Fallback
                     
-                    # Try to fetch the exact time from the fixed Oracle
-                    p1_oracle_key = normalize_db_name(n1)
-                    p2_oracle_key = normalize_db_name(n2)
-                    match_key_for_time = f"{p1_oracle_key}_{p2_oracle_key}"
+                    n1_norm = normalize_db_name(n1)
+                    n2_norm = normalize_db_name(n2)
                     
-                    if match_key_for_time in true_times_oracle:
-                        final_time_str = true_times_oracle[match_key_for_time]
-                    elif f"{p2_oracle_key}_{p1_oracle_key}" in true_times_oracle:
-                        final_time_str = true_times_oracle[f"{p2_oracle_key}_{p1_oracle_key}"]
+                    for oracle_key, o_time in true_times_oracle.items():
+                        o_parts = oracle_key.split('__')
+                        if len(o_parts) != 2: continue
+                        o_p1, o_p2 = o_parts[0], o_parts[1]
+                        
+                        # Kreuzweiser Fuzzy-Match (Egal ob 1Win sagt Galarneau und TE sagt Galarneau A.)
+                        match_a = (n1_norm in o_p1 or o_p1 in n1_norm) and (n2_norm in o_p2 or o_p2 in n2_norm)
+                        match_b = (n1_norm in o_p2 or o_p2 in n1_norm) and (n2_norm in o_p1 or o_p1 in n2_norm)
+                        
+                        if match_a or match_b:
+                            final_time_str = o_time
+                            break
 
                     hist_fair1, hist_fair2 = 0, 0
                     hist_is_value, hist_pick_player = False, None
@@ -2537,14 +2540,14 @@ async def run_pipeline():
                                         "ai_fair_odds1": fair1, 
                                         "ai_fair_odds2": fair2,
                                         "ai_analysis_text": ai_text_final,
-                                        "match_time": final_time_str, 
+                                        "match_time": final_time_str, # Synchronisiere Uhrzeit auch bei "Stale" updates!
                                         "is_visible_in_scanner": True
                                     }).eq("id", db_match_id).execute()
                                 except Exception as up_e:
                                     pass
 
                         else:
-                            log(f"   🧠 Fresh AI Analysis & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
+                            log(f"   🧠 Fresh AI Gil Gross Analysis & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
                             
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                             
