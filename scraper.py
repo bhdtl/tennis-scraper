@@ -36,7 +36,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V153.0 - SOTA Robust Time Sync & Fuzzy Match)...")
+log("🔌 Initialisiere Neural Scout (V153.5 - Elite Time-Sync & Relative Date Override)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -49,7 +49,7 @@ if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# SOTA Model Selection - OpenRouter Elite Tier
+# SOTA Model Selection
 MODEL_NAME = 'meta-llama/llama-3.3-70b-instruct'
 
 # Global Caches & Dynamic Memory
@@ -1051,7 +1051,6 @@ def parse_time_to_iso(raw_time_str: str) -> str:
             dt = now.replace(hour=int(h), minute=int(m_min), second=0, microsecond=0)
             dt += timedelta(days=days_add)
             
-            # Midnight Wrap-Around nur wenn "Heute" impliziert ist
             if days_add == 0 and dt < now - timedelta(hours=3): 
                 dt += timedelta(days=1)
                 
@@ -1217,7 +1216,6 @@ async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
     log("🕒 [TIME ORACLE] Deep-Sync echter Match-Zeiten von TennisExplorer (Tag -1 bis +4)...")
     time_map = {}
     
-    # Wir scannen einen extrem weiten Zeitraum, um Zeitzonen-Overlaps und verschobene Matches zu erfassen.
     for day_offset in range(-1, 5): 
         t_date = datetime.now(timezone.utc) + timedelta(days=day_offset)
         page = await browser.new_page()
@@ -1252,11 +1250,9 @@ async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
                         h, m = current_time_str.split(':')
                         dt = t_date.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
                         
-                        # TennisExplorer nutzt normalerweise CET als Standard (UTC+1).
                         dt = dt - timedelta(hours=1)
                         iso_time = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         
-                        # Sicheres Trennzeichen für den Fuzzy-Match später
                         key = f"{p1_last}__{p2_last}"
                         time_map[key] = iso_time
         except Exception as e:
@@ -1264,7 +1260,7 @@ async def fetch_oracle_match_times(browser: Browser) -> Dict[str, str]:
         finally:
             await page.close()
     
-    log(f"✅ [TIME ORACLE] {len(time_map)} exakte Match-Zeiten aus dem globalen Netzwerk extrahiert.")
+    log(f"✅ [TIME ORACLE] {len(time_map)} exakte Match-Zeiten extrahiert.")
     return time_map
 
 async def scrape_oracle_metadata(browser: Browser, target_date: datetime):
@@ -2346,7 +2342,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V153.0 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
+    log(f"🚀 Neural Scout V153.5 (AUTONOMOUS SELF-LEARNING LOOP) Starting...")
     
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -2370,7 +2366,7 @@ async def run_pipeline():
                 log("❌ Keine relevanten DB-Matches mit Quoten gefunden. Beende Zyklus.")
                 return
                 
-            # 🔴 SOTA TIME SYNC ORACLE 
+            # 🔴 SOTA MASTER TIME SYNC
             true_times_oracle = await fetch_oracle_match_times(browser)
                 
             log(f"🔍 Starte Oracle Enrichment für die relevanten DB-Matches...")
@@ -2422,7 +2418,7 @@ async def run_pipeline():
                         continue 
                         
                     # 🔴 SOTA: ROBUST FUZZY TIME SYNC OVERRIDE
-                    final_time_str = parse_time_to_iso(m['time']) # Der jetzt reparierte 1Win Fallback
+                    final_time_str = parse_time_to_iso(m['time']) 
                     
                     n1_norm = normalize_db_name(n1)
                     n2_norm = normalize_db_name(n2)
@@ -2432,7 +2428,6 @@ async def run_pipeline():
                         if len(o_parts) != 2: continue
                         o_p1, o_p2 = o_parts[0], o_parts[1]
                         
-                        # Kreuzweiser Fuzzy-Match (Egal ob 1Win sagt Galarneau und TE sagt Galarneau A.)
                         match_a = (n1_norm in o_p1 or o_p1 in n1_norm) and (n2_norm in o_p2 or o_p2 in n2_norm)
                         match_b = (n1_norm in o_p2 or o_p2 in n1_norm) and (n2_norm in o_p1 or o_p1 in n2_norm)
                         
@@ -2450,15 +2445,7 @@ async def run_pipeline():
                         
                         if final_time_str and not final_time_str.endswith("T00:00:00Z"):
                             update_data["match_time"] = final_time_str
-                        elif m['time'] and m['time'] != "00:00": 
-                            update_data["match_time"] = parse_time_to_iso(m['time'])
                         
-                        op1 = to_float(existing_match.get('opening_odds1'), 0)
-                        
-                        if op1 <= 1.01 and m['odds1'] > 1.01: 
-                            update_data["opening_odds1"] = m['odds1']
-                            update_data["opening_odds2"] = m['odds2']
-                            
                         try:
                             supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                         except Exception as up_e:
@@ -2498,10 +2485,8 @@ async def run_pipeline():
                         p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                         p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
 
-                        is_shadow_match = existing_match and (existing_match.get('is_visible_in_scanner') is False or "[BACKGROUND DATA]" in existing_match.get('ai_analysis_text', ''))
-
                         should_run_ai = True
-                        if db_match_id and cached_ai and not is_shadow_match:
+                        if db_match_id and cached_ai:
                             odds_diff = max(abs(cached_ai['old_odds1'] - m['odds1']), abs(cached_ai['old_odds2'] - m['odds2']))
                             try: 
                                 is_stale = (datetime.now(timezone.utc) - datetime.fromisoformat(cached_ai.get('last_update', '').replace('Z', '+00:00'))) > timedelta(hours=6)
@@ -2540,20 +2525,16 @@ async def run_pipeline():
                                         "ai_fair_odds1": fair1, 
                                         "ai_fair_odds2": fair2,
                                         "ai_analysis_text": ai_text_final,
-                                        "match_time": final_time_str, # Synchronisiere Uhrzeit auch bei "Stale" updates!
+                                        "match_time": final_time_str, 
                                         "is_visible_in_scanner": True
                                     }).eq("id", db_match_id).execute()
                                 except Exception as up_e:
                                     pass
 
                         else:
-                            log(f"   🧠 Fresh AI Gil Gross Analysis & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
+                            log(f"   🧠 Fresh AI & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
                             
                             sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
-                            
-                            current_surf_key = SurfaceIntelligence.normalize_surface_key(surf)
-                            
-                            tour_identifier = "WTA" if "WTA" in matched_tour_name.upper() else "ATP"
                             
                             styleA = p1_obj.get('play_style', '')
                             styleB = p2_obj.get('play_style', '')
@@ -2611,15 +2592,9 @@ async def run_pipeline():
                             if db_match_id: 
                                 try:
                                     supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
-                                    log(f"🔄 OVERRIDE: Shadow Match überschrieben und sichtbar gemacht! ({n1} vs {n2})")
                                 except Exception as up_e:
                                     pass
                             else:
-                                op1 = to_float(existing_match.get('opening_odds1') if existing_match else 0, 0)
-                                if op1 <= 1.01 and m['odds1'] > 1.01: 
-                                    data["opening_odds1"] = m['odds1']
-                                    data["opening_odds2"] = m['odds2']
-                                    
                                 try:
                                     res_ins = supabase.table("market_odds").insert(data).execute()
                                     if res_ins.data: 
@@ -2630,7 +2605,6 @@ async def run_pipeline():
 
                     if db_match_id:
                         should_log_history = False
-                        
                         if not existing_match:
                             should_log_history = True
                         elif is_signal_locked or hist_is_value: 
@@ -2639,7 +2613,6 @@ async def run_pipeline():
                             try:
                                 old_o1 = to_float(existing_match.get('odds1'), 0)
                                 old_o2 = to_float(existing_match.get('odds2'), 0)
-                                
                                 if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
                                     should_log_history = True
                             except: 
