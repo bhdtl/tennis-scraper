@@ -33,7 +33,7 @@ logger = logging.getLogger("NeuralScout_ShadowMiner")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout SHADOW MINER (Smart Background Ingestion)...")
+log("🔌 Initialisiere Neural Scout SHADOW MINER (V153.6 SOTA Parity)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -51,7 +51,7 @@ TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 
-# SELF LEARNING STATE MEMORY (Neu für V150 Parität)
+# SELF LEARNING STATE MEMORY (1:1 Parity)
 DYNAMIC_WEIGHTS = {
     "ATP": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20},
     "WTA": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20}
@@ -65,7 +65,7 @@ CITY_TO_DB_STRING = {
 COUNTRY_TO_CITY_MAP: Dict[str, str] = {}
 
 # =================================================================
-# 2. HELPER FUNCTIONS
+# 2. HELPER FUNCTIONS (SOTA PARITY)
 # =================================================================
 def to_float(val: Any, default: float = 50.0) -> float:
     if val is None: return default
@@ -104,7 +104,8 @@ def ensure_dict(data: Any) -> Dict:
 
 def normalize_db_name(name: str) -> str:
     if not name: return ""
-    n = name.lower().strip()
+    n = "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
+    n = n.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
@@ -112,19 +113,35 @@ def normalize_db_name(name: str) -> str:
 def get_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
+# 🚀 SOTA FIX: Core Matching Function for Engines
+def is_same_player(target_name: str, db_name: str) -> bool:
+    t_norm = normalize_db_name(target_name)
+    d_norm = normalize_db_name(db_name)
+    if t_norm == d_norm: return True
+    
+    t_parts = t_norm.split()
+    d_parts = d_norm.split()
+    if not t_parts or not d_parts: return False
+    
+    if t_parts[-1] != d_parts[-1]: return False
+    
+    t_first = t_parts[0] if len(t_parts) > 1 else ""
+    d_first = d_parts[0] if len(d_parts) > 1 else ""
+    
+    if t_first and d_first:
+        return t_first[0] == d_first[0]
+        
+    return True
+
 # -----------------------------------------------------------------
-# 🚀 SOTA FIX: THE BROTHER-RESOLUTION ENGINE (Exact Matching)
+# 🚀 SOTA FIX: TE BROTHER-RESOLUTION ENGINE (1:1 with Main Scraper)
 # -----------------------------------------------------------------
 def parse_te_name(raw: str):
-    """
-    Extrahiert aus "Cerundolo F." -> Nachname: "cerundolo", Initiale: "f"
-    """
     clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
     parts = clean.split()
-    if not parts: return "", "", ""
+    if not parts: return "", ""
     
     initial = ""
-    full_first = ""
     last_name_parts = []
     
     for p in parts:
@@ -135,84 +152,60 @@ def parse_te_name(raw: str):
             last_name_parts.append(p)
             
     last_name = " ".join(last_name_parts)
-    
-    # Fallback, falls der Name "Francisco Cerundolo" war (kein Punkt)
     if not initial and len(parts) > 1:
-        full_first = parts[0].lower()
         initial = parts[0][0].lower()
         last_name = " ".join(parts[1:])
         
-    return normalize_db_name(last_name), initial, normalize_db_name(full_first)
+    return normalize_db_name(last_name), initial
 
-def match_te_player(raw_name: str, db_players: List[Dict]) -> Any:
-    """
-    Findet den exakten Spieler und trennt Brüder anhand des Vornamens.
-    Gibt "TIE_BREAKER" zurück, falls eine Zwilling/Bruder Situation besteht.
-    """
-    target_last, target_initial, target_full_first = parse_te_name(raw_name)
-    if not target_last: return None
+def match_player_db_te(db_full_name, te_last, te_init):
+    db_n = normalize_db_name(db_full_name)
+    db_parts = db_n.split()
+    db_last = db_parts[-1] if db_parts else ""
+    db_first = db_parts[0] if len(db_parts) > 1 else ""
     
-    target_last_tokens = set(target_last.split())
+    te_last_tokens = set(te_last.split())
+    db_n_tokens = set(db_parts)
+
+    is_last_match = False
     
-    best_match = None
-    best_score = -1
-    tie_flag = False 
+    if te_last == db_last:
+        is_last_match = True
+    elif db_n_tokens.intersection(te_last_tokens):
+        is_last_match = True
+    elif (len(te_last) >= 5 and te_last in db_n) or (len(db_last) >= 5 and db_last in te_last):
+        is_last_match = True
+
+    if is_last_match:
+        if te_init and db_first:
+            if db_first.startswith(te_init): return True
+            else: return False 
+        return True
+    return False
+
+def find_te_player_in_db(raw_name: str, db_players: List[Dict]) -> Any:
+    te_last, te_init = parse_te_name(raw_name)
+    if not te_last: return None
     
+    candidates = []
     for p in db_players:
-        db_last = normalize_db_name(p.get('last_name', ''))
-        db_first = normalize_db_name(p.get('first_name', ''))
-        
-        db_last_tokens = set(db_last.split())
-        
-        score = 0
-        
-        # 1. 🚀 SOTA FIX: Anti-Substring Bug (Verhindert "ma" in "krishnakumar")
-        is_last_match = False
-        if db_last == target_last:
-            is_last_match = True
-        elif db_last_tokens.intersection(target_last_tokens):
-            # Matcht nur ganze Wörter! "ma" matcht nicht in "kumar"
-            is_last_match = True
-        elif (len(target_last) >= 5 and target_last in db_last) or (len(db_last) >= 5 and db_last in target_last):
-            # Substring-Suche NUR erlaubt, wenn der Name lang genug ist (>4 Buchstaben)
-            is_last_match = True
+        full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+        if match_player_db_te(full_name, te_last, te_init):
+            candidates.append(p)
             
-        if is_last_match:
-            score += 50
-            
-            # 2. Check Vorname (Brüder trennen!) SOTA FIX
-            if target_full_first and db_first:
-                if target_full_first == db_first or target_full_first in db_first:
-                    score += 80 # Perfekter Vorname Match
-                elif db_first.startswith(target_initial):
-                    score += 15 # Nur Initiale matcht -> Tie Break Gefahr
-                else:
-                    score -= 100 # Falscher Bruder!
-            elif target_initial and db_first:
-                if db_first.startswith(target_initial):
-                    score += 15 # Nur Initiale verfügbar
-                else:
-                    score -= 100
-            
-            # 3. Score-Auswertung & Tie-Erkennung
-            if score > 0:
-                if score > best_score:
-                    best_score = score
-                    best_match = p
-                    tie_flag = False # Klarer Favorit
-                elif score == best_score:
-                    tie_flag = True # 🚨 K. Pliskova Problem detektiert!
-                
-    # 🚨 SOTA FIX: Wenn Tie-Breaker zuschlägt, senden wir ein klares Abbruch-Signal!
-    if tie_flag:
+    if not candidates: return None
+    if len(candidates) > 1:
+        # Tie Breaker check: do they share the same initial?
+        # If match_player_db_te passed multiple, it's a true brother conflict
         return "TIE_BREAKER"
         
-    return best_match
+    return candidates[0]
 
 # =================================================================
-# 3. SOTA MOMENTUM V3 ENGINE (xG Model)
+# 3. SOTA ENGINES (1:1 PARITY WITH MAIN SCRAPER)
 # =================================================================
-class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der Rest des Codes nicht bricht!
+
+class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 10) -> Dict[str, Any]:
         if not matches: 
@@ -226,22 +219,17 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
         total_weight = 0.0
         history_log = []
         
-        # 🚀 SOTA FIX: Strenge Brother-Resolution in der Historie
-        p_name_low = player_name.lower()
-        search_name_last = player_name.split()[-1].lower() if player_name else ""
-        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
-
         for idx, m in enumerate(chrono_matches):
-            p1_str = str(m.get('player1_name', '')).lower()
-            p2_str = str(m.get('player2_name', '')).lower()
+            p1_str = str(m.get('player1_name', ''))
+            p2_str = str(m.get('player2_name', ''))
             
-            is_p1 = (p_name_low in p1_str) or (search_name_last in p1_str and search_name_first_init and p1_str.startswith(search_name_first_init))
-            is_p2 = (p_name_low in p2_str) or (search_name_last in p2_str and search_name_first_init and p2_str.startswith(search_name_first_init))
-            if not is_p1 and not is_p2:
-                is_p1 = search_name_last in p1_str
+            is_p1 = is_same_player(player_name, p1_str)
+            is_p2 = is_same_player(player_name, p2_str)
+            
+            if not is_p1 and not is_p2: continue
 
-            winner = str(m.get('actual_winner_name', '')).lower()
-            won = (is_p1 and search_name_last in winner) or (not is_p1 and search_name_last in winner)
+            winner = str(m.get('actual_winner_name', ''))
+            won = is_same_player(player_name, winner)
             
             odds = to_float(m.get('odds1') if is_p1 else m.get('odds2'), 1.85)
             if odds <= 1.01: odds = 1.85
@@ -280,10 +268,10 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
                     if won:
                         if opp_sets_won == 0: 
                             game_diff = player_games_won - opp_games_won
-                            if game_diff >= 8: actual_perf = 1.0      
+                            if game_diff >= 8: actual_perf = 1.0     
                             elif game_diff >= 5: actual_perf = 0.9    
                             elif game_diff >= 3: actual_perf = 0.8    
-                            else: actual_perf = 0.7                   
+                            else: actual_perf = 0.7                    
                         else: 
                             game_diff = player_games_won - opp_games_won
                             if game_diff >= 4: actual_perf = 0.75     
@@ -302,16 +290,13 @@ class MomentumV2Engine:  # Behalte den Namen "MomentumV2Engine" bei, damit der R
                             elif game_diff <= 7: actual_perf = 0.10   
                             else: actual_perf = 0.0                   
 
-            # --- 3. THE DELTA (Reality vs. Expectation) ---
             match_edge = actual_perf - expected_perf 
             
-            # 🚀 SOTA FIX: ASYMMETRISCHE BESTRAFUNG FÜR NIEDERLAGEN
             if won:
                 match_edge += 0.40  
             else:
                 match_edge -= 0.20
             
-            # --- 4. TIME DECAY (Gewichtung) ---
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
@@ -410,11 +395,6 @@ class SurfaceIntelligence:
             "grass": SurfaceIntelligence.get_matches_by_surface(matches, "grass")
         }
         
-        # 🚀 SOTA FIX: Strenge Brother-Resolution
-        p_name_low = player_name.lower()
-        search_name_last = player_name.split()[-1].lower() if player_name else ""
-        search_name_first_init = player_name.split()[0][0].lower() if len(player_name.split()) > 1 else ""
-
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
             
@@ -429,8 +409,8 @@ class SurfaceIntelligence:
                 
             wins = 0
             for m in surf_matches:
-                winner = str(m.get('actual_winner_name', "") or "").lower()
-                if (p_name_low in winner) or (search_name_last in winner and search_name_first_init and winner.startswith(search_name_first_init)) or (search_name_last in winner and not search_name_first_init):
+                winner = str(m.get('actual_winner_name', ""))
+                if is_same_player(player_name, winner):
                     wins += 1
             win_rate = wins / n_surf
             
@@ -465,9 +445,66 @@ class SurfaceIntelligence:
         profile['_v95_mastery_applied'] = True
         return profile
 
-def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
-    z = elo_diff / (sigma * math.sqrt(2))
-    return 0.5 * (1 + math.erf(z))
+# 🚀 SOTA FIX: LIVE SKILL ENGINE ADDED TO SHADOW MINER
+class LiveSkillEngine:
+    @staticmethod
+    def calculate_new_skills(current_skills: Dict[str, Any], odds: float, is_winner: bool, score: str, is_player1: bool) -> Dict[str, float]:
+        if not current_skills: return {}
+
+        base_shift = 0.0
+        
+        if is_winner:
+            if odds <= 1.30: base_shift = 0.1
+            elif odds <= 1.701: base_shift = 0.2
+            elif odds <= 1.850: base_shift = 0.3
+            elif odds <= 2.2501: base_shift = 0.4
+            else: base_shift = 0.6
+        else:
+            if odds <= 1.30: base_shift = -0.8
+            elif odds <= 1.701: base_shift = -0.4
+            elif odds <= 1.850: base_shift = -0.3
+            elif odds <= 2.2501: base_shift = -0.2
+            else: base_shift = -0.1
+
+        skill_fields = ['serve', 'forehand', 'backhand', 'volley', 'speed', 'stamina', 'power', 'mental']
+        new_skills = {}
+        for k in skill_fields:
+            if k in current_skills and current_skills[k] is not None:
+                new_skills[k] = float(current_skills[k]) + base_shift
+
+        if not new_skills: return {}
+
+        score_lower = str(score).lower()
+        sets = re.findall(r'(\d+)-(\d+)', score_lower)
+
+        if is_winner and len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
+            for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
+                if skill in new_skills: new_skills[skill] += 0.2
+
+        if is_winner and len(sets) >= 3:
+            if 'mental' in new_skills: new_skills['mental'] += 0.3
+            if 'stamina' in new_skills: new_skills['stamina'] += 0.3
+
+        lost_tiebreak = False
+        for s in sets:
+            l, r = int(s[0]), int(s[1])
+            if is_player1 and l < r and r == 7: lost_tiebreak = True
+            if not is_player1 and r < l and l == 7: lost_tiebreak = True
+
+        if not is_winner and lost_tiebreak:
+             if 'mental' in new_skills: new_skills['mental'] -= 0.2
+
+        if not is_winner and "ret." in score_lower:
+             if 'stamina' in new_skills: new_skills['stamina'] -= 0.5
+             if 'speed' in new_skills: new_skills['speed'] -= 0.5
+
+        new_overall = sum(new_skills[k] for k in skill_fields if k in new_skills) / len([k for k in skill_fields if k in new_skills])
+        new_skills['overall_rating'] = new_overall
+
+        for k, v in new_skills.items():
+            new_skills[k] = max(1.0, min(99.0, round(v, 2)))
+
+        return new_skills
 
 # =================================================================
 # 4. TE SCRAPING LOGIC (Background Mining WITH SOTA RESULTS)
@@ -536,7 +573,6 @@ def parse_matches_locally_v5(html):
                 
                 all_odds = prev_odds + raw_odds
                 
-                # --- SOTA: RESULT (SCORE & WINNER) EXTRACTION ---
                 def extract_row_data(r_row):
                     cells = r_row.find_all('td')
                     p_idx = -1
@@ -593,7 +629,6 @@ def parse_matches_locally_v5(html):
                 final_o1 = all_odds[0] if len(all_odds) >= 2 else 0
                 final_o2 = all_odds[1] if len(all_odds) >= 2 else 0
                 
-                # Wir nehmen das Match auf, wenn Quoten ODER ein Ergebnis existieren
                 if (final_o1 > 0 and final_o2 > 0) or winner_found:
                     found.append({
                         "p1_raw": pending_p1_raw, "p2_raw": p2_raw, 
@@ -616,7 +651,7 @@ def parse_matches_locally_v5(html):
 # 5. PIPELINE EXECUTION (THE SMART SHADOW PROCESS)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout SMART SHADOW MINER V150.3 Starting...")
+    log(f"🚀 Neural Scout SMART SHADOW MINER V153.6 Starting...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -649,8 +684,8 @@ async def run_pipeline():
                     # ---------------------------------------------------------
                     # 🚀 SOTA FIX 1: THE BROTHER-RESOLUTION ENGINE
                     # ---------------------------------------------------------
-                    p1_db = match_te_player(m['p1_raw'], players)
-                    p2_db = match_te_player(m['p2_raw'], players)
+                    p1_db = find_te_player_in_db(m['p1_raw'], players)
+                    p2_db = find_te_player_in_db(m['p2_raw'], players)
 
                     # 🚨 SOTA FIX: Hard Abort bei Zwillingen/Brüdern!
                     if p1_db == "TIE_BREAKER" or p2_db == "TIE_BREAKER":
@@ -662,8 +697,8 @@ async def run_pipeline():
                         continue 
 
                     # Wir nutzen den exakten DB-Namen, wenn gefunden!
-                    full_n1 = p1_db['last_name'] if p1_db and isinstance(p1_db, dict) else clean_player_name(m['p1_raw'])
-                    full_n2 = p2_db['last_name'] if p2_db and isinstance(p2_db, dict) else clean_player_name(m['p2_raw'])
+                    full_n1 = f"{p1_db.get('first_name', '')} {p1_db.get('last_name', '')}".strip() if isinstance(p1_db, dict) else clean_player_name(m['p1_raw'])
+                    full_n2 = f"{p2_db.get('first_name', '')} {p2_db.get('last_name', '')}".strip() if isinstance(p2_db, dict) else clean_player_name(m['p2_raw'])
 
                     if not full_n1 or not full_n2 or full_n1 == full_n2: continue
 
@@ -671,8 +706,8 @@ async def run_pipeline():
                     # 🚀 SOTA FIX 2: DUPLICATE & RESULT-UPDATE LOGIC
                     # ---------------------------------------------------------
                     time_window = (datetime.now() - timedelta(days=4)).isoformat()
-                    res1 = supabase.table("market_odds").select("id, actual_winner_name").eq("player1_name", full_n1).eq("player2_name", full_n2).gte("created_at", time_window).execute()
-                    res2 = supabase.table("market_odds").select("id, actual_winner_name").eq("player1_name", full_n2).eq("player2_name", full_n1).gte("created_at", time_window).execute()
+                    res1 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2").eq("player1_name", full_n1).eq("player2_name", full_n2).gte("created_at", time_window).execute()
+                    res2 = supabase.table("market_odds").select("id, actual_winner_name, odds1, odds2").eq("player1_name", full_n2).eq("player2_name", full_n1).gte("created_at", time_window).execute()
                     
                     existing_match = None
                     is_reversed = False
@@ -685,7 +720,6 @@ async def run_pipeline():
 
                     if existing_match:
                         # Match existiert bereits (Kein Duplikat anlegen!)
-                        # ABER: Wenn TE ein Ergebnis hat, das in unserer DB noch fehlt, updaten wir es!
                         if m['actual_winner'] and not existing_match.get('actual_winner_name'):
                             
                             act_winner = full_n1 if m['actual_winner'] == m['p1_raw'] else full_n2
@@ -700,10 +734,10 @@ async def run_pipeline():
                                         try:
                                             l, r = part.split('-')
                                             if 'ret' in r:
-                                               r = r.replace('ret.', '').strip()
-                                               flipped_parts.append(f"{r}-{l} ret.")
+                                                r = r.replace('ret.', '').strip()
+                                                flipped_parts.append(f"{r}-{l} ret.")
                                             else:
-                                               flipped_parts.append(f"{r}-{l}")
+                                                flipped_parts.append(f"{r}-{l}")
                                         except:
                                             flipped_parts.append(part)
                                 score_to_update = " ".join(flipped_parts)
@@ -716,32 +750,52 @@ async def run_pipeline():
                                 }).eq("id", existing_match['id']).execute()
                                 
                                 # =========================================================
-                                # 🚀 SOTA FIX: LIVE PROFILE SYNC (Independent Update)
+                                # 🚀 SOTA FIX: LIVE PROFILE & SKILL SYNC
                                 # =========================================================
                                 try:
-                                    # Lade die Historie nur einmal
+                                    # 1. LIVE SKILL UPDATE
+                                    if isinstance(p1_db, dict) and isinstance(p2_db, dict):
+                                        skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_db['id'], p2_db['id']]).execute()
+                                        db_skills = skills_res.data or []
+                                        p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_db['id']), None)
+                                        p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_db['id']), None)
+                                        
+                                        o1 = to_float(existing_match.get('odds1'), 1.85) if not is_reversed else to_float(existing_match.get('odds2'), 1.85)
+                                        o2 = to_float(existing_match.get('odds2'), 1.85) if not is_reversed else to_float(existing_match.get('odds1'), 1.85)
+
+                                        if p1_skills_db:
+                                            new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, o1, (act_winner == full_n1), m['score'], True)
+                                            if new_s1:
+                                                new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                                supabase.table('player_skills').update(new_s1).eq('player_id', p1_db['id']).execute()
+                                                
+                                        if p2_skills_db:
+                                            new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, o2, (act_winner == full_n2), m['score'], False)
+                                            if new_s2:
+                                                new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                                supabase.table('player_skills').update(new_s2).eq('player_id', p2_db['id']).execute()
+
+                                    # 2. FORM & SURFACE UPDATE
                                     hist_res = supabase.table("market_odds").select("*").or_(
-                                        f"player1_name.ilike.%{full_n1}%,player2_name.ilike.%{full_n1}%,"
-                                        f"player1_name.ilike.%{full_n2}%,player2_name.ilike.%{full_n2}%"
+                                        f"player1_name.ilike.%{p1_db.get('last_name', full_n1)}%,player2_name.ilike.%{p1_db.get('last_name', full_n1)}%,"
+                                        f"player1_name.ilike.%{p2_db.get('last_name', full_n2)}%,player2_name.ilike.%{p2_db.get('last_name', full_n2)}%"
                                     ).order("created_at", desc=True).limit(40).execute()
                                     
                                     all_hist = hist_res.data or []
                                     
-                                    # Update Player 1 (Wenn er in unserer Datenbank existiert)
                                     if isinstance(p1_db, dict):
-                                        hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
+                                        hist_p1 = [h for h in all_hist if p1_db['last_name'].lower() in str(h.get('player1_name', '')).lower() or p1_db['last_name'].lower() in str(h.get('player2_name', '')).lower()]
                                         p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
                                         p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
                                         supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
 
-                                    # Update Player 2 (Wenn er in unserer Datenbank existiert)
                                     if isinstance(p2_db, dict):
-                                        hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
+                                        hist_p2 = [h for h in all_hist if p2_db['last_name'].lower() in str(h.get('player1_name', '')).lower() or p2_db['last_name'].lower() in str(h.get('player2_name', '')).lower()]
                                         p2_new_form = MomentumV2Engine.calculate_rating(hist_p2, full_n2)
                                         p2_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p2, full_n2)
                                         supabase.table("players").update({"form_rating": p2_new_form, "surface_ratings": p2_new_surface}).eq("id", p2_db['id']).execute()
                                         
-                                    log(f"🧠 PROFILE SYNC (Update): Form & Surface für bekannte Spieler erfolgreich aktualisiert!")
+                                    log(f"🧠 SOTA SYNC (Update): Skills, Form & Surface für {full_n1}/{full_n2} aktualisiert!")
                                 except Exception as sync_e:
                                     log(f"⚠️ Profile Sync fehlgeschlagen für {full_n1}/{full_n2}: {sync_e}")
 
@@ -789,33 +843,53 @@ async def run_pipeline():
                         log(f"💾 SILENT SAVE: {full_n1} vs {full_n2} (Mit Resultat? {bool(act_winner)})")
 
                         # =========================================================
-                        # 🚀 SOTA FIX: LIVE PROFILE SYNC (Independent Insert)
+                        # 🚀 SOTA FIX: LIVE PROFILE & SKILL SYNC (New Insert)
                         # =========================================================
                         if act_winner:
                             try:
-                                # Lade die Historie nur einmal
+                                # 1. LIVE SKILL UPDATE
+                                if isinstance(p1_db, dict) and isinstance(p2_db, dict):
+                                    skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_db['id'], p2_db['id']]).execute()
+                                    db_skills = skills_res.data or []
+                                    p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_db['id']), None)
+                                    p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_db['id']), None)
+                                    
+                                    o1 = to_float(m['odds1'], 1.85)
+                                    o2 = to_float(m['odds2'], 1.85)
+
+                                    if p1_skills_db:
+                                        new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, o1, (act_winner == full_n1), m['score'], True)
+                                        if new_s1:
+                                            new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                            supabase.table('player_skills').update(new_s1).eq('player_id', p1_db['id']).execute()
+                                            
+                                    if p2_skills_db:
+                                        new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, o2, (act_winner == full_n2), m['score'], False)
+                                        if new_s2:
+                                            new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                            supabase.table('player_skills').update(new_s2).eq('player_id', p2_db['id']).execute()
+
+                                # 2. FORM & SURFACE UPDATE
                                 hist_res = supabase.table("market_odds").select("*").or_(
-                                    f"player1_name.ilike.%{full_n1}%,player2_name.ilike.%{full_n1}%,"
-                                    f"player1_name.ilike.%{full_n2}%,player2_name.ilike.%{full_n2}%"
+                                    f"player1_name.ilike.%{p1_db.get('last_name', full_n1) if isinstance(p1_db, dict) else full_n1}%,player2_name.ilike.%{p1_db.get('last_name', full_n1) if isinstance(p1_db, dict) else full_n1}%,"
+                                    f"player1_name.ilike.%{p2_db.get('last_name', full_n2) if isinstance(p2_db, dict) else full_n2}%,player2_name.ilike.%{p2_db.get('last_name', full_n2) if isinstance(p2_db, dict) else full_n2}%"
                                 ).order("created_at", desc=True).limit(40).execute()
                                 
                                 all_hist = hist_res.data or []
                                 
-                                # Update Player 1 (Wenn er in unserer Datenbank existiert)
                                 if isinstance(p1_db, dict):
-                                    hist_p1 = [h for h in all_hist if full_n1.lower() in str(h.get('player1_name', '')).lower() or full_n1.lower() in str(h.get('player2_name', '')).lower()]
+                                    hist_p1 = [h for h in all_hist if p1_db['last_name'].lower() in str(h.get('player1_name', '')).lower() or p1_db['last_name'].lower() in str(h.get('player2_name', '')).lower()]
                                     p1_new_form = MomentumV2Engine.calculate_rating(hist_p1, full_n1)
                                     p1_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p1, full_n1)
                                     supabase.table("players").update({"form_rating": p1_new_form, "surface_ratings": p1_new_surface}).eq("id", p1_db['id']).execute()
 
-                                # Update Player 2 (Wenn er in unserer Datenbank existiert)
                                 if isinstance(p2_db, dict):
-                                    hist_p2 = [h for h in all_hist if full_n2.lower() in str(h.get('player1_name', '')).lower() or full_n2.lower() in str(h.get('player2_name', '')).lower()]
+                                    hist_p2 = [h for h in all_hist if p2_db['last_name'].lower() in str(h.get('player1_name', '')).lower() or p2_db['last_name'].lower() in str(h.get('player2_name', '')).lower()]
                                     p2_new_form = MomentumV2Engine.calculate_rating(hist_p2, full_n2)
                                     p2_new_surface = SurfaceIntelligence.compute_player_surface_profile(hist_p2, full_n2)
                                     supabase.table("players").update({"form_rating": p2_new_form, "surface_ratings": p2_new_surface}).eq("id", p2_db['id']).execute()
                                     
-                                log(f"🧠 PROFILE SYNC (Insert): Form & Surface für bekannte Spieler erfolgreich aktualisiert!")
+                                log(f"🧠 SOTA SYNC (Insert): Skills, Form & Surface für {full_n1}/{full_n2} aktualisiert!")
                             except Exception as sync_e:
                                 log(f"⚠️ Profile Sync fehlgeschlagen für {full_n1}/{full_n2}: {sync_e}")
 
