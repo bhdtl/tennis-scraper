@@ -26,7 +26,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V153.7 SOTA Parity - Strict Brother Resolution)...")
+log("🔮 Initializing Oracle Pre-Warmer (V153.8 SOTA Parity - Smart Brother Resolution)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -86,70 +86,53 @@ def calculate_fuzzy_score(scraped_name: str, db_name: str) -> int:
     return score
 
 # -----------------------------------------------------------------
-# 🚀 SOTA FIX: TE BROTHER-RESOLUTION ENGINE (Fixes McDonald & Cerundolo)
+# 🚀 SOTA FIX: THE SMART BROTHER-RESOLUTION ENGINE (From Main Scraper)
 # -----------------------------------------------------------------
-def parse_te_name(raw: str):
-    clean = re.sub(r'\s*\(\d+\)|\s*\(.*?\)', '', raw).strip()
-    parts = clean.split()
-    if not parts: return "", ""
+def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str]) -> Optional[Dict]:
+    if not scraped_name_raw or not db_players: return None
+    clean_scrape = clean_player_name(scraped_name_raw)
+    parts = clean_scrape.split()
+    scrape_last = ""
+    scrape_initial = ""
     
-    initial = ""
-    last_name_parts = []
-    
-    for p in parts:
-        if (len(p) <= 2 and p.endswith('.')) or (len(p) == 1 and p.isalpha()):
-            if not initial:
-                initial = p[0].lower()
+    if len(parts) >= 2:
+        last_token = parts[-1].replace('.', '')
+        if len(last_token) == 1 and last_token.isalpha():
+            scrape_initial = last_token.lower()
+            scrape_last = " ".join(parts[:-1]) 
         else:
-            last_name_parts.append(p)
-            
-    last_name = " ".join(last_name_parts)
-    if not initial and len(parts) > 1:
-        initial = parts[0][0].lower()
-        last_name = " ".join(parts[1:])
-        
-    return normalize_db_name(last_name), initial
+            scrape_last = parts[-1]
+            scrape_initial = parts[0][0].lower() if parts[0] else ""
+    else:
+        scrape_last = clean_scrape
 
-def match_player_db_te(db_full_name, te_last, te_init):
-    db_n = normalize_db_name(db_full_name)
-    db_parts = db_n.split()
-    db_last = db_parts[-1] if db_parts else ""
-    db_first = db_parts[0] if len(db_parts) > 1 else ""
-    
-    te_last_tokens = set(te_last.split())
-    db_n_tokens = set(db_parts)
-
-    is_last_match = False
-    
-    if te_last == db_last:
-        is_last_match = True
-    elif db_n_tokens.intersection(te_last_tokens):
-        is_last_match = True
-    elif (len(te_last) >= 5 and te_last in db_n) or (len(db_last) >= 5 and db_last in te_last):
-        is_last_match = True
-
-    if is_last_match:
-        if te_init and db_first:
-            if db_first.startswith(te_init): return True
-            else: return False 
-        return True
-    return False
-
-def find_te_player_in_db(raw_name: str, db_players: List[Dict]) -> Any:
-    te_last, te_init = parse_te_name(raw_name)
-    if not te_last: return None
-    
+    target_last = normalize_db_name(scrape_last)
     candidates = []
+    
     for p in db_players:
-        full_name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
-        if match_player_db_te(full_name, te_last, te_init):
-            candidates.append(p)
-            
-    if not candidates: return None
-    if len(candidates) > 1:
-        return "TIE_BREAKER"
+        db_last_raw = p.get('last_name', '')
+        db_last = normalize_db_name(db_last_raw)
+        match_score = 0
         
-    return candidates[0]
+        if db_last == target_last: match_score = 100
+        elif target_last in db_last or db_last in target_last: 
+            if len(target_last) > 3 and len(db_last) > 3: match_score = 80
+            
+        if match_score > 0:
+            db_first = p.get('first_name', '').lower()
+            if scrape_initial and db_first:
+                if db_first.startswith(scrape_initial): 
+                    match_score += 20 
+                else: 
+                    match_score -= 50  # FATAL PENALTY FOR WRONG INITIAL (Kills Niels McDonald)
+            if match_score > 50: 
+                candidates.append((p, match_score))
+                
+    if not candidates: return None
+    
+    # SORT BY SCORE, THEN TIE-BREAK VIA SCOUTING REPORT PRESENCE
+    candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
+    return candidates[0][0]
 
 def parse_draws_locally(html):
     soup = BeautifulSoup(html, 'html.parser')
@@ -387,6 +370,9 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
         db_skills = db_data['skills']
         db_reports = db_data['reports']
         
+        # 🚀 SOTA FIX: Generate Report IDs for Tie-Breaking
+        report_ids = set(db_reports.keys())
+        
         inserted_matches = 0
         
         for m in matches:
@@ -401,13 +387,9 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
             
             if best_score < 20 or not best_tour: continue
                 
-            # 🚀 SOTA FIX: Using the strict TE Brother Resolution Engine
-            p1_obj = find_te_player_in_db(m['p1_raw'], db_players)
-            p2_obj = find_te_player_in_db(m['p2_raw'], db_players)
-            
-            if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
-                log(f"🚨 Tie-Breaker Alarm im Oracle! Überspringe Match ({m['p1_raw']} vs {m['p2_raw']}).")
-                continue
+            # 🚀 SOTA FIX: Using the bulletproof find_player_smart engine
+            p1_obj = find_player_smart(m['p1_raw'], db_players, report_ids)
+            p2_obj = find_player_smart(m['p2_raw'], db_players, report_ids)
             
             if p1_obj and p2_obj and p1_obj['id'] != p2_obj['id']:
                 n1 = p1_obj['last_name']
