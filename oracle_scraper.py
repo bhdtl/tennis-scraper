@@ -26,7 +26,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V153.8 SOTA Parity - Smart Brother Resolution)...")
+log("🔮 Initializing Oracle Pre-Warmer (V153.9 SOTA Parity - Name Initial Fix)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -124,13 +124,12 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 if db_first.startswith(scrape_initial): 
                     match_score += 20 
                 else: 
-                    match_score -= 50  # FATAL PENALTY FOR WRONG INITIAL (Kills Niels McDonald)
+                    match_score -= 50  # FATAL PENALTY FOR WRONG INITIAL
             if match_score > 50: 
                 candidates.append((p, match_score))
                 
     if not candidates: return None
     
-    # SORT BY SCORE, THEN TIE-BREAK VIA SCOUTING REPORT PRESENCE
     candidates.sort(key=lambda x: (x[1], x[0]['id'] in report_ids), reverse=True)
     return candidates[0][0]
 
@@ -370,7 +369,6 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
         db_skills = db_data['skills']
         db_reports = db_data['reports']
         
-        # 🚀 SOTA FIX: Generate Report IDs for Tie-Breaking
         report_ids = set(db_reports.keys())
         
         inserted_matches = 0
@@ -387,18 +385,22 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
             
             if best_score < 20 or not best_tour: continue
                 
-            # 🚀 SOTA FIX: Using the bulletproof find_player_smart engine
             p1_obj = find_player_smart(m['p1_raw'], db_players, report_ids)
             p2_obj = find_player_smart(m['p2_raw'], db_players, report_ids)
             
             if p1_obj and p2_obj and p1_obj['id'] != p2_obj['id']:
-                n1 = p1_obj['last_name']
-                n2 = p2_obj['last_name']
+                
+                # 🚀 SOTA FIX: VORNAME-INITIAL MITNEHMEN (z.B. "M. McDonald")
+                f1_init = f"{p1_obj.get('first_name', '')[0]}." if p1_obj.get('first_name') else ""
+                n1 = f"{f1_init} {p1_obj.get('last_name', '')}".strip()
+                
+                f2_init = f"{p2_obj.get('first_name', '')[0]}." if p2_obj.get('first_name') else ""
+                n2 = f"{f2_init} {p2_obj.get('last_name', '')}".strip()
+
                 tour_name = best_tour['name']
                 tour_surface = best_tour['surface']
                 bsi_rating = best_tour.get('bsi_rating', 5.0)
 
-                # Fetch Player Skills & Ratings for Physics Engine
                 s1_data = db_skills.get(p1_obj['id'], {})
                 s2_data = db_skills.get(p2_obj['id'], {})
                 f1_score = extract_rating(p1_obj.get('form_rating'))
@@ -413,7 +415,6 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 
                 log(f"   🧠 Sending {n1} vs {n2} to AI Edge Function (MC Context: {mc_results['probA']}%)...")
                 
-                # Payload Injection: We pass the MC prob to enforce Conviction Directives on the Edge
                 payload = {
                     "playerAId": p1_obj['id'],
                     "playerBId": p2_obj['id'],
@@ -432,7 +433,13 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                 edge_result = await call_edge_function(payload)
                 
                 if edge_result and "winner_prediction" in edge_result:
-                    predicted_winner = edge_result["winner_prediction"]
+                    # 🚀 SOTA FIX: Wenn die Edge Function den Gewinner schickt, formatieren wir ihn auch mit Initiale
+                    predicted_winner_db = edge_result["winner_prediction"]
+                    if predicted_winner_db.lower() == p1_obj['last_name'].lower():
+                        predicted_winner_db = n1
+                    elif predicted_winner_db.lower() == p2_obj['last_name'].lower():
+                        predicted_winner_db = n2
+
                     raw_prob = str(edge_result.get("win_probability", "50.0")).replace("%", "")
                     try: win_prob = float(raw_prob)
                     except: win_prob = 50.0
@@ -440,9 +447,9 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                     db_payload = {
                         "tournament_name": tour_name,
                         "match_date": target_date.strftime('%Y-%m-%d'),
-                        "player_a_name": n1,
-                        "player_b_name": n2,
-                        "predicted_winner": predicted_winner,
+                        "player_a_name": n1,  # Jetzt "M. McDonald" anstatt "McDonald"
+                        "player_b_name": n2,  # Jetzt "F. Cerundolo" anstatt "Cerundolo"
+                        "predicted_winner": predicted_winner_db,
                         "win_probability": win_prob,
                         "surface": tour_surface,
                         "updated_at": datetime.now(timezone.utc).isoformat()
@@ -453,13 +460,12 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
                     ).execute()
                     
                     inserted_matches += 1
-                    log(f"   ✅ AI Result: {predicted_winner} wins.")
+                    log(f"   ✅ AI Result: {predicted_winner_db} wins.")
                     await asyncio.sleep(2)
                 else:
                     log(f"   ⚠️ Edge Function failed for {n1} vs {n2}. Skipping.")
 
         log(f"✅ Synced {inserted_matches} matches via Edge Function.")
-        # NOTE: Tournament Outrights calculation removed globally.
 
     except Exception as e: 
         log(f"⚠️ Scraping Error: {e}")
