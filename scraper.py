@@ -31,6 +31,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NeuralScout_Architect")
 
+def log(msg: str):
+    logger.info(msg)
+
 log("🔌 Initialisiere Neural Scout (V200.0 - API TENNIS ENTERPRISE EDITION)...")
 
 # Secrets Load
