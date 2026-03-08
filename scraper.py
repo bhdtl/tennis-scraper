@@ -82,7 +82,15 @@ class TennisDataAPI:
         self.api_key = api_key
         self.base_url = "https://api.api-tennis.com/tennis/"
         # We focus on the main competitive tours for our Data Lake
-        self.valid_tours = ["Atp Singles", "Wta Singles", "Challenger Men Singles"]
+                # We focus on the main competitive tours for our Data Lake
+        self.valid_tours = [
+            "Atp Singles", 
+            "Wta Singles", 
+            "Challenger Men Singles",
+            "Challenger Women Singles",  # Auch die Damen-Challengers nehmen wir mit
+            "Itf Men Singles",           # ITF Herren
+            "Itf Women Singles"          # ITF Damen
+        ]
 
     async def get_fixtures(self, date_str: str) -> List[Dict]:
         """Holt saubere JSON-Fixtures für ein bestimmtes Datum."""
