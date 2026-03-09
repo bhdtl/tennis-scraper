@@ -1248,7 +1248,25 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 elif api_winner == "Second Player":
                     winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
                     
-                final_score = str(fix.get("event_final_result", ""))
+                # 🚀 SOTA: Parse granular set scores (6-4 6-2) statt nur Sets-Ergebnis (2 - 0)
+                raw_scores = fix.get("scores", [])
+                if raw_scores and isinstance(raw_scores, list):
+                    set_parts = []
+                    for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0))):
+                        sf = s.get("score_first", "")
+                        ss = s.get("score_second", "")
+                        if sf != "" and ss != "":
+                            if is_reversed:
+                                set_parts.append(f"{ss}-{sf}")
+                            else:
+                                set_parts.append(f"{sf}-{ss}")
+                    final_score = " ".join(set_parts) if set_parts else str(fix.get("event_final_result", ""))
+                else:
+                    final_score = str(fix.get("event_final_result", ""))
+                # Retirement/Walkover erkennen und anhängen
+                status_lower = fix.get("event_status", "").lower()
+                if "ret" in status_lower or "walkover" in status_lower or "w.o" in status_lower:
+                    final_score = (final_score + " ret.").strip()
                 
                 if winner:
                     supabase.table("market_odds").update({
