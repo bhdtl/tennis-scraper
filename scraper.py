@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V200.0 - API TENNIS ENTERPRISE EDITION)...")
+log("🔌 Initialisiere Neural Scout (V201.0 - API TENNIS MULTI-BOOKIE EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -81,15 +81,14 @@ class TennisDataAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.api-tennis.com/tennis/"
-        # We focus on the main competitive tours for our Data Lake
-                # We focus on the main competitive tours for our Data Lake
+        # 🚀 SOTA: Wir covern jetzt ATP, WTA, Challenger UND ITF
         self.valid_tours = [
             "Atp Singles", 
             "Wta Singles", 
             "Challenger Men Singles",
-            "Challenger Women Singles",  # Auch die Damen-Challengers nehmen wir mit
-            "Itf Men Singles",           # ITF Herren
-            "Itf Women Singles"          # ITF Damen
+            "Challenger Women Singles",  
+            "Itf Men Singles",           
+            "Itf Women Singles"          
         ]
 
     async def get_fixtures(self, date_str: str) -> List[Dict]:
@@ -101,9 +100,8 @@ class TennisDataAPI:
                 res = await client.get(url, timeout=25.0)
                 data = res.json()
                 if data.get('success') == 1 and data.get('result'):
-                    # Filter only relevant Singles matches
                     fixtures = [m for m in data['result'] if m.get('event_type_type') in self.valid_tours]
-                    log(f"✅ [API] Found {len(fixtures)} relevant fixtures.")
+                    log(f"✅ [API] Found {len(fixtures)} relevant fixtures for {date_str}.")
                     return fixtures
             except Exception as e:
                 log(f"❌ [API] Fixture Request Failed: {e}")
@@ -122,6 +120,18 @@ class TennisDataAPI:
                 pass
         return {}
 
+    async def get_player_stats(self, player_key: str) -> Dict:
+        """🚀 SOTA: Holt tiefe historische API-Daten (W/L auf Belägen, Rank etc.) eines Spielers."""
+        url = f"{self.base_url}?method=get_players&APIkey={self.api_key}&player_key={player_key}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, timeout=15.0)
+                data = res.json()
+                if data.get('success') == 1 and data.get('result'):
+                    return data['result'][0] if isinstance(data['result'], list) and len(data['result']) > 0 else {}
+            except Exception as e:
+                pass
+        return {}
 
 # =================================================================
 # 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
@@ -625,7 +635,7 @@ class MomentumV2Engine:
         }
 
 # =================================================================
-# 4. SURFACE INTELLIGENCE ENGINE
+# 4. SURFACE INTELLIGENCE ENGINE (NOW EMPOWERED BY API)
 # =================================================================
 class SurfaceIntelligence:
     @staticmethod
@@ -690,7 +700,8 @@ class SurfaceIntelligence:
         return filtered
 
     @staticmethod
-    def compute_player_surface_profile(matches: List[Dict], player_name: str) -> Dict[str, Any]:
+    def compute_player_surface_profile(matches: List[Dict], player_name: str, api_stats: Dict = None) -> Dict[str, Any]:
+        """🚀 SOTA: Nutzt echte API-Stats (sofern verfügbar) + Historie für 100% akkurate Ratings."""
         profile = {}
         
         surfaces_data = {
@@ -701,7 +712,24 @@ class SurfaceIntelligence:
         
         for surf, surf_matches in surfaces_data.items():
             n_surf = len(surf_matches)
+            wins = 0
+            for m in surf_matches:
+                winner = str(m.get('actual_winner_name', ""))
+                if is_same_player(player_name, winner):
+                    wins += 1
             
+            # Blend with absolute truth from API if available
+            if api_stats and isinstance(api_stats, list) and len(api_stats) > 0:
+                recent_season = api_stats[0] # Grab the latest season stats
+                api_won = int(recent_season.get(f"{surf}_won") or 0)
+                api_lost = int(recent_season.get(f"{surf}_lost") or 0)
+                api_total = api_won + api_lost
+                
+                # If API has robust data, blend it heavily
+                if api_total > 5:
+                    n_surf = api_total
+                    wins = api_won
+
             if n_surf == 0:
                 profile[surf] = {
                     "rating": 3.5, 
@@ -711,12 +739,6 @@ class SurfaceIntelligence:
                 }
                 continue
                 
-            wins = 0
-            for m in surf_matches:
-                winner = str(m.get('actual_winner_name', ""))
-                if is_same_player(player_name, winner):
-                    wins += 1
-                    
             win_rate = wins / n_surf
             vol_score = min(1.0, n_surf / 30.0) * 1.95
             win_score = win_rate * 4.55
@@ -1041,7 +1063,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             is_reversed = False
             
             for pm in list(safe_to_check):
-                # We use our smart fuzzy logic to match DB players with API players
                 db_p1 = pm['player1_name']
                 db_p2 = pm['player2_name']
                 
@@ -1107,7 +1128,14 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
 
                     for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
-                        p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook)
+                        
+                        p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
+                        api_stats = []
+                        if p_key:
+                            raw_api_stats = await api.get_player_stats(str(p_key))
+                            api_stats = raw_api_stats.get('stats', [])
+                        
+                        p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook, api_stats)
                         p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                         
                         supabase.table('players').update({
@@ -1818,7 +1846,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V200.0 (API TENNIS EDITION) Starting...")
+    log(f"🚀 Neural Scout V201.0 (API TENNIS MULTI-BOOKIE EDITION) Starting...")
     
     # Initialize the new API
     api = TennisDataAPI(API_TENNIS_KEY)
@@ -1841,8 +1869,8 @@ async def run_pipeline():
     # 3. Build Matches Array from API
     matches = []
     
-    # We fetch today and tomorrow to build the market prediction pool
-    for day_offset in [0, 1]:
+    # 🚀 SOTA: We fetch today + next 3 days (4 days total)
+    for day_offset in range(0, 4):
         target_date = (datetime.now(timezone.utc) + timedelta(days=day_offset)).strftime('%Y-%m-%d')
         fixtures = await api.get_fixtures(target_date)
         
@@ -1870,7 +1898,16 @@ async def run_pipeline():
             home_odds_dict = home_away.get("Home", {})
             away_odds_dict = home_away.get("Away", {})
             
-            # Prefer bet365 or 1xbet
+            # 🚀 SOTA: Multi-Bookie Extraction
+            bookmaker_odds = {}
+            all_bookies = set(list(home_odds_dict.keys()) + list(away_odds_dict.keys()))
+            for bookie in all_bookies:
+                bookmaker_odds[bookie] = {
+                    "odds1": to_float(home_odds_dict.get(bookie, 0)),
+                    "odds2": to_float(away_odds_dict.get(bookie, 0))
+                }
+            
+            # Primary Odds for the Chart (Bet365 preferred)
             o1 = to_float(home_odds_dict.get("bet365") or home_odds_dict.get("1xbet") or next(iter(home_odds_dict.values()), 0))
             o2 = to_float(away_odds_dict.get("bet365") or away_odds_dict.get("1xbet") or next(iter(away_odds_dict.values()), 0))
             
@@ -1886,10 +1923,13 @@ async def run_pipeline():
             matches.append({
                 "p1_raw": p1_raw, 
                 "p2_raw": p2_raw,
+                "p1_api_key": fix.get("first_player_key"),
+                "p2_api_key": fix.get("second_player_key"),
                 "tour": tour_name,
                 "time": iso_time, 
                 "odds1": o1, 
-                "odds2": o2
+                "odds2": o2,
+                "bookmaker_odds": bookmaker_odds
             })
             
     if not matches:
@@ -1902,7 +1942,6 @@ async def run_pipeline():
     
     for m in matches:
         try:
-            # Prevent duplicates if API returns the same match twice
             m_key = tuple(sorted([m['p1_raw'], m['p2_raw']]))
             if m_key in seen_match_keys: continue
             seen_match_keys.add(m_key)
@@ -1916,10 +1955,14 @@ async def run_pipeline():
             if not p1_obj or not p2_obj: 
                 continue
                 
-            n1 = p1_obj['last_name']
-            n2 = p2_obj['last_name']
+            # 🚀 SOTA: FULL NAME LOGIC (Save Full Name to DB, but search with Last Name)
+            n1_last = p1_obj['last_name']
+            n2_last = p2_obj['last_name']
             
-            if n1 == n2: 
+            full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
+            full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
+            
+            if n1_last == n2_last: 
                 continue
                 
             db_matched_count += 1
@@ -1927,17 +1970,23 @@ async def run_pipeline():
             if not validate_market_integrity(m['odds1'], m['odds2']):
                 continue 
 
-            res1 = supabase.table("market_odds").select("*").eq("player1_name", n1).eq("player2_name", n2).order("created_at", desc=True).limit(1).execute()
+            # Check DB using the safe last_name ilike to ensure we don't duplicate
+            res1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").order("created_at", desc=True).limit(1).execute()
             existing_match = res1.data[0] if res1.data else None
             
             if not existing_match:
-                res2 = supabase.table("market_odds").select("*").eq("player1_name", n2).eq("player2_name", n1).order("created_at", desc=True).limit(1).execute()
+                res2 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n2_last}%").ilike("player2_name", f"%{n1_last}%").order("created_at", desc=True).limit(1).execute()
                 existing_match = res2.data[0] if res2.data else None
                 
                 if existing_match:
-                    n1, n2 = n2, n1
+                    full_n1, full_n2 = full_n2, full_n1
                     p1_obj, p2_obj = p2_obj, p1_obj
                     m['odds1'], m['odds2'] = m['odds2'], m['odds1']
+                    # Swap bookie odds logically
+                    swapped_bookies = {}
+                    for b_name, b_odds in m['bookmaker_odds'].items():
+                        swapped_bookies[b_name] = {"odds1": b_odds["odds2"], "odds2": b_odds["odds1"]}
+                    m['bookmaker_odds'] = swapped_bookies
             
             if existing_match:
                 if is_suspicious_movement(to_float(existing_match.get('odds1'), 0), m['odds1'], to_float(existing_match.get('odds2'), 0), m['odds2']):
@@ -1947,15 +1996,15 @@ async def run_pipeline():
             if existing_match and existing_match.get('actual_winner_name'): 
                 continue 
                 
-            final_time_str = m['time'] # Perfect time directly from API!
+            final_time_str = m['time'] 
             
             hist_fair1, hist_fair2 = 0, 0
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
             
             if is_signal_locked:
-                log(f"      🔒 DIAMOND LOCK ACTIVE: {n1} vs {n2}")
-                update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True}
+                log(f"      🔒 DIAMOND LOCK ACTIVE: {full_n1} vs {full_n2}")
+                update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True, "bookmaker_odds": m['bookmaker_odds']}
                 
                 if final_time_str and not final_time_str.endswith("T00:00:00Z"):
                     update_data["match_time"] = final_time_str
@@ -1979,7 +2028,7 @@ async def run_pipeline():
                         'last_update': existing_match.get('created_at')
                     }
                 
-                surf, bsi, notes, city_for_weather, matched_tour_name = await find_best_court_match_smart(m['tour'], all_tournaments, n1, n2, p1_obj.get('country', 'Unknown'), p2_obj.get('country', 'Unknown'), match_date=datetime.now())
+                surf, bsi, notes, city_for_weather, matched_tour_name = await find_best_court_match_smart(m['tour'], all_tournaments, full_n1, full_n2, p1_obj.get('country', 'Unknown'), p2_obj.get('country', 'Unknown'), match_date=datetime.now())
                 weather_data = await fetch_weather_data(city_for_weather)
 
                 s1 = all_skills.get(p1_obj['id'], {})
@@ -1987,15 +2036,22 @@ async def run_pipeline():
                 
                 report1 = next((r for r in all_reports if r.get('player_id') == p1_obj['id']), None)
                 report2 = next((r for r in all_reports if r.get('player_id') == p2_obj['id']), None)
-                
-                full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
-                full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
 
-                p1_history = await fetch_player_history_extended(n1, limit=80)
-                p2_history = await fetch_player_history_extended(n2, limit=80)
+                p1_history = await fetch_player_history_extended(full_n1, limit=80)
+                p2_history = await fetch_player_history_extended(full_n2, limit=80)
                 
-                p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1)
-                p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2)
+                # 🚀 SOTA: Fetch API Player Stats for perfectly accurate Surface Ratings
+                api_stats_p1 = []
+                api_stats_p2 = []
+                if m.get('p1_api_key'):
+                    p1_api_data = await api.get_player_stats(str(m['p1_api_key']))
+                    api_stats_p1 = p1_api_data.get('stats', [])
+                if m.get('p2_api_key'):
+                    p2_api_data = await api.get_player_stats(str(m['p2_api_key']))
+                    api_stats_p2 = p2_api_data.get('stats', [])
+                
+                p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1, api_stats_p1)
+                p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2, api_stats_p2)
                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
 
@@ -2019,13 +2075,13 @@ async def run_pipeline():
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                         hist_is_value = True
-                        hist_pick_player = n1
+                        hist_pick_player = full_n1
                     elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                         hist_is_value = True
-                        hist_pick_player = n2
+                        hist_pick_player = full_n2
                         
                     ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
                     hist_fair1 = fair1
@@ -2036,6 +2092,7 @@ async def run_pipeline():
                             supabase.table("market_odds").update({
                                 "odds1": m['odds1'], 
                                 "odds2": m['odds2'], 
+                                "bookmaker_odds": m['bookmaker_odds'],
                                 "ai_fair_odds1": fair1, 
                                 "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final,
@@ -2045,7 +2102,7 @@ async def run_pipeline():
                         except: pass
 
                 else:
-                    log(f"   🧠 Fresh AI & Markov Chain Sim: {n1} vs {n2} | T: {matched_tour_name}")
+                    log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
                     
@@ -2064,7 +2121,7 @@ async def run_pipeline():
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results
                     )
                     
-                    prob = calculate_physics_fair_odds(n1, n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
+                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
@@ -2074,19 +2131,19 @@ async def run_pipeline():
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
                         hist_is_value = True
-                        hist_pick_player = n1
+                        hist_pick_player = full_n1
                     elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                         hist_is_value = True
-                        hist_pick_player = n2
+                        hist_pick_player = full_n2
                     
                     ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
 
                     data = {
-                        "player1_name": n1, 
-                        "player2_name": n2, 
+                        "player1_name": full_n1, 
+                        "player2_name": full_n2, 
                         "tournament": matched_tour_name,
                         "ai_fair_odds1": fair1, 
                         "ai_fair_odds2": fair2,
@@ -2096,6 +2153,7 @@ async def run_pipeline():
                         "match_time": final_time_str, 
                         "odds1": m['odds1'], 
                         "odds2": m['odds2'],
+                        "bookmaker_odds": m['bookmaker_odds'],
                         "is_visible_in_scanner": True 
                     }
                     
@@ -2111,7 +2169,7 @@ async def run_pipeline():
                             res_ins = supabase.table("market_odds").insert(data).execute()
                             if res_ins.data: 
                                 db_match_id = res_ins.data[0]['id']
-                            log(f"💾 Saved: {n1} vs {n2} (via API) - Odds: {m['odds1']} | {m['odds2']}")
+                            log(f"💾 Saved: {full_n1} vs {full_n2} (via API) - Odds: {m['odds1']} | {m['odds2']}")
                         except: pass
 
             if db_match_id:
