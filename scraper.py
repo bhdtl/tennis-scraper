@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V202.0 - JUICE REEL ENTERPRISE EDITION)...")
+log("🔌 Initialisiere Neural Scout (V203.0 - JUICE REEL SET-BETTING EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1904,7 +1904,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V202.0 (JUICE REEL EDITION) Starting...")
+    log(f"🚀 Neural Scout V203.0 (JUICE REEL SET-BETTING EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -1963,18 +1963,23 @@ async def run_pipeline():
             
             if o1 <= 1.01 or o2 <= 1.01: continue
             
-            # 🚀 JUICE REEL: Fetch Dynamic Over/Under Line
-            # We look into the API's Over/Under dictionary, find the line closest to 1.85-1.95 odds
+            # 🚀 JUICE REEL: Extraction of Real Market Set Betting Odds
+            set_betting_api = odds_data.get("Set Betting", {})
+            bookie_set_odds = {}
+            if set_betting_api:
+                for score_key, bookies in set_betting_api.items():
+                    main_line = to_float(bookies.get("bet365") or bookies.get("1xbet") or next(iter(bookies.values()), 0))
+                    bookie_set_odds[score_key] = main_line
+
+            # Fetch Dynamic Over/Under Line
             actual_ou_line = None
             ou_dict = odds_data.get("Over/Under", {})
             if ou_dict:
-                # Often the keys are "21.5", "22.5" etc.
                 best_diff = 999.0
                 for line_str, line_odds in ou_dict.items():
                     try:
                         line_val = float(line_str)
                         over_odd = to_float(line_odds.get("bet365") or next(iter(line_odds.values()), 0))
-                        # We want the main line, usually where odds are around 1.83 - 1.95
                         diff_to_even = abs(over_odd - 1.90)
                         if diff_to_even < best_diff and over_odd > 1.01:
                             best_diff = diff_to_even
@@ -1998,6 +2003,7 @@ async def run_pipeline():
                 "odds1": o1, 
                 "odds2": o2,
                 "bookmaker_odds": bookmaker_odds,
+                "bookie_set_odds": bookie_set_odds,
                 "actual_ou_line": actual_ou_line
             })
             
@@ -2049,10 +2055,19 @@ async def run_pipeline():
                     full_n1, full_n2 = full_n2, full_n1
                     p1_obj, p2_obj = p2_obj, p1_obj
                     m['odds1'], m['odds2'] = m['odds2'], m['odds1']
+                    
                     swapped_bookies = {}
                     for b_name, b_odds in m['bookmaker_odds'].items():
                         swapped_bookies[b_name] = {"odds1": b_odds["odds2"], "odds2": b_odds["odds1"]}
                     m['bookmaker_odds'] = swapped_bookies
+                    
+                    # 🚀 SOTA: Swap Set Betting 
+                    swapped_sets = {}
+                    if "2:0" in m.get('bookie_set_odds', {}): swapped_sets["0:2"] = m['bookie_set_odds']["2:0"]
+                    if "0:2" in m.get('bookie_set_odds', {}): swapped_sets["2:0"] = m['bookie_set_odds']["0:2"]
+                    if "2:1" in m.get('bookie_set_odds', {}): swapped_sets["1:2"] = m['bookie_set_odds']["2:1"]
+                    if "1:2" in m.get('bookie_set_odds', {}): swapped_sets["2:1"] = m['bookie_set_odds']["1:2"]
+                    m['bookie_set_odds'] = swapped_sets
             
             if existing_match:
                 if is_suspicious_movement(to_float(existing_match.get('odds1'), 0), m['odds1'], to_float(existing_match.get('odds2'), 0), m['odds2']):
@@ -2120,7 +2135,7 @@ async def run_pipeline():
                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
 
-                # 🚀 JUICE REEL: Echte H2H Abfrage
+                # 🚀 JUICE REEL: Echte H2H Abfrage (Mit Bulletproof ID-Matching)
                 h2h_record = "0 - 0"
                 if m.get('p1_api_key') and m.get('p2_api_key'):
                     h2h_data = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
@@ -2128,8 +2143,15 @@ async def run_pipeline():
                         p1_wins, p2_wins = 0, 0
                         for h2h_match in h2h_data['H2H']:
                             winner_str = h2h_match.get('event_winner', '')
-                            if winner_str == "First Player": p1_wins += 1
-                            elif winner_str == "Second Player": p2_wins += 1
+                            past_p1_key = str(h2h_match.get('first_player_key', ''))
+                            
+                            if winner_str == "First Player":
+                                if past_p1_key == str(m['p1_api_key']): p1_wins += 1
+                                else: p2_wins += 1
+                            elif winner_str == "Second Player":
+                                if past_p1_key == str(m['p1_api_key']): p2_wins += 1
+                                else: p1_wins += 1
+                                
                         h2h_record = f"{p1_wins} - {p2_wins}"
 
                 should_run_ai = True
@@ -2195,8 +2217,9 @@ async def run_pipeline():
                     
                     # 🚀 SOTA: Injecting advanced stats directly into the JSON for the Frontend
                     sim_result['h2h'] = h2h_record
-                    sim_result['set_probs'] = mc_results['set_betting_probs']
-                    sim_result['projected_handicap'] = mc_results['projected_handicap_A']
+                    sim_result['set_probs'] = mc_results.get('set_betting_probs', {})
+                    sim_result['projected_handicap'] = mc_results.get('projected_handicap_A', 0)
+                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
 
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
