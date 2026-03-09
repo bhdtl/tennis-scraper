@@ -508,32 +508,132 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         
     return False
 
-# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION
-async def send_sniper_alert(p1: str, p2: str, odds: float, fair: float, edge: float, play_type: str, bookie: str = "Market"):
-    """🚀 SOTA: Telegram Sniper Alert für Opening Odds"""
+# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION (FULL VALUE SCANNER PARITY)
+async def send_sniper_alert(
+    p1: str, p2: str,
+    opening_odds1: float, opening_odds2: float,
+    fair1: float, fair2: float,
+    edge: float, pick_name: str,
+    tournament: str,
+    sim_result: Dict,
+    bookmaker_odds: Dict,
+    h2h_record: str = "N/A",
+    bookie: str = "Market"
+):
+    """🚀 SOTA: Full-Spectrum Telegram Sniper Alert — Opening Line Edition.
+    Spiegelt exakt den Value Scanner: Fair Odds, Handicap, Set Probs, O/U, Line Shopping.
+    Wird NUR bei neuen Matches gefeuert (Opening Odds = maximale Early Value Chance).
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-        
+
+    # --- 1. EDGE LABEL (analog Value Scanner getEdgeColorClass) ---
+    if edge >= 15.0:
+        edge_label = "🔥 HIGH VALUE"
+    elif edge >= 8.0:
+        edge_label = "✨ GOOD VALUE"
+    elif edge >= 5.0:
+        edge_label = "📈 VALUE"
+    else:
+        edge_label = "👀 WATCH"
+
+    # --- 2. FAIR ODDS BLOCK (analog Value Scanner "True Fair" center box) ---
+    p1_is_pick = pick_name.lower() in p1.lower() or p1.lower() in pick_name.lower()
+    pick_odds   = opening_odds1 if p1_is_pick else opening_odds2
+    other_odds  = opening_odds2 if p1_is_pick else opening_odds1
+    pick_fair   = fair1 if p1_is_pick else fair2
+    other_fair  = fair2 if p1_is_pick else fair1
+
+    # --- 3. HANDICAP LINE (analog Value Scanner "Proj. Spread") ---
+    projected_handicap = sim_result.get('projected_handicap', None)
+    handicap_line_str = ""
+    if projected_handicap is not None:
+        # pick perspective: positive = pick wins more games
+        active_fair_line = projected_handicap if p1_is_pick else -projected_handicap
+        if abs(active_fair_line) >= 1.0:
+            rounded = round(active_fair_line * 2) / 2
+            sign = "+" if rounded > 0 else ""
+            handicap_line_str = f"📐 *Proj\\. Spread:* `{sign}{rounded:.1f} Games` _{pick_name.split()[-1]}_\n"
+
+    # --- 4. SET BETTING PROBS (analog Value Scanner Set Edge) ---
+    set_probs = sim_result.get('set_probs', {})
+    set_lines = []
+    if set_probs:
+        if p1_is_pick:
+            if set_probs.get("2:0", 0) >= 40:
+                set_lines.append(f"  • 2:0 {p1.split()[-1]}: *{set_probs['2:0']}%* (Fair: `{round(1/(set_probs['2:0']/100),2) if set_probs['2:0'] > 0 else '—'}`)")
+            if set_probs.get("2:1", 0) >= 25:
+                set_lines.append(f"  • 2:1 {p1.split()[-1]}: *{set_probs['2:1']}%*")
+        else:
+            if set_probs.get("0:2", 0) >= 40:
+                set_lines.append(f"  • 2:0 {p2.split()[-1]}: *{set_probs['0:2']}%* (Fair: `{round(1/(set_probs['0:2']/100),2) if set_probs['0:2'] > 0 else '—'}`)")
+            if set_probs.get("1:2", 0) >= 25:
+                set_lines.append(f"  • 2:1 {p2.split()[-1]}: *{set_probs['1:2']}%*")
+    set_block = ("🎯 *Set Probs:*\n" + "\n".join(set_lines) + "\n") if set_lines else ""
+
+    # --- 5. O/U TOTALS (analog Value Scanner Totals block) ---
+    probabilities = sim_result.get('probabilities', {})
+    predicted_line = sim_result.get('predicted_line', None)
+    ou_line_str = ""
+    # Prioritize the dynamic bookie-matched line first
+    dynamic_key = next((k for k in probabilities if k.startswith('over_') and k not in ['over_20_5', 'over_21_5', 'over_22_5', 'over_23_5']), None)
+    if dynamic_key:
+        line_val = dynamic_key.replace('over_', '').replace('_', '.')
+        over_prob = probabilities[dynamic_key] * 100
+        under_prob = 100 - over_prob
+        if over_prob >= 55:
+            ou_line_str = f"📊 *O/U:* OVER {line_val} Games — `{over_prob:.1f}%` (Fair: `{round(1/(over_prob/100),2)}`)\n"
+        elif under_prob >= 55:
+            ou_line_str = f"📊 *O/U:* UNDER {line_val} Games — `{under_prob:.1f}%` (Fair: `{round(1/(under_prob/100),2)}`)\n"
+    elif predicted_line:
+        ou_line_str = f"📊 *Predicted Total:* `{predicted_line} Games`\n"
+
+    # --- 6. LINE SHOPPING (analog Value Scanner "Best Lines" strip) ---
+    bookie_lines = []
+    if bookmaker_odds:
+        # Sort by pick odds descending — best price first
+        sorted_bookies = sorted(
+            bookmaker_odds.items(),
+            key=lambda x: x[1].get('odds1', 0) if p1_is_pick else x[1].get('odds2', 0),
+            reverse=True
+        )
+        for bname, bodds in sorted_bookies[:5]:  # Max 5 bookies like scanner
+            bval = bodds.get('odds1', 0) if p1_is_pick else bodds.get('odds2', 0)
+            if bval > 1.01:
+                star = "⭐" if bval == pick_odds else "  "
+                bookie_lines.append(f"{star} `{bname.upper()}` → *{bval:.2f}*")
+    bookie_block = ("🏦 *Line Shopping:*\n" + "\n".join(bookie_lines) + "\n") if bookie_lines else ""
+
+    # --- ASSEMBLE FULL MESSAGE ---
     message = (
-        f"🚨 *OPENING LINE SNIPER ALERT* 🚨\n\n"
-        f"🎾 *{p1} vs {p2}*\n"
-        f"🎯 Play: `{play_type}`\n"
-        f"💰 Bookie Odds: *{odds}* ({bookie})\n"
-        f"🧠 AI Fair Odds: *{fair}*\n"
-        f"⚡ Edge: *+{edge}%*\n"
+        f"🚨 *OPENING LINE SNIPER* 🚨\n"
+        f"_{tournament}_\n\n"
+        f"🎾 *{p1}* vs *{p2}*\n"
+        f"🔁 H2H: `{h2h_record}`\n\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 *Pick:* `{pick_name}` — {edge_label}\n"
+        f"💰 *Opening Odds:* *{pick_odds:.2f}* vs {other_odds:.2f}\n"
+        f"🧠 *AI Fair Odds:* `{pick_fair:.2f}` vs {other_fair:.2f}\n"
+        f"⚡ *Edge:* *+{edge:.1f}%* on Opening Line\n\n"
+        f"{handicap_line_str}"
+        f"{set_block}"
+        f"{ou_line_str}"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"{bookie_block}"
+        f"\n_⏰ Early Value Alert — Opening Line_"
     )
-    
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "Markdown"
     }
-    
+
     try:
         async with httpx.AsyncClient() as client:
             await client.post(url, json=payload, timeout=5.0)
-            log(f"📲 TELEGRAM ALERT GESENDET: {play_type} mit {edge}% Edge!")
+            log(f"📲 TELEGRAM FULL ALERT GESENDET: {pick_name} +{edge:.1f}% Edge | {tournament}")
     except Exception as e:
         log(f"⚠️ Telegram Alert Fehler: {e}")
 
@@ -2295,21 +2395,33 @@ async def run_pipeline():
                                 db_match_id = res_ins.data[0]['id']
                             log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
                             
-                            # 🚀 SOTA: TELEGRAM ALERT SYSTEM TRIGGER (Value > 5% bei Opening)
+                            # 🚀 SOTA: TELEGRAM FULL-SPECTRUM ALERT (Opening Line — Value Scanner Parity)
+                            # Bestimme welcher Spieler der Value Pick ist (analog processedMatches im Scanner)
+                            alert_pick_name = None
+                            alert_edge = 0.0
                             if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
-                                await send_sniper_alert(full_n1, full_n2, m['odds1'], fair1, val_p1["edge_percent"], f"Moneyline: {full_n1}")
+                                alert_pick_name = full_n1
+                                alert_edge = val_p1["edge_percent"]
                             elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
-                                await send_sniper_alert(full_n1, full_n2, m['odds2'], fair2, val_p2["edge_percent"], f"Moneyline: {full_n2}")
-                                
-                            # Alert für Set-Betting Value (2:0)
-                            if "2:0" in sim_result.get('set_probs', {}):
-                                p1_set_prob = sim_result['set_probs']["2:0"]
-                                if p1_set_prob >= 50 and m.get('bookie_set_odds', {}).get("2:0", 0) > 0:
-                                    bookie_s_odds = m['bookie_set_odds']["2:0"]
-                                    fair_s_odds = round(1 / (p1_set_prob / 100), 2)
-                                    set_edge = round(((bookie_s_odds / fair_s_odds) - 1) * 100, 1)
-                                    if set_edge >= 5.0:
-                                        await send_sniper_alert(full_n1, full_n2, bookie_s_odds, fair_s_odds, set_edge, f"Set Betting 2:0 {full_n1}", "bet365")
+                                alert_pick_name = full_n2
+                                alert_edge = val_p2["edge_percent"]
+
+                            if alert_pick_name:
+                                await send_sniper_alert(
+                                    p1=full_n1,
+                                    p2=full_n2,
+                                    opening_odds1=m['odds1'],
+                                    opening_odds2=m['odds2'],
+                                    fair1=fair1,
+                                    fair2=fair2,
+                                    edge=alert_edge,
+                                    pick_name=alert_pick_name,
+                                    tournament=matched_tour_name,
+                                    sim_result=sim_result,
+                                    bookmaker_odds=m.get('bookmaker_odds', {}),
+                                    h2h_record=h2h_record,
+                                    bookie="Opening"
+                                )
                         except Exception as ins_err: 
                             log(f"Insert Error: {ins_err}")
 
