@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.0 - JUICE REEL OPENING ODDS EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.1 - JUICE REEL QUANT SPREAD EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -714,7 +714,6 @@ class SurfaceIntelligence:
 
     @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str, api_stats: Dict = None) -> Dict[str, Any]:
-        """🚀 SOTA: Nutzt echte API-Stats (sofern verfügbar) + Historie für 100% akkurate Ratings."""
         profile = {}
         
         surfaces_data = {
@@ -731,14 +730,12 @@ class SurfaceIntelligence:
                 if is_same_player(player_name, winner):
                     wins += 1
             
-            # Blend with absolute truth from API if available
             if api_stats and isinstance(api_stats, list) and len(api_stats) > 0:
-                recent_season = api_stats[0] # Grab the latest season stats
+                recent_season = api_stats[0]
                 api_won = int(recent_season.get(f"{surf}_won") or 0)
                 api_lost = int(recent_season.get(f"{surf}_lost") or 0)
                 api_total = api_won + api_lost
                 
-                # If API has robust data, blend it heavily
                 if api_total > 5:
                     n_surf = api_total
                     wins = api_won
@@ -891,7 +888,6 @@ class MarkovChainEngine:
                 if games_A >= 6 and games_A - games_B >= 2: return True, games_A, games_B
                 if games_B >= 6 and games_B - games_A >= 2: return False, games_A, games_B
 
-        # 🚀 JUICE REEL TRACKERS: Exact Scores & Handicaps
         match_wins_A, match_wins_B = 0, 0
         scores_log = {"2:0": 0, "2:1": 0, "0:2": 0, "1:2": 0}
         total_game_diff_A = 0
@@ -921,7 +917,6 @@ class MarkovChainEngine:
         prob_A = (match_wins_A / iterations) * 100
         prob_B = (match_wins_B / iterations) * 100
         
-        # Calculate exact percentages for set betting
         set_betting_probs = {
             "2:0": round((scores_log["2:0"] / iterations) * 100, 1),
             "2:1": round((scores_log["2:1"] / iterations) * 100, 1),
@@ -946,8 +941,6 @@ class MarkovChainEngine:
 class NeuralOptimizer:
     @staticmethod
     def optimize_ai_weights(matches_history: List[Dict], current_weights: Dict) -> Dict:
-        log("🧠 Starte Neural Weight Optimization (Backpropagation Simulation)...")
-        
         best_weights = current_weights
         best_brier_score = float('inf') 
         
@@ -985,8 +978,6 @@ class NeuralOptimizer:
 
     @staticmethod
     def trigger_learning_cycle(players: List[Dict], all_skills: Dict):
-        log("🔄 Initiating Weekly Self-Learning Routine...")
-        
         for tour in ["ATP", "WTA"]:
             tour_players = [p['id'] for p in players if p.get('tour') == tour]
             if not tour_players: continue
@@ -1025,7 +1016,6 @@ class NeuralOptimizer:
             if total_predictions > 0:
                 acc = (correct_predictions / total_predictions) * 100
                 SYSTEM_ACCURACY[tour] = round(acc, 1)
-                log(f"🎯 {tour} System Accuracy Rating: {SYSTEM_ACCURACY[tour]}% ({correct_predictions}/{total_predictions})")
 
             if len(history_data) >= 20:
                 new_weights = NeuralOptimizer.optimize_ai_weights(history_data, DYNAMIC_WEIGHTS[tour])
@@ -1040,9 +1030,8 @@ class NeuralOptimizer:
                         "mc_variance": new_weights["MC_VARIANCE"],
                         "last_optimized": datetime.now(timezone.utc).isoformat()
                     }).execute()
-                    log(f"💾 {tour} Gewichte erfolgreich in Supabase gesichert.")
                 except Exception as e:
-                    log(f"❌ Fehler beim Speichern der AI-Gewichte: {e}")
+                    pass
 
 # =================================================================
 # 6. OPENROUTER AI ENGINE (SOTA)
@@ -1068,11 +1057,9 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
         try:
             response = await client.post(url, headers=headers, json=payload, timeout=45.0)
             if response.status_code != 200: 
-                log(f"⚠️ OpenRouter API Error: {response.status_code} - {response.text}")
                 return None
             return response.json()['choices'][0]['message']['content']
         except Exception as e: 
-            log(f"⚠️ OpenRouter Exception: {e}")
             return None
 
 # =================================================================
@@ -1087,7 +1074,6 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
 
 # 🔴 SOTA: THE NEW API AUDITOR
 async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
-    log("🏆 The Auditor: Checking Real-Time Results & Scores via API...")
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
         return
@@ -1132,14 +1118,11 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 final_score = str(fix.get("event_final_result", ""))
                 
                 if winner:
-                    log(f"      🔍 AUDITOR FOUND: {final_score} -> Winner: {winner}")
                     supabase.table("market_odds").update({
                         "actual_winner_name": winner,
                         "score": final_score
                     }).eq("id", matched_pm['id']).execute()
 
-                    log(f"🧠 Triggere Live Skill & Form Engine für das Match...")
-                    
                     p1_name = matched_pm['player1_name']
                     p2_name = matched_pm['player2_name']
                     
@@ -1168,8 +1151,7 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                                 if new_s2:
                                     new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                     supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
-                        except Exception as se:
-                            log(f"⚠️ Live Skill Update Error: {se}")
+                        except Exception as se: pass
 
                     for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
@@ -1901,7 +1883,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.0 (OPENING ODDS EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.1 (JUICE REEL QUANT SPREAD EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2205,11 +2187,6 @@ async def run_pipeline():
                         iterations=2500
                     )
                     
-                    sim_result['h2h'] = h2h_record
-                    sim_result['set_probs'] = mc_results.get('set_betting_probs', {})
-                    sim_result['projected_handicap'] = mc_results.get('projected_handicap_A', 0)
-                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
-
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
@@ -2219,6 +2196,23 @@ async def run_pipeline():
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
+                    
+                    # 🚀 SOTA QUANT FIX: Align Deep Stats with Final Blended Probability
+                    p1_set_prob = math.pow(prob, 0.65)
+                    p2_set_prob = math.pow(1.0 - prob, 0.65)
+                    
+                    sim_result['h2h'] = h2h_record
+                    sim_result['set_probs'] = {
+                        "2:0": round((p1_set_prob * p1_set_prob) * 100, 1),
+                        "2:1": round((prob - (p1_set_prob * p1_set_prob)) * 100, 1),
+                        "0:2": round((p2_set_prob * p2_set_prob) * 100, 1),
+                        "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
+                    }
+                    
+                    # If prob = 0.40 (Underdog), difference is -0.10. Handicap is -0.10 * 100 * 0.14 = -1.4 Games Difference
+                    # Meaning Player A loses by 1.4 games.
+                    sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
+                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
                     
                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
@@ -2259,7 +2253,6 @@ async def run_pipeline():
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                         except: pass
                     else:
-                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
                         data["opening_odds1"] = m['odds1']
                         data["opening_odds2"] = m['odds2']
                         try:
