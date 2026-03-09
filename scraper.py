@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V203.0 - JUICE REEL SET-BETTING EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.0 - JUICE REEL OPENING ODDS EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -797,10 +797,7 @@ class MarkovChainEngine:
     @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
                        bsi: float, styleA: str, styleB: str, 
-                       iterations: int = 2500,
-                       market_odds1: float = 0.0,
-                       market_odds2: float = 0.0,
-                       bookie_set_odds: Dict = None) -> Dict[str, Any]:
+                       iterations: int = 2500) -> Dict[str, Any]:
         
         def get_serve_prob(serve_skill, power_skill):
             return 0.50 + (((serve_skill * 0.7) + (power_skill * 0.3)) / 100.0) * 0.25
@@ -932,30 +929,7 @@ class MarkovChainEngine:
             "1:2": round((scores_log["1:2"] / iterations) * 100, 1)
         }
         
-        # 🚀 SOTA MARKET ANCHORING: Blend Pure AI Handicap with implied Bookie Handicap
         avg_handicap_A = total_game_diff_A / iterations
-        
-        if market_odds1 > 1.01 and market_odds2 > 1.01:
-            imp_A = (1 / market_odds1) / ((1 / market_odds1) + (1 / market_odds2))
-            imp_B = 1.0 - imp_A
-            
-            # Base implied game diff based on standard ML
-            market_hc_A = -(imp_A - imp_B) * 5.5 
-            
-            # If we have real set odds from API, refine the market anchor!
-            if bookie_set_odds:
-                set_20 = to_float(bookie_set_odds.get("2:0", 0))
-                set_02 = to_float(bookie_set_odds.get("0:2", 0))
-                if set_20 > 1.01 and set_02 > 1.01:
-                    p_20 = 1 / set_20
-                    p_02 = 1 / set_02
-                    # The higher the 2:0 probability, the steeper the game handicap
-                    set_diff = p_20 - p_02
-                    market_hc_A = -set_diff * 6.5
-            
-            # Blend 50% Market Reality with 50% Pure AI Simulation
-            # This kills "nonsensical" +2.5 lines when a player is a heavy 1.10 favorite
-            avg_handicap_A = (market_hc_A * 0.50) + (avg_handicap_A * 0.50)
 
         return {
             "probA": round(prob_A, 1),
@@ -1927,7 +1901,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V203.0 (JUICE REEL SET-BETTING EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.0 (OPENING ODDS EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2219,6 +2193,8 @@ async def run_pipeline():
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
+                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
+                    
                     styleA = p1_obj.get('play_style', '')
                     styleB = p2_obj.get('play_style', '')
                     
@@ -2226,13 +2202,8 @@ async def run_pipeline():
                         s1=s1, s2=s2,
                         formA=p1_form_v2['score'], formB=p2_form_v2['score'],
                         bsi=bsi, styleA=styleA, styleB=styleB,
-                        iterations=2500,
-                        market_odds1=m['odds1'],
-                        market_odds2=m['odds2'],
-                        bookie_set_odds=m.get('bookie_set_odds', {})
+                        iterations=2500
                     )
-                    
-                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
                     
                     sim_result['h2h'] = h2h_record
                     sim_result['set_probs'] = mc_results.get('set_betting_probs', {})
@@ -2288,11 +2259,56 @@ async def run_pipeline():
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                         except: pass
                     else:
+                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
+                        data["opening_odds1"] = m['odds1']
+                        data["opening_odds2"] = m['odds2']
                         try:
                             res_ins = supabase.table("market_odds").insert(data).execute()
                             if res_ins.data: 
                                 db_match_id = res_ins.data[0]['id']
-                            log(f"💾 Saved: {full_n1} vs {full_n2} (via API) - Odds: {m['odds1']} | {m['odds2']}")
+                            log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
                         except: pass
 
             if db_match_id:
+                should_log_history = False
+                if not existing_match:
+                    should_log_history = True
+                elif is_signal_locked or hist_is_value: 
+                    should_log_history = True
+                else:
+                    try:
+                        old_o1 = to_float(existing_match.get('odds1'), 0)
+                        old_o2 = to_float(existing_match.get('odds2'), 0)
+                        if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
+                            should_log_history = True
+                    except: pass
+                
+                if should_log_history:
+                    h_data = {
+                        "match_id": db_match_id, 
+                        "odds1": m['odds1'], 
+                        "odds2": m['odds2'], 
+                        "fair_odds1": hist_fair1, 
+                        "fair_odds2": hist_fair2, 
+                        "is_hunter_pick": (hist_is_value or is_signal_locked),
+                        "pick_player_name": "LOCKED" if is_signal_locked else hist_pick_player,
+                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    }
+                    try: 
+                        supabase.table("odds_history").insert(h_data).execute()
+                    except: pass
+
+        except Exception as e: 
+            log(f"⚠️ Match Error bei Iteration: {e}")
+            
+    log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
+            
+    try:
+        FantasySettlementEngine.run_settlement()
+    except Exception as e:
+        log(f"⚠️ FANTASY ENGINE ERROR: {e}")
+        
+    log("🏁 Cycle Finished.")
+
+if __name__ == "__main__":
+    asyncio.run(run_pipeline())
