@@ -42,6 +42,10 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 
+# 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
     sys.exit(1)
@@ -503,6 +507,35 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         return True
         
     return False
+
+# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION
+async def send_sniper_alert(p1: str, p2: str, odds: float, fair: float, edge: float, play_type: str, bookie: str = "Market"):
+    """🚀 SOTA: Telegram Sniper Alert für Opening Odds"""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+        
+    message = (
+        f"🚨 *OPENING LINE SNIPER ALERT* 🚨\n\n"
+        f"🎾 *{p1} vs {p2}*\n"
+        f"🎯 Play: `{play_type}`\n"
+        f"💰 Bookie Odds: *{odds}* ({bookie})\n"
+        f"🧠 AI Fair Odds: *{fair}*\n"
+        f"⚡ Edge: *+{edge}%*\n"
+    )
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload, timeout=5.0)
+            log(f"📲 TELEGRAM ALERT GESENDET: {play_type} mit {edge}% Edge!")
+    except Exception as e:
+        log(f"⚠️ Telegram Alert Fehler: {e}")
 
 # =================================================================
 # 3. SOTA MOMENTUM V3 ENGINE (xG Model)
@@ -2253,6 +2286,7 @@ async def run_pipeline():
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                         except: pass
                     else:
+                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
                         data["opening_odds1"] = m['odds1']
                         data["opening_odds2"] = m['odds2']
                         try:
@@ -2260,7 +2294,24 @@ async def run_pipeline():
                             if res_ins.data: 
                                 db_match_id = res_ins.data[0]['id']
                             log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
-                        except: pass
+                            
+                            # 🚀 SOTA: TELEGRAM ALERT SYSTEM TRIGGER (Value > 5% bei Opening)
+                            if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
+                                await send_sniper_alert(full_n1, full_n2, m['odds1'], fair1, val_p1["edge_percent"], f"Moneyline: {full_n1}")
+                            elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
+                                await send_sniper_alert(full_n1, full_n2, m['odds2'], fair2, val_p2["edge_percent"], f"Moneyline: {full_n2}")
+                                
+                            # Alert für Set-Betting Value (2:0)
+                            if "2:0" in sim_result.get('set_probs', {}):
+                                p1_set_prob = sim_result['set_probs']["2:0"]
+                                if p1_set_prob >= 50 and m.get('bookie_set_odds', {}).get("2:0", 0) > 0:
+                                    bookie_s_odds = m['bookie_set_odds']["2:0"]
+                                    fair_s_odds = round(1 / (p1_set_prob / 100), 2)
+                                    set_edge = round(((bookie_s_odds / fair_s_odds) - 1) * 100, 1)
+                                    if set_edge >= 5.0:
+                                        await send_sniper_alert(full_n1, full_n2, bookie_s_odds, fair_s_odds, set_edge, f"Set Betting 2:0 {full_n1}", "bet365")
+                        except Exception as ins_err: 
+                            log(f"Insert Error: {ins_err}")
 
             if db_match_id:
                 should_log_history = False
