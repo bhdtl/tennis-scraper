@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V201.0 - API TENNIS MULTI-BOOKIE EDITION)...")
+log("🔌 Initialisiere Neural Scout (V202.0 - JUICE REEL ENTERPRISE EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -130,6 +130,19 @@ class TennisDataAPI:
                 if data.get('success') == 1 and data.get('result'):
                     return data['result'][0] if isinstance(data['result'], list) and len(data['result']) > 0 else {}
             except Exception as e:
+                pass
+        return {}
+
+    async def get_h2h(self, p1_key: str, p2_key: str) -> Dict:
+        """🚀 JUICE REEL FEATURE: Holt offizielle H2H Daten für zwei Spieler."""
+        url = f"{self.base_url}?method=get_H2H&APIkey={self.api_key}&first_player_key={p1_key}&second_player_key={p2_key}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, timeout=15.0)
+                data = res.json()
+                if data.get('success') == 1 and data.get('result'):
+                    return data['result']
+            except:
                 pass
         return {}
 
@@ -872,27 +885,59 @@ class MarkovChainEngine:
                     else: games_A += 1
                 serves_A = not serves_A
 
-                if games_A == 6 and games_B == 6: return simulate_tiebreak(p_A_wins_on_serve, p_B_wins_on_serve)
-                if games_A >= 6 and games_A - games_B >= 2: return True
-                if games_B >= 6 and games_B - games_A >= 2: return False
+                if games_A == 6 and games_B == 6: 
+                    tb_win = simulate_tiebreak(p_A_wins_on_serve, p_B_wins_on_serve)
+                    return tb_win, games_A + (1 if tb_win else 0), games_B + (0 if tb_win else 1)
+                if games_A >= 6 and games_A - games_B >= 2: return True, games_A, games_B
+                if games_B >= 6 and games_B - games_A >= 2: return False, games_A, games_B
 
+        # 🚀 JUICE REEL TRACKERS: Exact Scores & Handicaps
         match_wins_A, match_wins_B = 0, 0
+        scores_log = {"2:0": 0, "2:1": 0, "0:2": 0, "1:2": 0}
+        total_game_diff_A = 0
+
         for _ in range(iterations):
             sets_A, sets_B = 0, 0
+            games_A_match, games_B_match = 0, 0
+            
             while sets_A < 2 and sets_B < 2:
-                if simulate_set(): sets_A += 1
+                a_won_set, gA, gB = simulate_set()
+                games_A_match += gA
+                games_B_match += gB
+                if a_won_set: sets_A += 1
                 else: sets_B += 1
-            if sets_A == 2: match_wins_A += 1
-            else: match_wins_B += 1
+                
+            if sets_A == 2: 
+                match_wins_A += 1
+                if sets_B == 0: scores_log["2:0"] += 1
+                else: scores_log["2:1"] += 1
+            else: 
+                match_wins_B += 1
+                if sets_A == 0: scores_log["0:2"] += 1
+                else: scores_log["1:2"] += 1
+                
+            total_game_diff_A += (games_A_match - games_B_match)
 
         prob_A = (match_wins_A / iterations) * 100
         prob_B = (match_wins_B / iterations) * 100
+        
+        # Calculate exact percentages for set betting
+        set_betting_probs = {
+            "2:0": round((scores_log["2:0"] / iterations) * 100, 1),
+            "2:1": round((scores_log["2:1"] / iterations) * 100, 1),
+            "0:2": round((scores_log["0:2"] / iterations) * 100, 1),
+            "1:2": round((scores_log["1:2"] / iterations) * 100, 1)
+        }
+        
+        avg_handicap_A = total_game_diff_A / iterations
 
         return {
             "probA": round(prob_A, 1),
             "probB": round(prob_B, 1),
             "scoreA": overall_A,
-            "scoreB": overall_B
+            "scoreB": overall_B,
+            "set_betting_probs": set_betting_probs,
+            "projected_handicap_A": round(avg_handicap_A, 1)
         }
 
 # =================================================================
@@ -1470,7 +1515,7 @@ def format_skills(s: Dict) -> str:
         return "No granular skill data."
     return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
 
-async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results):
+async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
     
@@ -1497,6 +1542,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
 
+    # 🚀 SOTA: We now inject the exact H2H record into the Prompt!
     convictionDirective = ""
     if finalProb_val >= 65.0:
         convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) \nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING."
@@ -1514,6 +1560,8 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     If this accuracy is below 65%, you MUST be more conservative in your tone and acknowledge potential variance. If it is above 70%, be highly assertive about the data trends.
     
     *** DATA GROUNDING (SOURCE OF TRUTH) ***
+    Head-to-Head (H2H): {h2h_record}
+
     Player A ({p1['last_name']}):
     - Style: {p1.get('play_style', 'Unknown')}
     - Form / Momentum: {form1_data['text']}
@@ -1543,7 +1591,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     *** CRITICAL DIRECTIVES (MUST OBEY) ***
     1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages (%), numerical ratings (e.g., 8/10), or skill points in 'prediction_text' and 'key_factor'.
     2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics". Explain how the specific "Court Notes" (bounce height, court speed) amplify a player's strengths or expose their weaknesses.
-    3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses'.
+    3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses' and the H2H stats.
     4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions. If a player is a heavy favorite due to the OVR rating, emphasize their superior "baseline quality" or "fundamental consistency".
     5. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
     
@@ -1627,7 +1675,7 @@ class QuantumGamesSimulator:
                     return (2, 13)
 
     @staticmethod
-    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, iterations: int = 1000) -> Dict[str, Any]:
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, actual_ou_line: float = None, iterations: int = 1000) -> Dict[str, Any]:
         p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
         p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
         
@@ -1650,15 +1698,25 @@ class QuantumGamesSimulator:
             
         total_games_log.sort()
         
-        return {
-            "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
-            "median_games": total_games_log[len(total_games_log)//2],
-            "probabilities": {
+        median = total_games_log[len(total_games_log)//2]
+        
+        # SOTA: If we have an actual bookie line (e.g. 21.5), we calculate the exact probability for THAT line.
+        # Otherwise, we fallback to standard markers.
+        probs = {}
+        if actual_ou_line:
+            probs[f"over_{actual_ou_line}"] = sum(1 for x in total_games_log if x > actual_ou_line) / iterations
+        else:
+            probs = {
                 "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
                 "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
                 "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
                 "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
-            },
+            }
+            
+        return {
+            "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
+            "median_games": median,
+            "probabilities": probs,
             "sim_details": {
                 "p1_est_hold_pct": round(p1_hold_prob * 100, 1), 
                 "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
@@ -1846,19 +1904,16 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V201.0 (API TENNIS MULTI-BOOKIE EDITION) Starting...")
+    log(f"🚀 Neural Scout V202.0 (JUICE REEL EDITION) Starting...")
     
-    # Initialize the new API
     api = TennisDataAPI(API_TENNIS_KEY)
 
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: 
         return
         
-    # 1. API Auditor (Past Results Sync)
     await update_past_results_api(api, players)
         
-    # 2. Self Learning Cycle
     try:
         NeuralOptimizer.trigger_learning_cycle(players, all_skills)
     except Exception as opt_err:
@@ -1866,16 +1921,14 @@ async def run_pipeline():
         
     report_ids = {r['player_id'] for r in all_reports if isinstance(r, dict) and r.get('player_id')}
         
-    # 3. Build Matches Array from API
     matches = []
     
-    # 🚀 SOTA: We fetch today + next 3 days (4 days total)
+    # 🚀 SOTA: Fetch today + next 3 days (4 days total)
     for day_offset in range(0, 4):
         target_date = (datetime.now(timezone.utc) + timedelta(days=day_offset)).strftime('%Y-%m-%d')
         fixtures = await api.get_fixtures(target_date)
         
         for fix in fixtures:
-            # We only want upcoming matches for our prediction engine
             if fix.get("event_status", "") != "": continue
             
             p1_raw = fix.get("event_first_player")
@@ -1887,18 +1940,16 @@ async def run_pipeline():
             
             if not p1_raw or not p2_raw or not match_key: continue
             
-            # Fetch specific odds for this match
             odds_data = await api.get_odds(match_key)
             if not odds_data: continue
             
-            # We look for standard Home/Away odds.
             home_away = odds_data.get("Home/Away", {})
             if not home_away: continue
             
             home_odds_dict = home_away.get("Home", {})
             away_odds_dict = home_away.get("Away", {})
             
-            # 🚀 SOTA: Multi-Bookie Extraction
+            # SOTA: Multi-Bookie Extraction
             bookmaker_odds = {}
             all_bookies = set(list(home_odds_dict.keys()) + list(away_odds_dict.keys()))
             for bookie in all_bookies:
@@ -1907,13 +1958,30 @@ async def run_pipeline():
                     "odds2": to_float(away_odds_dict.get(bookie, 0))
                 }
             
-            # Primary Odds for the Chart (Bet365 preferred)
             o1 = to_float(home_odds_dict.get("bet365") or home_odds_dict.get("1xbet") or next(iter(home_odds_dict.values()), 0))
             o2 = to_float(away_odds_dict.get("bet365") or away_odds_dict.get("1xbet") or next(iter(away_odds_dict.values()), 0))
             
             if o1 <= 1.01 or o2 <= 1.01: continue
             
-            # Construct strict ISO time from API date/time
+            # 🚀 JUICE REEL: Fetch Dynamic Over/Under Line
+            # We look into the API's Over/Under dictionary, find the line closest to 1.85-1.95 odds
+            actual_ou_line = None
+            ou_dict = odds_data.get("Over/Under", {})
+            if ou_dict:
+                # Often the keys are "21.5", "22.5" etc.
+                best_diff = 999.0
+                for line_str, line_odds in ou_dict.items():
+                    try:
+                        line_val = float(line_str)
+                        over_odd = to_float(line_odds.get("bet365") or next(iter(line_odds.values()), 0))
+                        # We want the main line, usually where odds are around 1.83 - 1.95
+                        diff_to_even = abs(over_odd - 1.90)
+                        if diff_to_even < best_diff and over_odd > 1.01:
+                            best_diff = diff_to_even
+                            actual_ou_line = line_val
+                    except:
+                        pass
+
             try:
                 dt = datetime.strptime(f"{e_date} {e_time}", "%Y-%m-%d %H:%M")
                 iso_time = dt.replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1929,7 +1997,8 @@ async def run_pipeline():
                 "time": iso_time, 
                 "odds1": o1, 
                 "odds2": o2,
-                "bookmaker_odds": bookmaker_odds
+                "bookmaker_odds": bookmaker_odds,
+                "actual_ou_line": actual_ou_line
             })
             
     if not matches:
@@ -1955,7 +2024,6 @@ async def run_pipeline():
             if not p1_obj or not p2_obj: 
                 continue
                 
-            # 🚀 SOTA: FULL NAME LOGIC (Save Full Name to DB, but search with Last Name)
             n1_last = p1_obj['last_name']
             n2_last = p2_obj['last_name']
             
@@ -1970,7 +2038,6 @@ async def run_pipeline():
             if not validate_market_integrity(m['odds1'], m['odds2']):
                 continue 
 
-            # Check DB using the safe last_name ilike to ensure we don't duplicate
             res1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").order("created_at", desc=True).limit(1).execute()
             existing_match = res1.data[0] if res1.data else None
             
@@ -1982,7 +2049,6 @@ async def run_pipeline():
                     full_n1, full_n2 = full_n2, full_n1
                     p1_obj, p2_obj = p2_obj, p1_obj
                     m['odds1'], m['odds2'] = m['odds2'], m['odds1']
-                    # Swap bookie odds logically
                     swapped_bookies = {}
                     for b_name, b_odds in m['bookmaker_odds'].items():
                         swapped_bookies[b_name] = {"odds1": b_odds["odds2"], "odds2": b_odds["odds1"]}
@@ -2040,7 +2106,6 @@ async def run_pipeline():
                 p1_history = await fetch_player_history_extended(full_n1, limit=80)
                 p2_history = await fetch_player_history_extended(full_n2, limit=80)
                 
-                # 🚀 SOTA: Fetch API Player Stats for perfectly accurate Surface Ratings
                 api_stats_p1 = []
                 api_stats_p2 = []
                 if m.get('p1_api_key'):
@@ -2054,6 +2119,18 @@ async def run_pipeline():
                 p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2, api_stats_p2)
                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
+
+                # 🚀 JUICE REEL: Echte H2H Abfrage
+                h2h_record = "0 - 0"
+                if m.get('p1_api_key') and m.get('p2_api_key'):
+                    h2h_data = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
+                    if h2h_data and isinstance(h2h_data.get('H2H'), list):
+                        p1_wins, p2_wins = 0, 0
+                        for h2h_match in h2h_data['H2H']:
+                            winner_str = h2h_match.get('event_winner', '')
+                            if winner_str == "First Player": p1_wins += 1
+                            elif winner_str == "Second Player": p2_wins += 1
+                        h2h_record = f"{p1_wins} - {p2_wins}"
 
                 should_run_ai = True
                 if db_match_id and cached_ai:
@@ -2104,7 +2181,7 @@ async def run_pipeline():
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
-                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf)
+                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
                     
                     styleA = p1_obj.get('play_style', '')
                     styleB = p2_obj.get('play_style', '')
@@ -2116,9 +2193,14 @@ async def run_pipeline():
                         iterations=2500
                     )
                     
+                    # 🚀 SOTA: Injecting advanced stats directly into the JSON for the Frontend
+                    sim_result['h2h'] = h2h_record
+                    sim_result['set_probs'] = mc_results['set_betting_probs']
+                    sim_result['projected_handicap'] = mc_results['projected_handicap_A']
+
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
-                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results
+                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
                     )
                     
                     prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
