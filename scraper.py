@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.1 - JUICE REEL QUANT SPREAD EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.2 - JUICE REEL QUANT SPREAD EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -42,7 +42,7 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 
-# 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
+# SOTA: TELEGRAM SNIPER BOT SECRETS
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
@@ -85,7 +85,7 @@ class TennisDataAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.api-tennis.com/tennis/"
-        # 🚀 SOTA: Wir covern jetzt ATP, WTA, Challenger UND ITF
+        # SOTA: Wir covern jetzt ATP, WTA, Challenger UND ITF
         self.valid_tours = [
             "Atp Singles", 
             "Wta Singles", 
@@ -125,7 +125,7 @@ class TennisDataAPI:
         return {}
 
     async def get_player_stats(self, player_key: str) -> Dict:
-        """🚀 SOTA: Holt tiefe historische API-Daten (W/L auf Belägen, Rank etc.) eines Spielers."""
+        """SOTA: Holt tiefe historische API-Daten (W/L auf Belägen, Rank etc.) eines Spielers."""
         url = f"{self.base_url}?method=get_players&APIkey={self.api_key}&player_key={player_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -138,7 +138,7 @@ class TennisDataAPI:
         return {}
 
     async def get_h2h(self, p1_key: str, p2_key: str) -> Dict:
-        """🚀 JUICE REEL FEATURE: Holt offizielle H2H Daten für zwei Spieler."""
+        """JUICE REEL FEATURE: Holt offizielle H2H Daten für zwei Spieler."""
         url = f"{self.base_url}?method=get_H2H&APIkey={self.api_key}&first_player_key={p1_key}&second_player_key={p2_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -508,7 +508,7 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         
     return False
 
-# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION (FULL VALUE SCANNER PARITY)
+# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION
 async def send_sniper_alert(
     p1: str, p2: str,
     opening_odds1: float, opening_odds2: float,
@@ -520,11 +520,10 @@ async def send_sniper_alert(
     h2h_record: str = "N/A",
     bookie: str = "Market"
 ):
-    """🚀 SOTA: Full-Spectrum Telegram Sniper Alert — Opening Line Edition."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
-    # --- 1. EDGE LABEL (analog Value Scanner getEdgeColorClass) ---
+    # --- 1. EDGE LABEL ---
     if edge >= 15.0:
         edge_label = "🔥 HIGH VALUE"
     elif edge >= 8.0:
@@ -534,14 +533,14 @@ async def send_sniper_alert(
     else:
         edge_label = "👀 WATCH"
 
-    # --- 2. FAIR ODDS BLOCK (analog Value Scanner "True Fair" center box) ---
+    # --- 2. FAIR ODDS BLOCK ---
     p1_is_pick = pick_name.lower() in p1.lower() or p1.lower() in pick_name.lower()
     pick_odds   = opening_odds1 if p1_is_pick else opening_odds2
     other_odds  = opening_odds2 if p1_is_pick else opening_odds1
     pick_fair   = fair1 if p1_is_pick else fair2
     other_fair  = fair2 if p1_is_pick else fair1
 
-    # --- 3. HANDICAP LINE (analog Value Scanner "Proj. Spread") ---
+    # --- 3. HANDICAP LINE ---
     projected_handicap = sim_result.get('projected_handicap', None)
     handicap_line_str = ""
     if projected_handicap is not None:
@@ -551,7 +550,7 @@ async def send_sniper_alert(
             sign = "+" if rounded > 0 else ""
             handicap_line_str = f"📐 *Proj\\. Spread:* `{sign}{rounded:.1f} Games` _{pick_name.split()[-1]}_\n"
 
-    # --- 4. SET BETTING PROBS (analog Value Scanner Set Edge) ---
+    # --- 4. SET BETTING PROBS ---
     set_probs = sim_result.get('set_probs', {})
     set_lines = []
     if set_probs:
@@ -567,7 +566,7 @@ async def send_sniper_alert(
                 set_lines.append(f"  • 2:1 {p2.split()[-1]}: *{set_probs['1:2']}%*")
     set_block = ("🎯 *Set Probs:*\n" + "\n".join(set_lines) + "\n") if set_lines else ""
 
-    # --- 5. O/U TOTALS (analog Value Scanner Totals block) ---
+    # --- 5. O/U TOTALS ---
     probabilities = sim_result.get('probabilities', {})
     predicted_line = sim_result.get('predicted_line', None)
     ou_line_str = ""
@@ -583,7 +582,7 @@ async def send_sniper_alert(
     elif predicted_line:
         ou_line_str = f"📊 *Predicted Total:* `{predicted_line} Games`\n"
 
-    # --- 6. LINE SHOPPING (analog Value Scanner "Best Lines" strip) ---
+    # --- 6. LINE SHOPPING ---
     bookie_lines = []
     if bookmaker_odds:
         sorted_bookies = sorted(
@@ -598,7 +597,6 @@ async def send_sniper_alert(
                 bookie_lines.append(f"{star} `{bname.upper()}` → *{bval:.2f}*")
     bookie_block = ("🏦 *Line Shopping:*\n" + "\n".join(bookie_lines) + "\n") if bookie_lines else ""
 
-    # --- ASSEMBLE FULL MESSAGE ---
     message = (
         f"🚨 *OPENING LINE SNIPER* 🚨\n"
         f"_{tournament}_\n\n"
@@ -632,7 +630,7 @@ async def send_sniper_alert(
         log(f"⚠️ Telegram Alert Fehler: {e}")
 
 # =================================================================
-# 3. SOTA MOMENTUM V3 ENGINE (xG Model)
+# 3. SOTA MOMENTUM V3 ENGINE
 # =================================================================
 class MomentumV2Engine:  
     @staticmethod
@@ -1199,8 +1197,8 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
     except: 
         return []
 
-# 🔴 SOTA: THE NEW API AUDITOR (REFAKTORIERT FÜR NACHNAMEN-MATCHING)
 async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
+    # ARCHITECT NOTE: We query NULL actual_winner_name to find unsettled matches.
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
         return
@@ -1221,21 +1219,23 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             is_reversed = False
             
             for pm in list(safe_to_check):
-                db_p1 = pm['player1_name']
-                db_p2 = pm['player2_name']
-                
-                # ARCHITECT FIX: Isoliere die Nachnamen für den Abgleich, da API ("M. Navone") und DB ("Mariano Navone") abweichen!
-                db_p1_last = normalize_db_name(get_last_name(db_p1))
-                db_p2_last = normalize_db_name(get_last_name(db_p2))
+                # SOTA ARCHITECT UPGRADE:
+                # Bevor wir den ineffizienten Difflib String Match nutzen, 
+                # schauen wir zuerst auf unseren neuen O(1) Primary Key!
+                if pm.get('api_match_key') and str(pm['api_match_key']) == str(fix.get('event_key')):
+                    matched_pm = pm
+                    break
+
+                # Fallback für alte DB-Einträge ohne Key:
+                db_p1_last = normalize_db_name(get_last_name(pm['player1_name']))
+                db_p2_last = normalize_db_name(get_last_name(pm['player2_name']))
                 api_p1_last = normalize_db_name(get_last_name(p1_api))
                 api_p2_last = normalize_db_name(get_last_name(p2_api))
                 
-                # Check 1: Direktes Nachnamen-Match (oder sehr nah)
                 if (db_p1_last == api_p1_last and db_p2_last == api_p2_last) or \
                    (get_similarity(db_p1_last, api_p1_last) > 0.80 and get_similarity(db_p2_last, api_p2_last) > 0.80):
                     matched_pm = pm
                     break
-                # Check 2: Reversed Nachnamen-Match
                 elif (db_p1_last == api_p2_last and db_p2_last == api_p1_last) or \
                      (get_similarity(db_p1_last, api_p2_last) > 0.80 and get_similarity(db_p2_last, api_p1_last) > 0.80):
                     matched_pm = pm
@@ -2017,7 +2017,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.1 (JUICE REEL QUANT SPREAD EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.2 (JUICE REEL QUANT SPREAD EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2107,6 +2107,7 @@ async def run_pipeline():
                 "p2_raw": p2_raw,
                 "p1_api_key": fix.get("first_player_key"),
                 "p2_api_key": fix.get("second_player_key"),
+                "api_match_key": match_key,  # 🚀 ARCHITECT FIX: Extraction of API Match Key
                 "tour": tour_name,
                 "time": iso_time, 
                 "odds1": o1, 
@@ -2153,12 +2154,18 @@ async def run_pipeline():
             if not validate_market_integrity(m['odds1'], m['odds2']):
                 continue 
 
-            res1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").order("created_at", desc=True).limit(1).execute()
+            # SOTA Upgrade: Try finding via api_match_key FIRST if it's already there
+            res1 = supabase.table("market_odds").select("*").eq("api_match_key", m['api_match_key']).execute()
             existing_match = res1.data[0] if res1.data else None
-            
+
+            # Fallback to names if api_match_key is not set yet
             if not existing_match:
-                res2 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n2_last}%").ilike("player2_name", f"%{n1_last}%").order("created_at", desc=True).limit(1).execute()
-                existing_match = res2.data[0] if res2.data else None
+                res_fb1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").order("created_at", desc=True).limit(1).execute()
+                existing_match = res_fb1.data[0] if res_fb1.data else None
+                
+            if not existing_match:
+                res_fb2 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n2_last}%").ilike("player2_name", f"%{n1_last}%").order("created_at", desc=True).limit(1).execute()
+                existing_match = res_fb2.data[0] if res_fb2.data else None
                 
                 if existing_match:
                     full_n1, full_n2 = full_n2, full_n1
@@ -2192,7 +2199,13 @@ async def run_pipeline():
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
             
             if is_signal_locked:
-                update_data = {"odds1": m['odds1'], "odds2": m['odds2'], "is_visible_in_scanner": True, "bookmaker_odds": m['bookmaker_odds']}
+                update_data = {
+                    "odds1": m['odds1'], 
+                    "odds2": m['odds2'], 
+                    "is_visible_in_scanner": True, 
+                    "bookmaker_odds": m['bookmaker_odds'],
+                    "api_match_key": m['api_match_key'] # 🚀 ARCHITECT FIX: Update API Key
+                }
                 
                 if final_time_str and not final_time_str.endswith("T00:00:00Z"):
                     update_data["match_time"] = final_time_str
@@ -2302,7 +2315,8 @@ async def run_pipeline():
                                 "ai_fair_odds2": fair2,
                                 "ai_analysis_text": ai_text_final,
                                 "match_time": final_time_str, 
-                                "is_visible_in_scanner": True
+                                "is_visible_in_scanner": True,
+                                "api_match_key": m['api_match_key'] # 🚀 ARCHITECT FIX: Update API Key
                             }).eq("id", db_match_id).execute()
                         except: pass
 
@@ -2331,7 +2345,6 @@ async def run_pipeline():
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                     
-                    # 🚀 SOTA QUANT FIX: Align Deep Stats with Final Blended Probability
                     p1_set_prob = math.pow(prob, 0.65)
                     p2_set_prob = math.pow(1.0 - prob, 0.65)
                     
@@ -2374,7 +2387,8 @@ async def run_pipeline():
                         "odds1": m['odds1'], 
                         "odds2": m['odds2'],
                         "bookmaker_odds": m['bookmaker_odds'],
-                        "is_visible_in_scanner": True 
+                        "is_visible_in_scanner": True,
+                        "api_match_key": m['api_match_key'] # 🚀 ARCHITECT FIX: Insert API Key
                     }
                     
                     hist_fair1 = fair1
