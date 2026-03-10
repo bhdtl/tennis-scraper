@@ -150,6 +150,25 @@ class TennisDataAPI:
                 pass
         return {}
 
+    async def get_fixture_detail(self, match_key: str) -> Dict:
+        """🚀 PRESSURE ENGINE: Holt pointbypoint + scores für ein einzelnes Match.
+        Nur dieser Endpunkt liefert pointbypoint-Daten — bulk requests geben [] zurück.
+        """
+        url = f"{self.base_url}?method=get_fixtures&APIkey={self.api_key}&match_key={match_key}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, timeout=20.0)
+                data = res.json()
+                if data.get('success') == 1 and data.get('result'):
+                    result = data['result']
+                    if isinstance(result, list) and len(result) > 0:
+                        return result[0]
+                    elif isinstance(result, dict):
+                        return result
+            except Exception as e:
+                pass
+        return {}
+
 # =================================================================
 # 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
 # =================================================================
@@ -1240,119 +1259,260 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     is_reversed = True
                     break
 
-            if matched_pm:
-                api_winner = fix.get("event_winner")
-                winner = None
-                if api_winner == "First Player":
-                    winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
-                elif api_winner == "Second Player":
-                    winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
-                    
-                # 🚀 SOTA: Parse granular set scores (6-4 6-2) statt nur Sets-Ergebnis (2 - 0)
-                raw_scores = fix.get("scores", [])
-                if raw_scores and isinstance(raw_scores, list):
-                    set_parts = []
-                    for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0))):
-                        sf = s.get("score_first", "")
-                        ss = s.get("score_second", "")
-                        if sf != "" and ss != "":
-                            if is_reversed:
-                                set_parts.append(f"{ss}-{sf}")
-                            else:
-                                set_parts.append(f"{sf}-{ss}")
-                    final_score = " ".join(set_parts) if set_parts else str(fix.get("event_final_result", ""))
-                else:
-                    final_score = str(fix.get("event_final_result", ""))
-                # Retirement/Walkover erkennen und anhängen
-                status_lower = fix.get("event_status", "").lower()
-                if "ret" in status_lower or "walkover" in status_lower or "w.o" in status_lower:
-                    final_score = (final_score + " ret.").strip()
-                
-                if winner:
-                    supabase.table("market_odds").update({
-                        "actual_winner_name": winner,
-                        "score": final_score
-                    }).eq("id", matched_pm['id']).execute()
+            if not matched_pm:
+                continue
 
-                    p1_name = matched_pm['player1_name']
-                    p2_name = matched_pm['player2_name']
-                    
-                    p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
-                    p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
-                    
-                    if p1_id and p2_id:
-                        try:
-                            skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
-                            db_skills = skills_res.data or []
-                            
-                            p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
-                            p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
-                            
-                            odds1 = to_float(matched_pm.get('odds1', 1.85))
-                            odds2 = to_float(matched_pm.get('odds2', 1.85))
-                            
-                            if p1_skills_db:
-                                new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
-                                if new_s1:
-                                    new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                    supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
-                                    
-                            if p2_skills_db:
-                                new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
-                                if new_s2:
-                                    new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                    supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
-                        except Exception as se: pass
+            api_winner = fix.get("event_winner")
+            winner = None
+            if api_winner == "First Player":
+                winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
+            elif api_winner == "Second Player":
+                winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
 
-                    # 🚀 PRESSURE RATING ENGINE — pointbypoint verarbeiten
-                    pointbypoint_data = fix.get("pointbypoint", [])
-                    match_surface = fix.get("surface", "hard")
+            # 🚀 SOTA: Einzeln-Request für pointbypoint + genaue Scores
+            # Bulk-Requests geben pointbypoint: [] zurück — nur match_key Requests geben die Daten
+            match_key_api = fix.get("event_key", "")
+            fix_detail = {}
+            if match_key_api:
+                fix_detail = await api.get_fixture_detail(str(match_key_api))
 
-                    for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
+            # Score aus Detail-Request (hat scores array), Fallback auf bulk fix
+            score_source = fix_detail if fix_detail.get("scores") else fix
+            raw_scores = score_source.get("scores", [])
+            if raw_scores and isinstance(raw_scores, list):
+                set_parts = []
+                for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0))):
+                    sf = s.get("score_first", "")
+                    ss = s.get("score_second", "")
+                    if sf != "" and ss != "":
+                        if is_reversed:
+                            set_parts.append(f"{ss}-{sf}")
+                        else:
+                            set_parts.append(f"{sf}-{ss}")
+                final_score = " ".join(set_parts) if set_parts else str(fix.get("event_final_result", ""))
+            else:
+                final_score = str(fix.get("event_final_result", ""))
+
+            status_lower = fix.get("event_status", "").lower()
+            if "ret" in status_lower or "walkover" in status_lower or "w.o" in status_lower:
+                final_score = (final_score + " ret.").strip()
+
+            # pointbypoint aus Detail-Request
+            pointbypoint_data = fix_detail.get("pointbypoint", [])
+
+            # Surface aus tournament_name ableiten (API hat kein eigenes surface-Feld)
+            tour_name_lower = fix.get("tournament_name", "").lower()
+            if "clay" in tour_name_lower or "roland" in tour_name_lower or "monte" in tour_name_lower:
+                match_surface = "clay"
+            elif "grass" in tour_name_lower or "wimbledon" in tour_name_lower or "halle" in tour_name_lower or "queen" in tour_name_lower:
+                match_surface = "grass"
+            else:
+                match_surface = "hard"
+
+            if winner:
+                supabase.table("market_odds").update({
+                    "actual_winner_name": winner,
+                    "score": final_score
+                }).eq("id", matched_pm['id']).execute()
+
+                p1_name = matched_pm['player1_name']
+                p2_name = matched_pm['player2_name']
+
+                # Player IDs für beide Spieler separat suchen (unabhängig voneinander)
+                p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
+                p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
+
+                # LiveSkillEngine — läuft wenn beide IDs da sind
+                if p1_id and p2_id:
+                    try:
+                        skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
+                        db_skills = skills_res.data or []
+                        p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
+                        p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
+                        odds1 = to_float(matched_pm.get('odds1', 1.85))
+                        odds2 = to_float(matched_pm.get('odds2', 1.85))
+                        if p1_skills_db:
+                            new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
+                            if new_s1:
+                                new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
+                        if p2_skills_db:
+                            new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
+                            if new_s2:
+                                new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
+                    except Exception as se:
+                        pass
+
+                # Surface Profile + Form + Pressure — läuft für jeden Spieler einzeln
+                for idx_hook, p_name_hook in enumerate([p1_name, p2_name]):
+                    try:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
-                        
-                        p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
-                        is_p1_hook = (p_name_hook == matched_pm['player1_name'] and not is_reversed) or                                      (p_name_hook == matched_pm['player2_name'] and is_reversed)
+                        p_key_hook = fix.get('first_player_key') if idx_hook == 0 else fix.get('second_player_key')
+                        # is_player1 aus API-Perspektive (nicht reversed-korrigiert)
+                        api_is_p1 = (idx_hook == 0)
+                        # Korrektur wenn Spieler in DB vertauscht waren
+                        is_p1_hook = (api_is_p1 and not is_reversed) or (not api_is_p1 and is_reversed)
+                        p_id_hook = p1_id if is_p1_hook else p2_id
+
                         api_stats = []
-                        if p_key:
-                            raw_api_stats = await api.get_player_stats(str(p_key))
+                        if p_key_hook:
+                            raw_api_stats = await api.get_player_stats(str(p_key_hook))
                             api_stats = raw_api_stats.get('stats', [])
-                        
+
                         p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook, api_stats)
                         p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
-                        
                         supabase.table('players').update({
                             'surface_ratings': p_profile,
-                            'form_rating': p_form 
+                            'form_rating': p_form
                         }).ilike('last_name', f"%{p_name_hook}%").execute()
 
-                        # Pressure Stats berechnen und in player_skills mergen
-                        if pointbypoint_data and p_key:
-                            try:
-                                pressure_match = PressureRatingEngine.calculate_from_pointbypoint(
-                                    pointbypoint_data,
-                                    is_player1=is_p1_hook,
-                                    surface=match_surface
+                        # 🧠 PRESSURE RATING ENGINE
+                        if pointbypoint_data and p_id_hook:
+                            pressure_match = PressureRatingEngine.calculate_from_pointbypoint(
+                                pointbypoint_data,
+                                is_player1=api_is_p1,  # API-Perspektive, Engine dreht intern
+                                surface=match_surface
+                            )
+                            # Nur schreiben wenn echte Druckpunkte vorhanden
+                            has_data = (
+                                pressure_match.get("bp_faced", 0) > 0 or
+                                pressure_match.get("bp_opportunities", 0) > 0 or
+                                pressure_match.get("tiebreaks_played", 0) > 0
+                            )
+                            if pressure_match and has_data:
+                                skills_hook_res = supabase.table('player_skills').select('pressure_stats').eq('player_id', p_id_hook).execute()
+                                existing_pressure = {}
+                                if skills_hook_res.data:
+                                    existing_pressure = skills_hook_res.data[0].get('pressure_stats') or {}
+                                merged = PressureRatingEngine.merge_into_existing(
+                                    existing_pressure, pressure_match, match_surface
                                 )
-                                if pressure_match and pressure_match.get("bp_faced", 0) + pressure_match.get("bp_opportunities", 0) > 0:
-                                    p_id_hook = p1_id if is_p1_hook else p2_id
-                                    if p_id_hook:
-                                        skills_hook_res = supabase.table('player_skills').select('pressure_stats').eq('player_id', p_id_hook).execute()
-                                        existing_pressure = {}
-                                        if skills_hook_res.data:
-                                            existing_pressure = skills_hook_res.data[0].get('pressure_stats') or {}
-                                        
-                                        merged = PressureRatingEngine.merge_into_existing(
-                                            existing_pressure, pressure_match, match_surface
-                                        )
-                                        supabase.table('player_skills').update({
-                                            'pressure_stats': merged
-                                        }).eq('player_id', p_id_hook).execute()
-                                        log(f"🧠 Pressure Rating updated: {p_name_hook} → DPR {merged.get('overall', 50.0)}")
-                            except Exception as pre: 
-                                log(f"⚠️ Pressure Rating Error ({p_name_hook}): {pre}")
+                                supabase.table('player_skills').update({
+                                    'pressure_stats': merged
+                                }).eq('player_id', p_id_hook).execute()
+                                log(f"🧠 DPR updated: {p_name_hook} → {merged.get('overall', 50.0)} (n={merged.get('sample_size', 0)})")
+                    except Exception as hook_err:
+                        log(f"⚠️ Player hook error ({p_name_hook}): {hook_err}")
 
-                safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
+            safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
+
+
+
+# =================================================================
+# PRESSURE RATING BACKFILL
+# Läuft separat von update_past_results_api — befüllt pressure_stats
+# für alle Spieler die noch {} haben, anhand bereits gesettleter Matches
+# =================================================================
+async def backfill_pressure_ratings(api: TennisDataAPI, players: List[Dict], max_players: int = 10):
+    """
+    Geht durch player_skills wo pressure_stats = {} oder leer ist,
+    sucht die letzten abgeschlossenen Matches in market_odds,
+    holt pointbypoint via get_fixture_detail und berechnet DPR.
+    Limitiert auf max_players pro Run um API-Requests zu schonen.
+    """
+    log("🧠 [BACKFILL] Starte Pressure Rating Backfill...")
+
+    # Alle player_skills mit leerem pressure_stats holen
+    try:
+        skills_res = supabase.table('player_skills').select('player_id, pressure_stats').execute()
+        all_skills = skills_res.data or []
+    except Exception as e:
+        log(f"⚠️ [BACKFILL] Fehler beim Laden der Skills: {e}")
+        return
+
+    # Nur die ohne echte Daten
+    empty_skills = [
+        s for s in all_skills
+        if not s.get('pressure_stats') or s['pressure_stats'] == {} or s['pressure_stats'] == '{}'
+    ]
+    log(f"🧠 [BACKFILL] {len(empty_skills)} Spieler ohne Pressure Stats gefunden. Verarbeite {max_players}...")
+
+    processed = 0
+    for skill_row in empty_skills:
+        if processed >= max_players:
+            break
+
+        p_id = skill_row['player_id']
+        player_obj = next((p for p in players if p.get('id') == p_id), None)
+        if not player_obj:
+            continue
+
+        p_last_name = player_obj.get('last_name', '')
+        if not p_last_name:
+            continue
+
+        # Letzte abgeschlossene Matches aus market_odds holen
+        try:
+            hist_res = supabase.table('market_odds')                .select('player1_name, player2_name, api_match_key, tournament, created_at')                .or_(f"player1_name.ilike.%{p_last_name}%,player2_name.ilike.%{p_last_name}%")                .not_.is_('actual_winner_name', 'null')                .not_.is_('api_match_key', 'null')                .order('created_at', desc=True)                .limit(15)                .execute()
+            past_matches = hist_res.data or []
+        except Exception as e:
+            continue
+
+        if not past_matches:
+            log(f"  ↳ {p_last_name}: Keine Matches mit api_match_key gefunden")
+            continue
+
+        all_pressure = []
+        fetched = 0
+
+        for pm in past_matches:
+            if fetched >= 5:  # Max 5 pointbypoint-Requests pro Spieler
+                break
+
+            mk = pm.get('api_match_key', '')
+            if not mk:
+                continue
+
+            fix_detail = await api.get_fixture_detail(str(mk))
+            pbp = fix_detail.get('pointbypoint', [])
+            if not pbp:
+                continue
+
+            # Herausfinden ob Spieler p1 oder p2 in diesem Match
+            is_p1 = p_last_name.lower() in pm.get('player1_name', '').lower()
+
+            # Surface aus Tournament ableiten
+            tour_lower = pm.get('tournament', '').lower()
+            if any(x in tour_lower for x in ['clay', 'roland', 'monte', 'barcelona', 'madrid', 'rome', 'hamburg']):
+                surface = 'clay'
+            elif any(x in tour_lower for x in ['grass', 'wimbledon', 'halle', 'queen', 'eastbourne', 'hertogenbosch']):
+                surface = 'grass'
+            else:
+                surface = 'hard'
+
+            pressure_result = PressureRatingEngine.calculate_from_pointbypoint(
+                pbp, is_player1=is_p1, surface=surface
+            )
+
+            has_data = (
+                pressure_result.get('bp_faced', 0) > 0 or
+                pressure_result.get('bp_opportunities', 0) > 0 or
+                pressure_result.get('tiebreaks_played', 0) > 0
+            )
+            if has_data:
+                all_pressure.append((pressure_result, surface))
+                fetched += 1
+
+        if not all_pressure:
+            continue
+
+        # Alle Matches mergen
+        merged = {}
+        for pr, surf in all_pressure:
+            merged = PressureRatingEngine.merge_into_existing(merged, pr, surf)
+
+        # In Supabase schreiben
+        try:
+            supabase.table('player_skills').update({
+                'pressure_stats': merged
+            }).eq('player_id', p_id).execute()
+            log(f"  ✅ {p_last_name}: DPR={merged.get('overall', 50.0)} (n={merged.get('sample_size', 0)}, {fetched} Matches)")
+            processed += 1
+        except Exception as e:
+            log(f"  ⚠️ {p_last_name}: Schreib-Fehler: {e}")
+
+    log(f"🧠 [BACKFILL] Fertig. {processed} Spieler aktualisiert.")
 
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
@@ -2406,6 +2566,13 @@ async def run_pipeline():
         return
         
     await update_past_results_api(api, players)
+
+    # 🧠 PRESSURE BACKFILL: Befüllt pressure_stats für Spieler die noch {} haben
+    # max_players=8 → max ~40 API Requests (5 Matches pro Spieler) — Request-Budget schonend
+    try:
+        await backfill_pressure_ratings(api, players, max_players=8)
+    except Exception as bf_err:
+        log(f"⚠️ Pressure Backfill Exception: {bf_err}")
         
     try:
         NeuralOptimizer.trigger_learning_cycle(players, all_skills)
@@ -2756,7 +2923,8 @@ async def run_pipeline():
                         "odds1": m['odds1'], 
                         "odds2": m['odds2'],
                         "bookmaker_odds": m['bookmaker_odds'],
-                        "is_visible_in_scanner": True 
+                        "is_visible_in_scanner": True,
+                        "api_match_key": str(m.get('event_key', '') or m.get('match_key', ''))
                     }
                     
                     hist_fair1 = fair1
