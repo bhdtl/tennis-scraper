@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
 import numpy as np # SOTA: Required for Neural Grid Search
+from pywebpush import webpush, WebPushException # 🚀 SOTA: Mobile Push Notifications
 
 import httpx
 from supabase import create_client, Client
@@ -45,6 +46,10 @@ API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 # 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# 🚀 SOTA: WEB PUSH SECRETS
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
+VAPID_CLAIMS = {"sub": "mailto:admin@backhandtl.com"} 
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
@@ -628,6 +633,43 @@ async def send_sniper_alert(
             log(f"📲 TELEGRAM FULL ALERT GESENDET: {pick_name} +{edge:.1f}% Edge | {tournament}")
     except Exception as e:
         log(f"⚠️ Telegram Alert Fehler: {e}")
+
+# 🚀 SOTA: NATIVE MOBILE PUSH ALERT
+async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
+    try:
+        if not VAPID_PRIVATE_KEY:
+            return
+
+        subs_res = supabase.table("push_subscriptions").select("subscription").execute()
+        subscriptions = subs_res.data or []
+        
+        if not subscriptions:
+            return
+
+        payload = json.dumps({
+            "title": f"🚨 +{round(edge, 1)}% Edge Detected!",
+            "body": f"Pick: {pick_name} @ {odds} \nTournament: {match_data.get('tournament', 'Unknown')}",
+            "url": "/sniper-feed"
+        })
+
+        success_count = 0
+        for row in subscriptions:
+            sub_data = row['subscription']
+            try:
+                webpush(
+                    subscription_info=sub_data,
+                    data=payload,
+                    vapid_private_key=VAPID_PRIVATE_KEY,
+                    vapid_claims=VAPID_CLAIMS
+                )
+                success_count += 1
+            except WebPushException as ex:
+                pass
+        
+        if success_count > 0:
+            log(f"📲 NATIVE PUSH GESENDET an {success_count} Geräte: {pick_name}")
+    except Exception as e:
+        log(f"⚠️ Global Push Error: {e}")
 
 # =================================================================
 # 3. SOTA MOMENTUM V3 ENGINE (🔥 HYBRID PARSER EDITION)
@@ -2455,14 +2497,18 @@ async def run_pipeline():
                             
                             alert_pick_name = None
                             alert_edge = 0.0
+                            alert_odds = 0.0
                             if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
                                 alert_pick_name = full_n1
                                 alert_edge = val_p1["edge_percent"]
+                                alert_odds = m['odds1']
                             elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
                                 alert_pick_name = full_n2
                                 alert_edge = val_p2["edge_percent"]
+                                alert_odds = m['odds2']
 
                             if alert_pick_name:
+                                await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
                                 await send_sniper_alert(
                                     p1=full_n1,
                                     p2=full_n2,
