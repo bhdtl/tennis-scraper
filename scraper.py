@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.1 - JUICE REEL QUANT SPREAD EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.2 - STABLE ODDS & FAST RESULTS EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -147,25 +147,6 @@ class TennisDataAPI:
                 if data.get('success') == 1 and data.get('result'):
                     return data['result']
             except:
-                pass
-        return {}
-
-    async def get_fixture_detail(self, match_key: str) -> Dict:
-        """🚀 PRESSURE ENGINE: Holt pointbypoint + scores für ein einzelnes Match.
-        Nur dieser Endpunkt liefert pointbypoint-Daten — bulk requests geben [] zurück.
-        """
-        url = f"{self.base_url}?method=get_fixtures&APIkey={self.api_key}&match_key={match_key}"
-        async with httpx.AsyncClient() as client:
-            try:
-                res = await client.get(url, timeout=20.0)
-                data = res.json()
-                if data.get('success') == 1 and data.get('result'):
-                    result = data['result']
-                    if isinstance(result, list) and len(result) > 0:
-                        return result[0]
-                    elif isinstance(result, dict):
-                        return result
-            except Exception as e:
                 pass
         return {}
 
@@ -1224,7 +1205,7 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
     except: 
         return []
 
-# 🔴 SOTA: THE NEW API AUDITOR
+# 🔴 SOTA: THE NEW API AUDITOR (FIXED: BULK SCORE EXTRACTION)
 async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
@@ -1269,21 +1250,13 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             elif api_winner == "Second Player":
                 winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
 
-            # 🚀 SOTA: Einzeln-Request für pointbypoint + genaue Scores
-            # Bulk-Requests geben pointbypoint: [] zurück — nur match_key Requests geben die Daten
-            match_key_api = fix.get("event_key", "")
-            fix_detail = {}
-            if match_key_api:
-                fix_detail = await api.get_fixture_detail(str(match_key_api))
-
-            # Score aus Detail-Request (hat scores array), Fallback auf bulk fix
-            score_source = fix_detail if fix_detail.get("scores") else fix
-            raw_scores = score_source.get("scores", [])
+            # 🚀 SOTA FIX: Extract scores DIRECTLY from get_fixtures (No extra API calls needed!)
+            raw_scores = fix.get("scores", [])
             if raw_scores and isinstance(raw_scores, list):
                 set_parts = []
-                for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0))):
-                    sf = s.get("score_first", "")
-                    ss = s.get("score_second", "")
+                for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0) or 0)):
+                    sf = str(s.get("score_first", ""))
+                    ss = str(s.get("score_second", ""))
                     if sf != "" and ss != "":
                         if is_reversed:
                             set_parts.append(f"{ss}-{sf}")
@@ -1293,15 +1266,13 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             else:
                 final_score = str(fix.get("event_final_result", ""))
 
-            status_lower = fix.get("event_status", "").lower()
+            status_lower = str(fix.get("event_status", "")).lower()
             if "ret" in status_lower or "walkover" in status_lower or "w.o" in status_lower:
-                final_score = (final_score + " ret.").strip()
+                if "ret" not in final_score.lower() and "w.o" not in final_score.lower():
+                    final_score = (final_score + " ret.").strip()
 
-            # pointbypoint aus Detail-Request
-            pointbypoint_data = fix_detail.get("pointbypoint", [])
-
-            # Surface aus tournament_name ableiten (API hat kein eigenes surface-Feld)
-            tour_name_lower = fix.get("tournament_name", "").lower()
+            # Surface aus tournament_name ableiten
+            tour_name_lower = str(fix.get("tournament_name", "")).lower()
             if "clay" in tour_name_lower or "roland" in tour_name_lower or "monte" in tour_name_lower:
                 match_surface = "clay"
             elif "grass" in tour_name_lower or "wimbledon" in tour_name_lower or "halle" in tour_name_lower or "queen" in tour_name_lower:
@@ -1318,7 +1289,7 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 p1_name = matched_pm['player1_name']
                 p2_name = matched_pm['player2_name']
 
-                # Player IDs für beide Spieler separat suchen (unabhängig voneinander)
+                # Player IDs für beide Spieler separat suchen
                 p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
                 p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
 
@@ -1344,17 +1315,12 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     except Exception as se:
                         pass
 
-                # Surface Profile + Form + Pressure — läuft für jeden Spieler einzeln
+                # Surface Profile + Form (Pressure Rating wurde planmäßig amputiert)
                 for idx_hook, p_name_hook in enumerate([p1_name, p2_name]):
                     try:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
                         p_key_hook = fix.get('first_player_key') if idx_hook == 0 else fix.get('second_player_key')
-                        # is_player1 aus API-Perspektive (nicht reversed-korrigiert)
-                        api_is_p1 = (idx_hook == 0)
-                        # Korrektur wenn Spieler in DB vertauscht waren
-                        is_p1_hook = (api_is_p1 and not is_reversed) or (not api_is_p1 and is_reversed)
-                        p_id_hook = p1_id if is_p1_hook else p2_id
-
+                        
                         api_stats = []
                         if p_key_hook:
                             raw_api_stats = await api.get_player_stats(str(p_key_hook))
@@ -1362,48 +1328,19 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
 
                         p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook, api_stats)
                         p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
+                        
                         supabase.table('players').update({
                             'surface_ratings': p_profile,
                             'form_rating': p_form
                         }).ilike('last_name', f"%{p_name_hook}%").execute()
 
-                        # 🧠 PRESSURE RATING ENGINE
-                        if pointbypoint_data and p_id_hook:
-                            pressure_match = PressureRatingEngine.calculate_from_pointbypoint(
-                                pointbypoint_data,
-                                is_player1=api_is_p1,  # API-Perspektive, Engine dreht intern
-                                surface=match_surface
-                            )
-                            # Nur schreiben wenn echte Druckpunkte vorhanden
-                            has_data = (
-                                pressure_match.get("bp_faced", 0) > 0 or
-                                pressure_match.get("bp_opportunities", 0) > 0 or
-                                pressure_match.get("tiebreaks_played", 0) > 0
-                            )
-                            if pressure_match and has_data:
-                                skills_hook_res = supabase.table('player_skills').select('pressure_stats').eq('player_id', p_id_hook).execute()
-                                existing_pressure = {}
-                                if skills_hook_res.data:
-                                    existing_pressure = skills_hook_res.data[0].get('pressure_stats') or {}
-                                merged = PressureRatingEngine.merge_into_existing(
-                                    existing_pressure, pressure_match, match_surface
-                                )
-                                supabase.table('player_skills').update({
-                                    'pressure_stats': merged
-                                }).eq('player_id', p_id_hook).execute()
-                                log(f"🧠 DPR updated: {p_name_hook} → {merged.get('overall', 50.0)} (n={merged.get('sample_size', 0)})")
                     except Exception as hook_err:
                         log(f"⚠️ Player hook error ({p_name_hook}): {hook_err}")
 
             safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
-
-
 # =================================================================
 # FULL PLAYER STATS BACKFILL + KONTINUIERLICHE SYNCHRONISATION
-# Befüllt surface_ratings, form_rating UND pressure_stats für alle Spieler.
-# Beim ersten Run: kompletter Backfill aller Spieler ohne Daten.
-# Danach: kontinuierliche Aktualisierung der zuletzt aktiven Spieler.
 # =================================================================
 
 def _derive_surface_from_tournament(tournament_name: str) -> str:
@@ -1422,33 +1359,24 @@ def _derive_surface_from_tournament(tournament_name: str) -> str:
 
 async def full_backfill_all_players(api: TennisDataAPI, players: List[Dict]):
     """
-    PHASE 1 — Surface + Form (kein API-Call nötig):
-      Berechnet surface_ratings + form_rating für ALLE Spieler aus market_odds history.
-      Läuft komplett ohne API-Requests, nur DB-Queries.
-      
-    PHASE 2 — Pressure Rating (API-Calls nötig):
-      Für Spieler ohne pressure_stats: holt pointbypoint via get_fixture_detail.
-      Budget-aware: max 5 Calls pro Spieler, alle Spieler in einem Run machbar.
-      
-    KONTINUIERLICH:
-      Beide Phasen laufen jeden Run — Phase 1 für alle, Phase 2 nur für leere/veraltete.
+    Berechnet surface_ratings + form_rating für ALLE Spieler aus market_odds history.
+    Läuft komplett ohne API-Requests, nur DB-Queries.
     """
-    log("🚀 [FULL BACKFILL] Starte kompletten Player Stats Sync...")
-    
-    # -------------------------------------------------------
-    # PHASE 1: surface_ratings + form_rating für ALLE Spieler
-    # -------------------------------------------------------
-    log("📊 [PHASE 1] Surface + Form Ratings für alle Spieler...")
+    log("🚀 [FULL BACKFILL] Starte Player Stats Sync (Surface + Form)...")
     
     phase1_updated = 0
     phase1_skipped = 0
 
-    # Alle market_odds auf einmal laden (eine Query statt N Queries)
     try:
-        all_history_res = supabase.table("market_odds")            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text")            .not_.is_("actual_winner_name", "null")            .order("created_at", desc=True)            .limit(5000)            .execute()
+        all_history_res = supabase.table("market_odds") \
+            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text") \
+            .not_.is_("actual_winner_name", "null") \
+            .order("created_at", desc=True) \
+            .limit(5000) \
+            .execute()
         all_history = all_history_res.data or []
     except Exception as e:
-        log(f"⚠️ [PHASE 1] Fehler beim Laden der History: {e}")
+        log(f"⚠️ Fehler beim Laden der History: {e}")
         all_history = []
 
     log(f"  📥 {len(all_history)} historische Matches geladen")
@@ -1460,18 +1388,16 @@ async def full_backfill_all_players(api: TennisDataAPI, players: List[Dict]):
             continue
 
         try:
-            # History aus dem bereits geladenen Bulk-Dataset filtern
             p_hist = [
                 m for m in all_history
-                if p_last_name.lower() in m.get('player1_name', '').lower()
-                or p_last_name.lower() in m.get('player2_name', '').lower()
+                if p_last_name.lower() in str(m.get('player1_name', '')).lower()
+                or p_last_name.lower() in str(m.get('player2_name', '')).lower()
             ][:80]
 
             if not p_hist:
                 phase1_skipped += 1
                 continue
 
-            # Surface Profil + Form berechnen
             p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_last_name)
             p_form    = MomentumV2Engine.calculate_rating(p_hist[:20], p_last_name)
 
@@ -1483,145 +1409,10 @@ async def full_backfill_all_players(api: TennisDataAPI, players: List[Dict]):
             phase1_updated += 1
 
         except Exception as e:
-            log(f"  ⚠️ [PHASE 1] {p_last_name}: {e}")
+            log(f"  ⚠️ {p_last_name}: {e}")
 
-    log(f"  ✅ [PHASE 1] {phase1_updated} Spieler aktualisiert, {phase1_skipped} ohne History übersprungen")
-
-    # -------------------------------------------------------
-    # PHASE 2: pressure_stats via pointbypoint
-    # -------------------------------------------------------
-    log("🧠 [PHASE 2] Pressure Ratings via API pointbypoint...")
-
-    # Alle player_skills laden — welche haben schon Daten?
-    try:
-        skills_res = supabase.table('player_skills')            .select('player_id, pressure_stats, updated_at')            .execute()
-        all_skills = skills_res.data or []
-    except Exception as e:
-        log(f"⚠️ [PHASE 2] Fehler beim Laden der Skills: {e}")
-        return
-
-    # Spieler ohne Daten zuerst, dann nach ältestem updated_at sortiert
-    def pressure_priority(s):
-        ps = s.get('pressure_stats')
-        if not ps or ps == {} or ps == '{}':
-            return 0  # höchste Priorität
-        sample = ps.get('sample_size', 0) if isinstance(ps, dict) else 0
-        return sample  # weniger Matches = höhere Priorität
-
-    all_skills_sorted = sorted(all_skills, key=pressure_priority)
-
-    # Market_odds mit api_match_key laden (für Backfill)
-    try:
-        mk_res = supabase.table('market_odds')            .select('player1_name, player2_name, api_match_key, tournament, created_at')            .not_.is_('actual_winner_name', 'null')            .not_.is_('api_match_key', 'null')            .order('created_at', desc=True)            .limit(3000)            .execute()
-        matches_with_keys = mk_res.data or []
-    except Exception as e:
-        log(f"⚠️ [PHASE 2] Fehler beim Laden der Match-Keys: {e}")
-        matches_with_keys = []
-
-    log(f"  📥 {len(matches_with_keys)} Matches mit api_match_key verfügbar")
-
-    phase2_updated  = 0
-    phase2_no_data  = 0
-    api_calls_made  = 0
-    MAX_API_CALLS   = 600  # Konservatives Budget: 600 Calls für Backfill
-
-    for skill_row in all_skills_sorted:
-        if api_calls_made >= MAX_API_CALLS:
-            log(f"  ⏸️ API-Budget ({MAX_API_CALLS} Calls) erreicht — Rest beim nächsten Run")
-            break
-
-        p_id = skill_row['player_id']
-        player_obj = next((p for p in players if p.get('id') == p_id), None)
-        if not player_obj:
-            continue
-
-        p_last_name = player_obj.get('last_name', '').strip()
-        if not p_last_name:
-            continue
-
-        # Schon genug Sample Size? Dann nur alle 7 Tage refreshen
-        existing_ps = skill_row.get('pressure_stats')
-        if isinstance(existing_ps, dict) and existing_ps.get('sample_size', 0) >= 10:
-            last_upd = existing_ps.get('last_updated', '')
-            if last_upd:
-                try:
-                    days_since = (datetime.now(timezone.utc).date() - 
-                                  datetime.strptime(last_upd, '%Y-%m-%d').date()).days
-                    if days_since < 7:
-                        continue  # Frisch genug
-                except:
-                    pass
-
-        # Matches dieses Spielers mit api_match_key finden
-        player_matches = [
-            m for m in matches_with_keys
-            if p_last_name.lower() in m.get('player1_name', '').lower()
-            or p_last_name.lower() in m.get('player2_name', '').lower()
-        ][:8]  # Max 8 Matches pro Spieler suchen
-
-        if not player_matches:
-            phase2_no_data += 1
-            continue
-
-        all_pressure = []
-        fetched      = 0
-
-        for pm in player_matches:
-            if fetched >= 5 or api_calls_made >= MAX_API_CALLS:
-                break
-
-            mk = str(pm.get('api_match_key', '')).strip()
-            if not mk or mk == 'None':
-                continue
-
-            try:
-                fix_detail = await api.get_fixture_detail(mk)
-                api_calls_made += 1
-            except Exception as e:
-                continue
-
-            pbp = fix_detail.get('pointbypoint', [])
-            if not pbp:
-                continue
-
-            is_p1    = p_last_name.lower() in pm.get('player1_name', '').lower()
-            surface  = _derive_surface_from_tournament(pm.get('tournament', ''))
-
-            pressure_result = PressureRatingEngine.calculate_from_pointbypoint(
-                pbp, is_player1=is_p1, surface=surface
-            )
-
-            has_data = (
-                pressure_result.get('bp_faced', 0) > 0 or
-                pressure_result.get('bp_opportunities', 0) > 0 or
-                pressure_result.get('tiebreaks_played', 0) > 0
-            )
-            if has_data:
-                all_pressure.append((pressure_result, surface))
-                fetched += 1
-
-        if not all_pressure:
-            phase2_no_data += 1
-            continue
-
-        # Alle Matches mergen (auf bestehendes aufbauen falls vorhanden)
-        merged = existing_ps if isinstance(existing_ps, dict) else {}
-        for pr, surf in all_pressure:
-            merged = PressureRatingEngine.merge_into_existing(merged, pr, surf)
-
-        try:
-            supabase.table('player_skills').update({
-                'pressure_stats': merged
-            }).eq('player_id', p_id).execute()
-            phase2_updated += 1
-            log(f"  🧠 {p_last_name}: DPR={merged.get('overall', 50.0)} bp_saved={merged.get('bp_saved', '?')} (n={merged.get('sample_size', 0)})")
-        except Exception as e:
-            log(f"  ⚠️ {p_last_name}: Schreib-Fehler: {e}")
-
-    log(f"  ✅ [PHASE 2] {phase2_updated} Spieler mit Pressure Stats, {phase2_no_data} ohne pointbypoint-Daten, {api_calls_made} API-Calls")
+    log(f"  ✅ {phase1_updated} Spieler aktualisiert, {phase1_skipped} ohne History übersprungen")
     log(f"🏁 [FULL BACKFILL] Abgeschlossen.")
-
-
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
@@ -2215,373 +2006,6 @@ class LiveSkillEngine:
 
         return new_skills
 
-
-# =================================================================
-# 11.5 PRESSURE RATING ENGINE (DYNAMIC CLUTCH INTELLIGENCE)
-# =================================================================
-class PressureRatingEngine:
-    """
-    Berechnet ein dynamisches Pressure Rating (DPR) pro Spieler aus
-    pointbypoint-Daten der API. Basiert auf einem Leverage-Index-Modell:
-    Nicht alle Punkte sind gleich — ein 30-40 BP bei 5-6 im 3. Satz
-    zählt 20x mehr als ein 40-0 Punkt bei 2-0 im 1. Satz.
-    """
-
-    # --- LEVERAGE TABELLE (empirisch, basierend auf Win-Probability-Modellen) ---
-    # Score-String -> Leverage-Gewicht für den Aufschläger
-    SCORE_LEVERAGE = {
-        # Sehr niedrig
-        "40-0":  0.03, "0-40":  0.03,
-        "40-15": 0.06, "15-40": 0.06,
-        # Mittel
-        "30-0":  0.08, "0-30":  0.08,
-        "40-30": 0.15, "30-40": 0.28,  # Break Point / Game Point
-        "15-0":  0.05, "0-15":  0.05,
-        "30-15": 0.09, "15-30": 0.16,
-        "30-30": 0.18,
-        "15-15": 0.10,
-        # Hoch — Deuce & kritische Punkte
-        "Deuce": 0.22,
-        "A-40":  0.18,  # Advantage Aufschläger
-        "40-A":  0.32,  # Advantage Rückschläger (= BP)
-        # Fallback
-        "default": 0.12
-    }
-
-    @staticmethod
-    def _get_leverage(score_str: str, is_tiebreak: bool, set_score_srv: int,
-                      set_score_ret: int, sets_srv: int, sets_ret: int,
-                      total_sets: int) -> float:
-        """Berechnet den Leverage-Index für einen einzelnen Punkt."""
-        base = PressureRatingEngine.SCORE_LEVERAGE.get(
-            score_str,
-            PressureRatingEngine.SCORE_LEVERAGE["default"]
-        )
-
-        # Tiebreak-Multiplikator: Punkte ab 5-5 sind kritisch
-        if is_tiebreak:
-            tb_score = score_str.replace(" ", "")
-            parts = tb_score.split("-") if "-" in tb_score else []
-            if len(parts) == 2:
-                try:
-                    a, b = int(parts[0]), int(parts[1])
-                    min_score = min(a, b)
-                    if min_score >= 5:
-                        base *= 2.5
-                    elif min_score >= 3:
-                        base *= 1.5
-                except:
-                    pass
-            else:
-                base *= 1.8  # genereller Tiebreak-Bonus
-
-        # Set-Kontext-Multiplikator: Welcher Satz und wie steht es?
-        # Letzter möglicher Satz (Best-of-3 = Satz 3, Best-of-5 = Satz 5)
-        current_set = sets_srv + sets_ret + 1
-        is_deciding_set = (total_sets == 3 and current_set == 3) or \
-                          (total_sets == 5 and current_set == 5)
-        if is_deciding_set:
-            base *= 2.0
-
-        # Spätes Spielstand-Momentum (6-5 im Set beim Aufschlag)
-        if set_score_srv == 5 and set_score_ret == 6:
-            base *= 1.8  # Aufschläger muss seinen Aufschlag halten oder verliert Set
-        elif set_score_srv == 6 and set_score_ret == 5:
-            base *= 1.6  # Aufschläger kann Set beenden
-
-        return round(base, 4)
-
-    @staticmethod
-    def _parse_score_context(score_str: str) -> tuple:
-        """
-        Erkennt ob Score ein Tiebreak-Score ist und gibt
-        (is_tiebreak, normalized_score) zurück.
-        """
-        s = score_str.strip()
-        # Tiebreak-Scores sind reine Zahlen wie "5 - 3" oder "6-6"
-        tiebreak_pattern = re.match(r'^(\d+)\s*[-–]\s*(\d+)$', s)
-        if tiebreak_pattern:
-            return True, s
-        return False, s
-
-    @staticmethod
-    def calculate_from_pointbypoint(
-        pointbypoint: List[Dict],
-        is_player1: bool,
-        surface: str = "hard"
-    ) -> Dict[str, Any]:
-        """
-        Hauptmethode: Verarbeitet das pointbypoint-Array eines Matches
-        und gibt alle Pressure-Metriken zurück.
-
-        is_player1: True wenn der Spieler "First Player" in der API ist
-        """
-        if not pointbypoint:
-            return {}
-
-        # Akkumulatoren
-        total_leverage       = 0.0
-        won_leverage         = 0.0
-
-        bp_faced             = 0      # Break Points gegen uns (wir schlagen auf)
-        bp_saved             = 0
-        bp_opportunities     = 0      # Break Points für uns (wir retournieren)
-        bp_converted         = 0
-
-        sp_faced             = 0      # Set Points gegen uns
-        sp_saved             = 0
-        sp_opportunities     = 0      # Set Points für uns
-        sp_converted         = 0
-
-        mp_faced             = 0      # Match Points gegen uns
-        mp_saved             = 0
-        mp_opportunities     = 0
-        mp_converted         = 0
-
-        tiebreaks_played     = 0
-        tiebreaks_won        = 0
-
-        sets_srv             = 0      # Sätze gewonnen (Aufschläger-Perspektive)
-        sets_ret             = 0
-        total_sets_in_match  = 0
-
-        # Zähle Gesamtsätze für deciding-set Erkennung
-        total_sets_in_match = len(pointbypoint)
-
-        for game_data in pointbypoint:
-            # Wer schlägt auf in diesem Game?
-            player_served_str = str(game_data.get("player_served", "")).lower()
-            we_serve = (is_player1 and "first" in player_served_str) or \
-                       (not is_player1 and "second" in player_served_str)
-
-            set_number_raw = str(game_data.get("set_number", "Set 1"))
-            is_tiebreak_game = "tiebreak" in set_number_raw.lower() or \
-                               "tie" in set_number_raw.lower()
-
-            # Set-Stand für Leverage
-            set_score_raw = str(game_data.get("score", "0 - 0"))
-            set_parts = set_score_raw.split("-")
-            try:
-                set_srv = int(set_parts[0].strip()) if we_serve else int(set_parts[1].strip())
-                set_ret = int(set_parts[1].strip()) if we_serve else int(set_parts[0].strip())
-            except:
-                set_srv, set_ret = 0, 0
-
-            # Tiebreak-Tracking
-            if is_tiebreak_game:
-                tiebreaks_played += 1
-                # Wer hat den Tiebreak gewonnen?
-                tb_winner = str(game_data.get("serve_winner", "")).lower()
-                if (is_player1 and "first" in tb_winner) or \
-                   (not is_player1 and "second" in tb_winner):
-                    tiebreaks_won += 1
-
-            prev_srv_pts = 0
-            prev_ret_pts = 0
-
-            def score_to_pts(s_val):
-                s_val = str(s_val).strip().upper()
-                if s_val == "0": return 0
-                if s_val == "15": return 1
-                if s_val == "30": return 2
-                if s_val == "40": return 3
-                if s_val == "A": return 4
-                return 0
-
-            points = game_data.get("points", [])
-            if not points:
-                continue
-
-            for pt in points:
-                raw_score = str(pt.get("score", "")).strip()
-                is_tb, norm_score = PressureRatingEngine._parse_score_context(raw_score)
-
-                leverage = PressureRatingEngine._get_leverage(
-                    norm_score, is_tiebreak_game or is_tb,
-                    set_srv, set_ret,
-                    sets_srv, sets_ret,
-                    total_sets_in_match
-                )
-
-                # 🚀 SOTA FIX: INFER POINT WINNER FROM SCORE PROGRESSION
-                # API Tennis does not provide serve_winner on the point level, only on the game level.
-                srv_won_this_point = False
-                parts = norm_score.split("-")
-                
-                if len(parts) == 2:
-                    if is_tiebreak_game or is_tb:
-                        try:
-                            cur_srv = int(parts[0].strip())
-                            cur_ret = int(parts[1].strip())
-                            if cur_srv > prev_srv_pts:
-                                srv_won_this_point = True
-                            prev_srv_pts, prev_ret_pts = cur_srv, cur_ret
-                        except:
-                            pass
-                    else:
-                        cur_srv_str = parts[0].strip()
-                        cur_ret_str = parts[1].strip()
-                        cur_srv = score_to_pts(cur_srv_str)
-                        cur_ret = score_to_pts(cur_ret_str)
-                        
-                        if cur_srv_str == "A":
-                            srv_won_this_point = True
-                        elif cur_srv > prev_srv_pts and cur_ret_str != "A":
-                            srv_won_this_point = True
-                            
-                        prev_srv_pts, prev_ret_pts = cur_srv, cur_ret
-
-                # Leverage akkumulieren
-                total_leverage += leverage
-                if srv_won_this_point:
-                    won_leverage += leverage
-
-                # --- BREAK POINTS ---
-                is_bp = pt.get("break_point") not in (None, "", "null", False)
-                if is_bp:
-                    if we_serve:
-                        # BP gegen uns — können wir es abwehren?
-                        bp_faced += 1
-                        if srv_won_this_point:
-                            bp_saved += 1
-                    else:
-                        # BP für uns — können wir es nutzen?
-                        bp_opportunities += 1
-                        if srv_won_this_point:
-                            bp_converted += 1
-
-                # --- SET POINTS ---
-                is_sp = pt.get("set_point") not in (None, "", "null", False)
-                if is_sp:
-                    if we_serve:
-                        sp_faced += 1
-                        if srv_won_this_point:
-                            sp_saved += 1
-                    else:
-                        sp_opportunities += 1
-                        if srv_won_this_point:
-                            sp_converted += 1
-
-                # --- MATCH POINTS ---
-                is_mp = pt.get("match_point") not in (None, "", "null", False)
-                if is_mp:
-                    if we_serve:
-                        mp_faced += 1
-                        if srv_won_this_point:
-                            mp_saved += 1
-                    else:
-                        mp_opportunities += 1
-                        if srv_won_this_point:
-                            mp_converted += 1
-
-        # --- SCORES BERECHNEN ---
-        def safe_rate(won, total, default=50.0):
-            return round((won / total) * 100, 1) if total > 0 else default
-
-        leverage_score   = round((won_leverage / total_leverage) * 100, 1) if total_leverage > 0 else 50.0
-        bp_saved_rate    = safe_rate(bp_saved, bp_faced)
-        bp_conv_rate     = safe_rate(bp_converted, bp_opportunities)
-        sp_saved_rate    = safe_rate(sp_saved, sp_faced)
-        sp_conv_rate     = safe_rate(sp_converted, sp_opportunities)
-        mp_saved_rate    = safe_rate(mp_saved, mp_faced)
-        mp_conv_rate     = safe_rate(mp_converted, mp_opportunities)
-        tb_win_rate      = safe_rate(tiebreaks_won, tiebreaks_played)
-
-        # --- GESAMT DPR (0-100) ---
-        # Gewichtete Kombination aller Pressure-Metriken
-        components = []
-        weights    = []
-
-        if bp_faced >= 2:
-            components.append(bp_saved_rate);    weights.append(2.5)
-        if bp_opportunities >= 2:
-            components.append(bp_conv_rate);     weights.append(2.0)
-        if tiebreaks_played >= 1:
-            components.append(tb_win_rate);      weights.append(1.5)
-        if total_leverage > 0:
-            components.append(leverage_score);   weights.append(3.0)
-        if sp_faced >= 1:
-            components.append(sp_saved_rate);    weights.append(1.0)
-        if mp_faced >= 1:
-            components.append(mp_saved_rate);    weights.append(2.0)
-
-        if components:
-            dpr = sum(c * w for c, w in zip(components, weights)) / sum(weights)
-            dpr = round(max(0.0, min(100.0, dpr)), 1)
-        else:
-            dpr = 50.0
-
-        return {
-            "dpr":                dpr,
-            "leverage_score":     leverage_score,
-            "bp_saved_rate":      bp_saved_rate,
-            "bp_conv_rate":       bp_conv_rate,
-            "sp_saved_rate":      sp_saved_rate,
-            "sp_conv_rate":       sp_conv_rate,
-            "mp_saved_rate":      mp_saved_rate,
-            "mp_conv_rate":       mp_conv_rate,
-            "tb_win_rate":        tb_win_rate,
-            # Sample sizes für Confidence
-            "bp_faced":           bp_faced,
-            "bp_opportunities":   bp_opportunities,
-            "tiebreaks_played":   tiebreaks_played,
-            "high_leverage_pts":  round(total_leverage, 2),
-        }
-
-    @staticmethod
-    def merge_into_existing(existing: Dict, new_match: Dict, surface: str) -> Dict:
-        """
-        Merged neue Match-Daten in das bestehende pressure_stats JSON.
-        Nutzt gewichteten gleitenden Durchschnitt — ältere Matches
-        verlieren langsam an Gewicht (Decay-Faktor 0.85).
-        """
-        if not existing:
-            existing = {}
-
-        DECAY = 0.85  # Ältere Matches zählen 15% weniger
-
-        def blend(old_val, new_val, old_n, new_n, decay=DECAY):
-            """Gewichteter gleitender Durchschnitt mit Decay."""
-            if old_n == 0:
-                return new_val
-            old_weight = old_n * decay
-            return round((old_val * old_weight + new_val * new_n) / (old_weight + new_n), 1)
-
-        surf_key = SurfaceIntelligence.normalize_surface_key(surface)
-
-        # Overall stats updaten
-        n_old = existing.get("sample_size", 0)
-        n_new = 1  # ein Match
-
-        updated = {
-            "overall":     blend(existing.get("overall", 50.0),     new_match.get("dpr", 50.0),         n_old, n_new),
-            "bp_saved":    blend(existing.get("bp_saved", 50.0),    new_match.get("bp_saved_rate", 50.0), n_old, n_new),
-            "bp_conv":     blend(existing.get("bp_conv", 50.0),     new_match.get("bp_conv_rate", 50.0),  n_old, n_new),
-            "leverage":    blend(existing.get("leverage", 50.0),    new_match.get("leverage_score", 50.0),n_old, n_new),
-            "tiebreak":    blend(existing.get("tiebreak", 50.0),    new_match.get("tb_win_rate", 50.0),   n_old, n_new),
-            "sp_saved":    blend(existing.get("sp_saved", 50.0),    new_match.get("sp_saved_rate", 50.0), n_old, n_new),
-            "mp_saved":    blend(existing.get("mp_saved", 50.0),    new_match.get("mp_saved_rate", 50.0), n_old, n_new),
-            "sample_size": n_old + 1,
-            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-        }
-
-        # Surface-Split updaten
-        by_surface = existing.get("by_surface", {})
-        surf_existing = by_surface.get(surf_key, {})
-        surf_n_old = surf_existing.get("sample_size", 0)
-
-        by_surface[surf_key] = {
-            "overall":   blend(surf_existing.get("overall", 50.0),  new_match.get("dpr", 50.0),          surf_n_old, 1),
-            "bp_saved":  blend(surf_existing.get("bp_saved", 50.0), new_match.get("bp_saved_rate", 50.0), surf_n_old, 1),
-            "bp_conv":   blend(surf_existing.get("bp_conv", 50.0),  new_match.get("bp_conv_rate", 50.0),  surf_n_old, 1),
-            "leverage":  blend(surf_existing.get("leverage", 50.0), new_match.get("leverage_score", 50.0),surf_n_old, 1),
-            "tiebreak":  blend(surf_existing.get("tiebreak", 50.0), new_match.get("tb_win_rate", 50.0),   surf_n_old, 1),
-            "sample_size": surf_n_old + 1,
-        }
-
-        updated["by_surface"] = by_surface
-        return updated
-
 # =================================================================
 # 12. FANTASY SETTLEMENT ENGINE
 # =================================================================
@@ -2700,7 +2124,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.1 (JUICE REEL QUANT SPREAD EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.2 (STABLE ODDS & FAST RESULTS EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2710,9 +2134,6 @@ async def run_pipeline():
         
     await update_past_results_api(api, players)
 
-    # 🚀 FULL PLAYER STATS SYNC
-    # Phase 1: surface_ratings + form_rating für ALLE (kein API-Call)
-    # Phase 2: pressure_stats für Spieler ohne/veraltete Daten (API-Budget-aware)
     try:
         await full_backfill_all_players(api, players)
     except Exception as bf_err:
@@ -2892,9 +2313,12 @@ async def run_pipeline():
                     supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                 except:
                     pass
-                    
-                hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
-                hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
+                
+                # SOTA FIX: Guarding against missing/0 values in DB
+                temp_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
+                temp_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
+                hist_fair1 = temp_fair1 if temp_fair1 >= 1.01 else m['odds1']
+                hist_fair2 = temp_fair2 if temp_fair2 >= 1.01 else m['odds2']
                 
             else:
                 cached_ai = {}
@@ -2961,203 +2385,4 @@ async def run_pipeline():
                     if odds_diff <= (m['odds1'] * 0.05) and not is_stale: 
                         should_run_ai = False
                 
-                if not should_run_ai:
-                    new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
-                    fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
-                    fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                    
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
-                    
-                    value_tag = ""
-                    if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
-                        hist_is_value = True
-                        hist_pick_player = full_n1
-                    elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
-                        hist_is_value = True
-                        hist_pick_player = full_n2
-                        
-                    ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
-                    hist_fair1 = fair1
-                    hist_fair2 = fair2
-                    
-                    if db_match_id:
-                        try:
-                            supabase.table("market_odds").update({
-                                "odds1": m['odds1'], 
-                                "odds2": m['odds2'], 
-                                "bookmaker_odds": m['bookmaker_odds'],
-                                "ai_fair_odds1": fair1, 
-                                "ai_fair_odds2": fair2,
-                                "ai_analysis_text": ai_text_final,
-                                "match_time": final_time_str, 
-                                "is_visible_in_scanner": True
-                            }).eq("id", db_match_id).execute()
-                        except: pass
-
-                else:
-                    log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
-                    
-                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
-                    
-                    styleA = p1_obj.get('play_style', '')
-                    styleB = p2_obj.get('play_style', '')
-                    
-                    mc_results = MarkovChainEngine.run_simulation(
-                        s1=s1, s2=s2,
-                        formA=p1_form_v2['score'], formB=p2_form_v2['score'],
-                        bsi=bsi, styleA=styleA, styleB=styleB,
-                        iterations=2500
-                    )
-                    
-                    ai = await analyze_match_with_ai(
-                        matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
-                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
-                    )
-                    
-                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
-                    
-                    fair1 = round(1/prob, 2) if prob > 0.01 else 99
-                    fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                    
-                    # 🚀 SOTA QUANT FIX: Align Deep Stats with Final Blended Probability
-                    p1_set_prob = math.pow(prob, 0.65)
-                    p2_set_prob = math.pow(1.0 - prob, 0.65)
-                    
-                    sim_result['h2h'] = h2h_record
-                    sim_result['set_probs'] = {
-                        "2:0": round((p1_set_prob * p1_set_prob) * 100, 1),
-                        "2:1": round((prob - (p1_set_prob * p1_set_prob)) * 100, 1),
-                        "0:2": round((p2_set_prob * p2_set_prob) * 100, 1),
-                        "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
-                    }
-                    
-                    # If prob = 0.40 (Underdog), difference is -0.10. Handicap is -0.10 * 100 * 0.14 = -1.4 Games Difference
-                    # Meaning Player A loses by 1.4 games.
-                    sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
-                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
-                    
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
-                    
-                    value_tag = ""
-                    if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
-                        hist_is_value = True
-                        hist_pick_player = full_n1
-                    elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
-                        hist_is_value = True
-                        hist_pick_player = full_n2
-                    
-                    ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
-
-                    data = {
-                        "player1_name": full_n1, 
-                        "player2_name": full_n2, 
-                        "tournament": matched_tour_name,
-                        "ai_fair_odds1": fair1, 
-                        "ai_fair_odds2": fair2,
-                        "ai_analysis_text": ai_text_final, 
-                        "games_prediction": sim_result, 
-                        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
-                        "match_time": final_time_str, 
-                        "odds1": m['odds1'], 
-                        "odds2": m['odds2'],
-                        "bookmaker_odds": m['bookmaker_odds'],
-                        "is_visible_in_scanner": True,
-                        "api_match_key": str(m.get('event_key', '') or m.get('match_key', ''))
-                    }
-                    
-                    hist_fair1 = fair1
-                    hist_fair2 = fair2
-                    
-                    if db_match_id: 
-                        try:
-                            supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
-                        except: pass
-                    else:
-                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
-                        data["opening_odds1"] = m['odds1']
-                        data["opening_odds2"] = m['odds2']
-                        try:
-                            res_ins = supabase.table("market_odds").insert(data).execute()
-                            if res_ins.data: 
-                                db_match_id = res_ins.data[0]['id']
-                            log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
-                            
-                            # 🚀 SOTA: TELEGRAM FULL-SPECTRUM ALERT (Opening Line — Value Scanner Parity)
-                            # Bestimme welcher Spieler der Value Pick ist (analog processedMatches im Scanner)
-                            alert_pick_name = None
-                            alert_edge = 0.0
-                            if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
-                                alert_pick_name = full_n1
-                                alert_edge = val_p1["edge_percent"]
-                            elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
-                                alert_pick_name = full_n2
-                                alert_edge = val_p2["edge_percent"]
-
-                            if alert_pick_name:
-                                await send_sniper_alert(
-                                    p1=full_n1,
-                                    p2=full_n2,
-                                    opening_odds1=m['odds1'],
-                                    opening_odds2=m['odds2'],
-                                    fair1=fair1,
-                                    fair2=fair2,
-                                    edge=alert_edge,
-                                    pick_name=alert_pick_name,
-                                    tournament=matched_tour_name,
-                                    sim_result=sim_result,
-                                    bookmaker_odds=m.get('bookmaker_odds', {}),
-                                    h2h_record=h2h_record,
-                                    bookie="Opening"
-                                )
-                        except Exception as ins_err: 
-                            log(f"Insert Error: {ins_err}")
-
-            if db_match_id:
-                should_log_history = False
-                if not existing_match:
-                    should_log_history = True
-                elif is_signal_locked or hist_is_value: 
-                    should_log_history = True
-                else:
-                    try:
-                        old_o1 = to_float(existing_match.get('odds1'), 0)
-                        old_o2 = to_float(existing_match.get('odds2'), 0)
-                        if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
-                            should_log_history = True
-                    except: pass
-                
-                if should_log_history:
-                    h_data = {
-                        "match_id": db_match_id, 
-                        "odds1": m['odds1'], 
-                        "odds2": m['odds2'], 
-                        "fair_odds1": hist_fair1, 
-                        "fair_odds2": hist_fair2, 
-                        "is_hunter_pick": (hist_is_value or is_signal_locked),
-                        "pick_player_name": "LOCKED" if is_signal_locked else hist_pick_player,
-                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    }
-                    try: 
-                        supabase.table("odds_history").insert(h_data).execute()
-                    except: pass
-
-        except Exception as e: 
-            log(f"⚠️ Match Error bei Iteration: {e}")
-            
-    log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
-            
-    try:
-        FantasySettlementEngine.run_settlement()
-    except Exception as e:
-        log(f"⚠️ FANTASY ENGINE ERROR: {e}")
-        
-    log("🏁 Cycle Finished.")
-
-if __name__ == "__main__":
-    asyncio.run(run_pipeline())
+                if
