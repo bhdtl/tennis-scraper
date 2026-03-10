@@ -29,6 +29,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pywebpush  # 🚀 SOTA FIX: Bulletproof Fallback für Native Push
 
       - name: Install Playwright & System Deps
         run: |
@@ -42,5 +43,10 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}             # Public Anon Key usually
           API_TENNIS_KEY: ${{ secrets.API_TENNIS_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Admin Key for bypass RLS
+          
+          # 🚀 SOTA UPGRADE: Push Notifications & Telegram Auth
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python scraper.py
