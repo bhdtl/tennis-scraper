@@ -34,7 +34,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.2 - STABLE ODDS & FAST RESULTS EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.1 - JUICE REEL QUANT SPREAD EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1205,7 +1205,7 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
     except: 
         return []
 
-# 🔴 SOTA: THE NEW API AUDITOR (FIXED: BULK SCORE EXTRACTION)
+# 🔴 SOTA: THE NEW API AUDITOR
 async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
@@ -1240,179 +1240,71 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     is_reversed = True
                     break
 
-            if not matched_pm:
-                continue
-
-            api_winner = fix.get("event_winner")
-            winner = None
-            if api_winner == "First Player":
-                winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
-            elif api_winner == "Second Player":
-                winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
-
-            # 🚀 SOTA FIX: Extract scores DIRECTLY from get_fixtures (No extra API calls needed!)
-            raw_scores = fix.get("scores", [])
-            if raw_scores and isinstance(raw_scores, list):
-                set_parts = []
-                for s in sorted(raw_scores, key=lambda x: int(x.get("score_set", 0) or 0)):
-                    sf = str(s.get("score_first", ""))
-                    ss = str(s.get("score_second", ""))
-                    if sf != "" and ss != "":
-                        if is_reversed:
-                            set_parts.append(f"{ss}-{sf}")
-                        else:
-                            set_parts.append(f"{sf}-{ss}")
-                final_score = " ".join(set_parts) if set_parts else str(fix.get("event_final_result", ""))
-            else:
+            if matched_pm:
+                api_winner = fix.get("event_winner")
+                winner = None
+                if api_winner == "First Player":
+                    winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
+                elif api_winner == "Second Player":
+                    winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
+                    
                 final_score = str(fix.get("event_final_result", ""))
+                
+                if winner:
+                    supabase.table("market_odds").update({
+                        "actual_winner_name": winner,
+                        "score": final_score
+                    }).eq("id", matched_pm['id']).execute()
 
-            status_lower = str(fix.get("event_status", "")).lower()
-            if "ret" in status_lower or "walkover" in status_lower or "w.o" in status_lower:
-                if "ret" not in final_score.lower() and "w.o" not in final_score.lower():
-                    final_score = (final_score + " ret.").strip()
+                    p1_name = matched_pm['player1_name']
+                    p2_name = matched_pm['player2_name']
+                    
+                    p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
+                    p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
+                    
+                    if p1_id and p2_id:
+                        try:
+                            skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
+                            db_skills = skills_res.data or []
+                            
+                            p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
+                            p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
+                            
+                            odds1 = to_float(matched_pm.get('odds1', 1.85))
+                            odds2 = to_float(matched_pm.get('odds2', 1.85))
+                            
+                            if p1_skills_db:
+                                new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
+                                if new_s1:
+                                    new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
+                                    
+                            if p2_skills_db:
+                                new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
+                                if new_s2:
+                                    new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                    supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
+                        except Exception as se: pass
 
-            # Surface aus tournament_name ableiten
-            tour_name_lower = str(fix.get("tournament_name", "")).lower()
-            if "clay" in tour_name_lower or "roland" in tour_name_lower or "monte" in tour_name_lower:
-                match_surface = "clay"
-            elif "grass" in tour_name_lower or "wimbledon" in tour_name_lower or "halle" in tour_name_lower or "queen" in tour_name_lower:
-                match_surface = "grass"
-            else:
-                match_surface = "hard"
-
-            if winner:
-                supabase.table("market_odds").update({
-                    "actual_winner_name": winner,
-                    "score": final_score
-                }).eq("id", matched_pm['id']).execute()
-
-                p1_name = matched_pm['player1_name']
-                p2_name = matched_pm['player2_name']
-
-                # Player IDs für beide Spieler separat suchen
-                p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
-                p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
-
-                # LiveSkillEngine — läuft wenn beide IDs da sind
-                if p1_id and p2_id:
-                    try:
-                        skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
-                        db_skills = skills_res.data or []
-                        p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
-                        p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
-                        odds1 = to_float(matched_pm.get('odds1', 1.85))
-                        odds2 = to_float(matched_pm.get('odds2', 1.85))
-                        if p1_skills_db:
-                            new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
-                            if new_s1:
-                                new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
-                        if p2_skills_db:
-                            new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
-                            if new_s2:
-                                new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
-                    except Exception as se:
-                        pass
-
-                # Surface Profile + Form (Pressure Rating wurde planmäßig amputiert)
-                for idx_hook, p_name_hook in enumerate([p1_name, p2_name]):
-                    try:
+                    for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
-                        p_key_hook = fix.get('first_player_key') if idx_hook == 0 else fix.get('second_player_key')
                         
+                        p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
                         api_stats = []
-                        if p_key_hook:
-                            raw_api_stats = await api.get_player_stats(str(p_key_hook))
+                        if p_key:
+                            raw_api_stats = await api.get_player_stats(str(p_key))
                             api_stats = raw_api_stats.get('stats', [])
-
+                        
                         p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook, api_stats)
                         p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                         
                         supabase.table('players').update({
                             'surface_ratings': p_profile,
-                            'form_rating': p_form
+                            'form_rating': p_form 
                         }).ilike('last_name', f"%{p_name_hook}%").execute()
 
-                    except Exception as hook_err:
-                        log(f"⚠️ Player hook error ({p_name_hook}): {hook_err}")
+                safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
-            safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
-
-# =================================================================
-# FULL PLAYER STATS BACKFILL + KONTINUIERLICHE SYNCHRONISATION
-# =================================================================
-
-def _derive_surface_from_tournament(tournament_name: str) -> str:
-    """Leitet Surface aus Tournament-Namen ab."""
-    t = tournament_name.lower()
-    if any(x in t for x in ['clay', 'roland', 'monte', 'barcelona', 'madrid', 'rome',
-                              'hamburg', 'geneva', 'lyon', 'bucharest', 'marrakech',
-                              'estoril', 'munich', 'istanbul', 'gstaad', 'umag',
-                              'bastad', 'kitzbuhel', 'cordoba', 'buenos aires', 'rio']):
-        return 'clay'
-    elif any(x in t for x in ['grass', 'wimbledon', 'halle', 'queen', 'eastbourne',
-                               'hertogenbosch', 'mallorca', 'newport', 'birmingham',
-                               "s-hertogenbosch", 'nottingham']):
-        return 'grass'
-    return 'hard'
-
-async def full_backfill_all_players(api: TennisDataAPI, players: List[Dict]):
-    """
-    Berechnet surface_ratings + form_rating für ALLE Spieler aus market_odds history.
-    Läuft komplett ohne API-Requests, nur DB-Queries.
-    """
-    log("🚀 [FULL BACKFILL] Starte Player Stats Sync (Surface + Form)...")
-    
-    phase1_updated = 0
-    phase1_skipped = 0
-
-    try:
-        all_history_res = supabase.table("market_odds") \
-            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text") \
-            .not_.is_("actual_winner_name", "null") \
-            .order("created_at", desc=True) \
-            .limit(5000) \
-            .execute()
-        all_history = all_history_res.data or []
-    except Exception as e:
-        log(f"⚠️ Fehler beim Laden der History: {e}")
-        all_history = []
-
-    log(f"  📥 {len(all_history)} historische Matches geladen")
-
-    for player_obj in players:
-        p_id = player_obj.get('id')
-        p_last_name = player_obj.get('last_name', '').strip()
-        if not p_id or not p_last_name:
-            continue
-
-        try:
-            p_hist = [
-                m for m in all_history
-                if p_last_name.lower() in str(m.get('player1_name', '')).lower()
-                or p_last_name.lower() in str(m.get('player2_name', '')).lower()
-            ][:80]
-
-            if not p_hist:
-                phase1_skipped += 1
-                continue
-
-            p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_last_name)
-            p_form    = MomentumV2Engine.calculate_rating(p_hist[:20], p_last_name)
-
-            supabase.table('players').update({
-                'surface_ratings': p_profile,
-                'form_rating':     p_form
-            }).eq('id', p_id).execute()
-
-            phase1_updated += 1
-
-        except Exception as e:
-            log(f"  ⚠️ {p_last_name}: {e}")
-
-    log(f"  ✅ {phase1_updated} Spieler aktualisiert, {phase1_skipped} ohne History übersprungen")
-    log(f"🏁 [FULL BACKFILL] Abgeschlossen.")
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
@@ -2124,7 +2016,7 @@ class FantasySettlementEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.2 (STABLE ODDS & FAST RESULTS EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.1 (JUICE REEL QUANT SPREAD EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2133,11 +2025,6 @@ async def run_pipeline():
         return
         
     await update_past_results_api(api, players)
-
-    try:
-        await full_backfill_all_players(api, players)
-    except Exception as bf_err:
-        log(f"⚠️ Full Backfill Exception: {bf_err}")
         
     try:
         NeuralOptimizer.trigger_learning_cycle(players, all_skills)
@@ -2313,12 +2200,9 @@ async def run_pipeline():
                     supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                 except:
                     pass
-                
-                # SOTA FIX: Guarding against missing/0 values in DB
-                temp_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
-                temp_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
-                hist_fair1 = temp_fair1 if temp_fair1 >= 1.01 else m['odds1']
-                hist_fair2 = temp_fair2 if temp_fair2 >= 1.01 else m['odds2']
+                    
+                hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
+                hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
                 
             else:
                 cached_ai = {}
@@ -2385,4 +2269,202 @@ async def run_pipeline():
                     if odds_diff <= (m['odds1'] * 0.05) and not is_stale: 
                         should_run_ai = False
                 
-                if
+                if not should_run_ai:
+                    new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
+                    fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
+                    fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
+                    
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                    
+                    value_tag = ""
+                    if val_p1["is_value"]: 
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        hist_is_value = True
+                        hist_pick_player = full_n1
+                    elif val_p2["is_value"]: 
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        hist_is_value = True
+                        hist_pick_player = full_n2
+                        
+                    ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
+                    hist_fair1 = fair1
+                    hist_fair2 = fair2
+                    
+                    if db_match_id:
+                        try:
+                            supabase.table("market_odds").update({
+                                "odds1": m['odds1'], 
+                                "odds2": m['odds2'], 
+                                "bookmaker_odds": m['bookmaker_odds'],
+                                "ai_fair_odds1": fair1, 
+                                "ai_fair_odds2": fair2,
+                                "ai_analysis_text": ai_text_final,
+                                "match_time": final_time_str, 
+                                "is_visible_in_scanner": True
+                            }).eq("id", db_match_id).execute()
+                        except: pass
+
+                else:
+                    log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
+                    
+                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
+                    
+                    styleA = p1_obj.get('play_style', '')
+                    styleB = p2_obj.get('play_style', '')
+                    
+                    mc_results = MarkovChainEngine.run_simulation(
+                        s1=s1, s2=s2,
+                        formA=p1_form_v2['score'], formB=p2_form_v2['score'],
+                        bsi=bsi, styleA=styleA, styleB=styleB,
+                        iterations=2500
+                    )
+                    
+                    ai = await analyze_match_with_ai(
+                        matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
+                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
+                    )
+                    
+                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
+                    
+                    fair1 = round(1/prob, 2) if prob > 0.01 else 99
+                    fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
+                    
+                    # 🚀 SOTA QUANT FIX: Align Deep Stats with Final Blended Probability
+                    p1_set_prob = math.pow(prob, 0.65)
+                    p2_set_prob = math.pow(1.0 - prob, 0.65)
+                    
+                    sim_result['h2h'] = h2h_record
+                    sim_result['set_probs'] = {
+                        "2:0": round((p1_set_prob * p1_set_prob) * 100, 1),
+                        "2:1": round((prob - (p1_set_prob * p1_set_prob)) * 100, 1),
+                        "0:2": round((p2_set_prob * p2_set_prob) * 100, 1),
+                        "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
+                    }
+                    
+                    # If prob = 0.40 (Underdog), difference is -0.10. Handicap is -0.10 * 100 * 0.14 = -1.4 Games Difference
+                    # Meaning Player A loses by 1.4 games.
+                    sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
+                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
+                    
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                    
+                    value_tag = ""
+                    if val_p1["is_value"]: 
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        hist_is_value = True
+                        hist_pick_player = full_n1
+                    elif val_p2["is_value"]: 
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        hist_is_value = True
+                        hist_pick_player = full_n2
+                    
+                    ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
+
+                    data = {
+                        "player1_name": full_n1, 
+                        "player2_name": full_n2, 
+                        "tournament": matched_tour_name,
+                        "ai_fair_odds1": fair1, 
+                        "ai_fair_odds2": fair2,
+                        "ai_analysis_text": ai_text_final, 
+                        "games_prediction": sim_result, 
+                        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), 
+                        "match_time": final_time_str, 
+                        "odds1": m['odds1'], 
+                        "odds2": m['odds2'],
+                        "bookmaker_odds": m['bookmaker_odds'],
+                        "is_visible_in_scanner": True 
+                    }
+                    
+                    hist_fair1 = fair1
+                    hist_fair2 = fair2
+                    
+                    if db_match_id: 
+                        try:
+                            supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
+                        except: pass
+                    else:
+                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
+                        data["opening_odds1"] = m['odds1']
+                        data["opening_odds2"] = m['odds2']
+                        try:
+                            res_ins = supabase.table("market_odds").insert(data).execute()
+                            if res_ins.data: 
+                                db_match_id = res_ins.data[0]['id']
+                            log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
+                            
+                            # 🚀 SOTA: TELEGRAM FULL-SPECTRUM ALERT (Opening Line — Value Scanner Parity)
+                            # Bestimme welcher Spieler der Value Pick ist (analog processedMatches im Scanner)
+                            alert_pick_name = None
+                            alert_edge = 0.0
+                            if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
+                                alert_pick_name = full_n1
+                                alert_edge = val_p1["edge_percent"]
+                            elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
+                                alert_pick_name = full_n2
+                                alert_edge = val_p2["edge_percent"]
+
+                            if alert_pick_name:
+                                await send_sniper_alert(
+                                    p1=full_n1,
+                                    p2=full_n2,
+                                    opening_odds1=m['odds1'],
+                                    opening_odds2=m['odds2'],
+                                    fair1=fair1,
+                                    fair2=fair2,
+                                    edge=alert_edge,
+                                    pick_name=alert_pick_name,
+                                    tournament=matched_tour_name,
+                                    sim_result=sim_result,
+                                    bookmaker_odds=m.get('bookmaker_odds', {}),
+                                    h2h_record=h2h_record,
+                                    bookie="Opening"
+                                )
+                        except Exception as ins_err: 
+                            log(f"Insert Error: {ins_err}")
+
+            if db_match_id:
+                should_log_history = False
+                if not existing_match:
+                    should_log_history = True
+                elif is_signal_locked or hist_is_value: 
+                    should_log_history = True
+                else:
+                    try:
+                        old_o1 = to_float(existing_match.get('odds1'), 0)
+                        old_o2 = to_float(existing_match.get('odds2'), 0)
+                        if round(old_o1, 3) != round(m['odds1'], 3) or round(old_o2, 3) != round(m['odds2'], 3):
+                            should_log_history = True
+                    except: pass
+                
+                if should_log_history:
+                    h_data = {
+                        "match_id": db_match_id, 
+                        "odds1": m['odds1'], 
+                        "odds2": m['odds2'], 
+                        "fair_odds1": hist_fair1, 
+                        "fair_odds2": hist_fair2, 
+                        "is_hunter_pick": (hist_is_value or is_signal_locked),
+                        "pick_player_name": "LOCKED" if is_signal_locked else hist_pick_player,
+                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    }
+                    try: 
+                        supabase.table("odds_history").insert(h_data).execute()
+                    except: pass
+
+        except Exception as e: 
+            log(f"⚠️ Match Error bei Iteration: {e}")
+            
+    log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
+            
+    try:
+        FantasySettlementEngine.run_settlement()
+    except Exception as e:
+        log(f"⚠️ FANTASY ENGINE ERROR: {e}")
+        
+    log("🏁 Cycle Finished.")
+
+if __name__ == "__main__":
+    asyncio.run(run_pipeline())
