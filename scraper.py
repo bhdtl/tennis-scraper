@@ -520,10 +520,7 @@ async def send_sniper_alert(
     h2h_record: str = "N/A",
     bookie: str = "Market"
 ):
-    """🚀 SOTA: Full-Spectrum Telegram Sniper Alert — Opening Line Edition.
-    Spiegelt exakt den Value Scanner: Fair Odds, Handicap, Set Probs, O/U, Line Shopping.
-    Wird NUR bei neuen Matches gefeuert (Opening Odds = maximale Early Value Chance).
-    """
+    """🚀 SOTA: Full-Spectrum Telegram Sniper Alert — Opening Line Edition."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
@@ -548,7 +545,6 @@ async def send_sniper_alert(
     projected_handicap = sim_result.get('projected_handicap', None)
     handicap_line_str = ""
     if projected_handicap is not None:
-        # pick perspective: positive = pick wins more games
         active_fair_line = projected_handicap if p1_is_pick else -projected_handicap
         if abs(active_fair_line) >= 1.0:
             rounded = round(active_fair_line * 2) / 2
@@ -575,7 +571,6 @@ async def send_sniper_alert(
     probabilities = sim_result.get('probabilities', {})
     predicted_line = sim_result.get('predicted_line', None)
     ou_line_str = ""
-    # Prioritize the dynamic bookie-matched line first
     dynamic_key = next((k for k in probabilities if k.startswith('over_') and k not in ['over_20_5', 'over_21_5', 'over_22_5', 'over_23_5']), None)
     if dynamic_key:
         line_val = dynamic_key.replace('over_', '').replace('_', '.')
@@ -591,13 +586,12 @@ async def send_sniper_alert(
     # --- 6. LINE SHOPPING (analog Value Scanner "Best Lines" strip) ---
     bookie_lines = []
     if bookmaker_odds:
-        # Sort by pick odds descending — best price first
         sorted_bookies = sorted(
             bookmaker_odds.items(),
             key=lambda x: x[1].get('odds1', 0) if p1_is_pick else x[1].get('odds2', 0),
             reverse=True
         )
-        for bname, bodds in sorted_bookies[:5]:  # Max 5 bookies like scanner
+        for bname, bodds in sorted_bookies[:5]: 
             bval = bodds.get('odds1', 0) if p1_is_pick else bodds.get('odds2', 0)
             if bval > 1.01:
                 star = "⭐" if bval == pick_odds else "  "
@@ -781,7 +775,7 @@ class MomentumV2Engine:
         }
 
 # =================================================================
-# 4. SURFACE INTELLIGENCE ENGINE (NOW EMPOWERED BY API)
+# 4. SURFACE INTELLIGENCE ENGINE
 # =================================================================
 class SurfaceIntelligence:
     @staticmethod
@@ -1205,7 +1199,7 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 80) 
     except: 
         return []
 
-# 🔴 SOTA: THE NEW API AUDITOR
+# 🔴 SOTA: THE NEW API AUDITOR (REFAKTORIERT FÜR NACHNAMEN-MATCHING)
 async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
     pending = supabase.table("market_odds").select("*").is_("actual_winner_name", "null").execute().data
     if not pending or not isinstance(pending, list): 
@@ -1230,12 +1224,20 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 db_p1 = pm['player1_name']
                 db_p2 = pm['player2_name']
                 
-                if (get_similarity(normalize_db_name(db_p1), normalize_db_name(p1_api)) > 0.75 and 
-                    get_similarity(normalize_db_name(db_p2), normalize_db_name(p2_api)) > 0.75):
+                # ARCHITECT FIX: Isoliere die Nachnamen für den Abgleich, da API ("M. Navone") und DB ("Mariano Navone") abweichen!
+                db_p1_last = normalize_db_name(get_last_name(db_p1))
+                db_p2_last = normalize_db_name(get_last_name(db_p2))
+                api_p1_last = normalize_db_name(get_last_name(p1_api))
+                api_p2_last = normalize_db_name(get_last_name(p2_api))
+                
+                # Check 1: Direktes Nachnamen-Match (oder sehr nah)
+                if (db_p1_last == api_p1_last and db_p2_last == api_p2_last) or \
+                   (get_similarity(db_p1_last, api_p1_last) > 0.80 and get_similarity(db_p2_last, api_p2_last) > 0.80):
                     matched_pm = pm
                     break
-                elif (get_similarity(normalize_db_name(db_p1), normalize_db_name(p2_api)) > 0.75 and 
-                      get_similarity(normalize_db_name(db_p2), normalize_db_name(p1_api)) > 0.75):
+                # Check 2: Reversed Nachnamen-Match
+                elif (db_p1_last == api_p2_last and db_p2_last == api_p1_last) or \
+                     (get_similarity(db_p1_last, api_p2_last) > 0.80 and get_similarity(db_p2_last, api_p1_last) > 0.80):
                     matched_pm = pm
                     is_reversed = True
                     break
@@ -1304,7 +1306,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                         }).ilike('last_name', f"%{p_name_hook}%").execute()
 
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
-
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
@@ -2342,8 +2343,6 @@ async def run_pipeline():
                         "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
                     }
                     
-                    # If prob = 0.40 (Underdog), difference is -0.10. Handicap is -0.10 * 100 * 0.14 = -1.4 Games Difference
-                    # Meaning Player A loses by 1.4 games.
                     sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
                     sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
                     
@@ -2386,7 +2385,6 @@ async def run_pipeline():
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
                         except: pass
                     else:
-                        # 🚀 SOTA: Set the anchor! Opening Odds are locked in ONLY at first creation.
                         data["opening_odds1"] = m['odds1']
                         data["opening_odds2"] = m['odds2']
                         try:
@@ -2395,8 +2393,6 @@ async def run_pipeline():
                                 db_match_id = res_ins.data[0]['id']
                             log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
                             
-                            # 🚀 SOTA: TELEGRAM FULL-SPECTRUM ALERT (Opening Line — Value Scanner Parity)
-                            # Bestimme welcher Spieler der Value Pick ist (analog processedMatches im Scanner)
                             alert_pick_name = None
                             alert_edge = 0.0
                             if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
