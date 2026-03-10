@@ -1304,10 +1304,15 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                                     supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
                         except Exception as se: pass
 
+                    # 🚀 PRESSURE RATING ENGINE — pointbypoint verarbeiten
+                    pointbypoint_data = fix.get("pointbypoint", [])
+                    match_surface = fix.get("surface", "hard")
+
                     for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
                         
                         p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
+                        is_p1_hook = (p_name_hook == matched_pm['player1_name'] and not is_reversed) or                                      (p_name_hook == matched_pm['player2_name'] and is_reversed)
                         api_stats = []
                         if p_key:
                             raw_api_stats = await api.get_player_stats(str(p_key))
@@ -1320,6 +1325,32 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                             'surface_ratings': p_profile,
                             'form_rating': p_form 
                         }).ilike('last_name', f"%{p_name_hook}%").execute()
+
+                        # Pressure Stats berechnen und in player_skills mergen
+                        if pointbypoint_data and p_key:
+                            try:
+                                pressure_match = PressureRatingEngine.calculate_from_pointbypoint(
+                                    pointbypoint_data,
+                                    is_player1=is_p1_hook,
+                                    surface=match_surface
+                                )
+                                if pressure_match and pressure_match.get("bp_faced", 0) + pressure_match.get("bp_opportunities", 0) > 0:
+                                    p_id_hook = p1_id if is_p1_hook else p2_id
+                                    if p_id_hook:
+                                        skills_hook_res = supabase.table('player_skills').select('pressure_stats').eq('player_id', p_id_hook).execute()
+                                        existing_pressure = {}
+                                        if skills_hook_res.data:
+                                            existing_pressure = skills_hook_res.data[0].get('pressure_stats') or {}
+                                        
+                                        merged = PressureRatingEngine.merge_into_existing(
+                                            existing_pressure, pressure_match, match_surface
+                                        )
+                                        supabase.table('player_skills').update({
+                                            'pressure_stats': merged
+                                        }).eq('player_id', p_id_hook).execute()
+                                        log(f"🧠 Pressure Rating updated: {p_name_hook} → DPR {merged.get('overall', 50.0)}")
+                            except Exception as pre: 
+                                log(f"⚠️ Pressure Rating Error ({p_name_hook}): {pre}")
 
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
@@ -1915,6 +1946,338 @@ class LiveSkillEngine:
             new_skills[k] = max(1.0, min(99.0, round(v, 2)))
 
         return new_skills
+
+
+# =================================================================
+# 11.5 PRESSURE RATING ENGINE (DYNAMIC CLUTCH INTELLIGENCE)
+# =================================================================
+class PressureRatingEngine:
+    """
+    Berechnet ein dynamisches Pressure Rating (DPR) pro Spieler aus
+    pointbypoint-Daten der API. Basiert auf einem Leverage-Index-Modell:
+    Nicht alle Punkte sind gleich — ein 30-40 BP bei 5-6 im 3. Satz
+    zählt 20x mehr als ein 40-0 Punkt bei 2-0 im 1. Satz.
+    """
+
+    # --- LEVERAGE TABELLE (empirisch, basierend auf Win-Probability-Modellen) ---
+    # Score-String -> Leverage-Gewicht für den Aufschläger
+    SCORE_LEVERAGE = {
+        # Sehr niedrig
+        "40-0":  0.03, "0-40":  0.03,
+        "40-15": 0.06, "15-40": 0.06,
+        # Mittel
+        "30-0":  0.08, "0-30":  0.08,
+        "40-30": 0.15, "30-40": 0.28,  # Break Point / Game Point
+        "15-0":  0.05, "0-15":  0.05,
+        "30-15": 0.09, "15-30": 0.16,
+        "30-30": 0.18,
+        "15-15": 0.10,
+        # Hoch — Deuce & kritische Punkte
+        "Deuce": 0.22,
+        "A-40":  0.18,  # Advantage Aufschläger
+        "40-A":  0.32,  # Advantage Rückschläger (= BP)
+        # Fallback
+        "default": 0.12
+    }
+
+    @staticmethod
+    def _get_leverage(score_str: str, is_tiebreak: bool, set_score_srv: int,
+                      set_score_ret: int, sets_srv: int, sets_ret: int,
+                      total_sets: int) -> float:
+        """Berechnet den Leverage-Index für einen einzelnen Punkt."""
+        base = PressureRatingEngine.SCORE_LEVERAGE.get(
+            score_str,
+            PressureRatingEngine.SCORE_LEVERAGE["default"]
+        )
+
+        # Tiebreak-Multiplikator: Punkte ab 5-5 sind kritisch
+        if is_tiebreak:
+            tb_score = score_str.replace(" ", "")
+            parts = tb_score.split("-") if "-" in tb_score else []
+            if len(parts) == 2:
+                try:
+                    a, b = int(parts[0]), int(parts[1])
+                    min_score = min(a, b)
+                    if min_score >= 5:
+                        base *= 2.5
+                    elif min_score >= 3:
+                        base *= 1.5
+                except:
+                    pass
+            else:
+                base *= 1.8  # genereller Tiebreak-Bonus
+
+        # Set-Kontext-Multiplikator: Welcher Satz und wie steht es?
+        # Letzter möglicher Satz (Best-of-3 = Satz 3, Best-of-5 = Satz 5)
+        current_set = sets_srv + sets_ret + 1
+        is_deciding_set = (total_sets == 3 and current_set == 3) or                           (total_sets == 5 and current_set == 5)
+        if is_deciding_set:
+            base *= 2.0
+
+        # Spätes Spielstand-Momentum (6-5 im Set beim Aufschlag)
+        if set_score_srv == 5 and set_score_ret == 6:
+            base *= 1.8  # Aufschläger muss seinen Aufschlag halten oder verliert Set
+        elif set_score_srv == 6 and set_score_ret == 5:
+            base *= 1.6  # Aufschläger kann Set beenden
+
+        return round(base, 4)
+
+    @staticmethod
+    def _parse_score_context(score_str: str) -> tuple:
+        """
+        Erkennt ob Score ein Tiebreak-Score ist und gibt
+        (is_tiebreak, normalized_score) zurück.
+        """
+        s = score_str.strip()
+        # Tiebreak-Scores sind reine Zahlen wie "5 - 3" oder "6-6"
+        tiebreak_pattern = re.match(r'^(\d+)\s*[-–]\s*(\d+)$', s)
+        if tiebreak_pattern:
+            return True, s
+        return False, s
+
+    @staticmethod
+    def calculate_from_pointbypoint(
+        pointbypoint: List[Dict],
+        is_player1: bool,
+        surface: str = "hard"
+    ) -> Dict[str, Any]:
+        """
+        Hauptmethode: Verarbeitet das pointbypoint-Array eines Matches
+        und gibt alle Pressure-Metriken zurück.
+
+        is_player1: True wenn der Spieler "First Player" in der API ist
+        """
+        if not pointbypoint:
+            return {}
+
+        # Akkumulatoren
+        total_leverage       = 0.0
+        won_leverage         = 0.0
+
+        bp_faced             = 0      # Break Points gegen uns (wir schlagen auf)
+        bp_saved             = 0
+        bp_opportunities     = 0      # Break Points für uns (wir retournieren)
+        bp_converted         = 0
+
+        sp_faced             = 0      # Set Points gegen uns
+        sp_saved             = 0
+        sp_opportunities     = 0      # Set Points für uns
+        sp_converted         = 0
+
+        mp_faced             = 0      # Match Points gegen uns
+        mp_saved             = 0
+        mp_opportunities     = 0
+        mp_converted         = 0
+
+        tiebreaks_played     = 0
+        tiebreaks_won        = 0
+
+        sets_srv             = 0      # Sätze gewonnen (Aufschläger-Perspektive)
+        sets_ret             = 0
+        total_sets_in_match  = 0
+
+        # Zähle Gesamtsätze für deciding-set Erkennung
+        total_sets_in_match = len(pointbypoint)
+
+        for game_data in pointbypoint:
+            # Wer schlägt auf in diesem Game?
+            player_served_str = str(game_data.get("player_served", "")).lower()
+            we_serve = (is_player1 and "first" in player_served_str) or                        (not is_player1 and "second" in player_served_str)
+
+            set_number_raw = str(game_data.get("set_number", "Set 1"))
+            is_tiebreak_game = "tiebreak" in set_number_raw.lower() or                                "tie" in set_number_raw.lower()
+
+            # Set-Stand für Leverage
+            set_score_raw = str(game_data.get("score", "0 - 0"))
+            set_parts = set_score_raw.split("-")
+            try:
+                set_srv = int(set_parts[0].strip()) if we_serve else int(set_parts[1].strip())
+                set_ret = int(set_parts[1].strip()) if we_serve else int(set_parts[0].strip())
+            except:
+                set_srv, set_ret = 0, 0
+
+            # Tiebreak-Tracking
+            if is_tiebreak_game:
+                tiebreaks_played += 1
+                # Wer hat den Tiebreak gewonnen?
+                tb_winner = str(game_data.get("serve_winner", "")).lower()
+                if (is_player1 and "first" in tb_winner) or                    (not is_player1 and "second" in tb_winner):
+                    tiebreaks_won += 1
+
+            points = game_data.get("points", [])
+            if not points:
+                continue
+
+            for pt in points:
+                raw_score = str(pt.get("score", "")).strip()
+                is_tb, norm_score = PressureRatingEngine._parse_score_context(raw_score)
+
+                leverage = PressureRatingEngine._get_leverage(
+                    norm_score, is_tiebreak_game or is_tb,
+                    set_srv, set_ret,
+                    sets_srv, sets_ret,
+                    total_sets_in_match
+                )
+
+                # Wer hat diesen Punkt gewonnen?
+                srv_won_str = str(pt.get("serve_winner", "")).lower()
+                if srv_won_str == "" or srv_won_str == "none":
+                    # Fallback: serve_lost
+                    srv_lost_str = str(pt.get("serve_lost", "")).lower()
+                    srv_won_this_point = "first" not in srv_lost_str if is_player1 else "second" not in srv_lost_str
+                else:
+                    srv_won_this_point = ("first" in srv_won_str) if is_player1 else ("second" in srv_won_str)
+
+                # Leverage akkumulieren
+                total_leverage += leverage
+                if srv_won_this_point:
+                    won_leverage += leverage
+
+                # --- BREAK POINTS ---
+                is_bp = pt.get("break_point") not in (None, "", "null", False)
+                if is_bp:
+                    if we_serve:
+                        # BP gegen uns — können wir es abwehren?
+                        bp_faced += 1
+                        if srv_won_this_point:
+                            bp_saved += 1
+                    else:
+                        # BP für uns — können wir es nutzen?
+                        bp_opportunities += 1
+                        if srv_won_this_point:
+                            bp_converted += 1
+
+                # --- SET POINTS ---
+                is_sp = pt.get("set_point") not in (None, "", "null", False)
+                if is_sp:
+                    if we_serve:
+                        sp_faced += 1
+                        if srv_won_this_point:
+                            sp_saved += 1
+                    else:
+                        sp_opportunities += 1
+                        if srv_won_this_point:
+                            sp_converted += 1
+
+                # --- MATCH POINTS ---
+                is_mp = pt.get("match_point") not in (None, "", "null", False)
+                if is_mp:
+                    if we_serve:
+                        mp_faced += 1
+                        if srv_won_this_point:
+                            mp_saved += 1
+                    else:
+                        mp_opportunities += 1
+                        if srv_won_this_point:
+                            mp_converted += 1
+
+        # --- SCORES BERECHNEN ---
+        def safe_rate(won, total, default=50.0):
+            return round((won / total) * 100, 1) if total > 0 else default
+
+        leverage_score   = round((won_leverage / total_leverage) * 100, 1) if total_leverage > 0 else 50.0
+        bp_saved_rate    = safe_rate(bp_saved, bp_faced)
+        bp_conv_rate     = safe_rate(bp_converted, bp_opportunities)
+        sp_saved_rate    = safe_rate(sp_saved, sp_faced)
+        sp_conv_rate     = safe_rate(sp_converted, sp_opportunities)
+        mp_saved_rate    = safe_rate(mp_saved, mp_faced)
+        mp_conv_rate     = safe_rate(mp_converted, mp_opportunities)
+        tb_win_rate      = safe_rate(tiebreaks_won, tiebreaks_played)
+
+        # --- GESAMT DPR (0-100) ---
+        # Gewichtete Kombination aller Pressure-Metriken
+        components = []
+        weights    = []
+
+        if bp_faced >= 2:
+            components.append(bp_saved_rate);    weights.append(2.5)
+        if bp_opportunities >= 2:
+            components.append(bp_conv_rate);     weights.append(2.0)
+        if tiebreaks_played >= 1:
+            components.append(tb_win_rate);      weights.append(1.5)
+        if total_leverage > 0:
+            components.append(leverage_score);   weights.append(3.0)
+        if sp_faced >= 1:
+            components.append(sp_saved_rate);    weights.append(1.0)
+        if mp_faced >= 1:
+            components.append(mp_saved_rate);    weights.append(2.0)
+
+        if components:
+            dpr = sum(c * w for c, w in zip(components, weights)) / sum(weights)
+            dpr = round(max(0.0, min(100.0, dpr)), 1)
+        else:
+            dpr = 50.0
+
+        return {
+            "dpr":                dpr,
+            "leverage_score":     leverage_score,
+            "bp_saved_rate":      bp_saved_rate,
+            "bp_conv_rate":       bp_conv_rate,
+            "sp_saved_rate":      sp_saved_rate,
+            "sp_conv_rate":       sp_conv_rate,
+            "mp_saved_rate":      mp_saved_rate,
+            "mp_conv_rate":       mp_conv_rate,
+            "tb_win_rate":        tb_win_rate,
+            # Sample sizes für Confidence
+            "bp_faced":           bp_faced,
+            "bp_opportunities":   bp_opportunities,
+            "tiebreaks_played":   tiebreaks_played,
+            "high_leverage_pts":  round(total_leverage, 2),
+        }
+
+    @staticmethod
+    def merge_into_existing(existing: Dict, new_match: Dict, surface: str) -> Dict:
+        """
+        Merged neue Match-Daten in das bestehende pressure_stats JSON.
+        Nutzt gewichteten gleitenden Durchschnitt — ältere Matches
+        verlieren langsam an Gewicht (Decay-Faktor 0.85).
+        """
+        if not existing:
+            existing = {}
+
+        DECAY = 0.85  # Ältere Matches zählen 15% weniger
+
+        def blend(old_val, new_val, old_n, new_n, decay=DECAY):
+            """Gewichteter gleitender Durchschnitt mit Decay."""
+            if old_n == 0:
+                return new_val
+            old_weight = old_n * decay
+            return round((old_val * old_weight + new_val * new_n) / (old_weight + new_n), 1)
+
+        surf_key = SurfaceIntelligence.normalize_surface_key(surface)
+
+        # Overall stats updaten
+        n_old = existing.get("sample_size", 0)
+        n_new = 1  # ein Match
+
+        updated = {
+            "overall":     blend(existing.get("overall", 50.0),     new_match.get("dpr", 50.0),         n_old, n_new),
+            "bp_saved":    blend(existing.get("bp_saved", 50.0),    new_match.get("bp_saved_rate", 50.0), n_old, n_new),
+            "bp_conv":     blend(existing.get("bp_conv", 50.0),     new_match.get("bp_conv_rate", 50.0),  n_old, n_new),
+            "leverage":    blend(existing.get("leverage", 50.0),    new_match.get("leverage_score", 50.0),n_old, n_new),
+            "tiebreak":    blend(existing.get("tiebreak", 50.0),    new_match.get("tb_win_rate", 50.0),   n_old, n_new),
+            "sp_saved":    blend(existing.get("sp_saved", 50.0),    new_match.get("sp_saved_rate", 50.0), n_old, n_new),
+            "mp_saved":    blend(existing.get("mp_saved", 50.0),    new_match.get("mp_saved_rate", 50.0), n_old, n_new),
+            "sample_size": n_old + 1,
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+
+        # Surface-Split updaten
+        by_surface = existing.get("by_surface", {})
+        surf_existing = by_surface.get(surf_key, {})
+        surf_n_old = surf_existing.get("sample_size", 0)
+
+        by_surface[surf_key] = {
+            "overall":   blend(surf_existing.get("overall", 50.0),  new_match.get("dpr", 50.0),          surf_n_old, 1),
+            "bp_saved":  blend(surf_existing.get("bp_saved", 50.0), new_match.get("bp_saved_rate", 50.0), surf_n_old, 1),
+            "bp_conv":   blend(surf_existing.get("bp_conv", 50.0),  new_match.get("bp_conv_rate", 50.0),  surf_n_old, 1),
+            "leverage":  blend(surf_existing.get("leverage", 50.0), new_match.get("leverage_score", 50.0),surf_n_old, 1),
+            "tiebreak":  blend(surf_existing.get("tiebreak", 50.0), new_match.get("tb_win_rate", 50.0),   surf_n_old, 1),
+            "sample_size": surf_n_old + 1,
+        }
+
+        updated["by_surface"] = by_surface
+        return updated
 
 # =================================================================
 # 12. FANTASY SETTLEMENT ENGINE
