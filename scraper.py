@@ -2278,7 +2278,8 @@ class PressureRatingEngine:
         # Set-Kontext-Multiplikator: Welcher Satz und wie steht es?
         # Letzter möglicher Satz (Best-of-3 = Satz 3, Best-of-5 = Satz 5)
         current_set = sets_srv + sets_ret + 1
-        is_deciding_set = (total_sets == 3 and current_set == 3) or                           (total_sets == 5 and current_set == 5)
+        is_deciding_set = (total_sets == 3 and current_set == 3) or \
+                          (total_sets == 5 and current_set == 5)
         if is_deciding_set:
             base *= 2.0
 
@@ -2350,10 +2351,12 @@ class PressureRatingEngine:
         for game_data in pointbypoint:
             # Wer schlägt auf in diesem Game?
             player_served_str = str(game_data.get("player_served", "")).lower()
-            we_serve = (is_player1 and "first" in player_served_str) or                        (not is_player1 and "second" in player_served_str)
+            we_serve = (is_player1 and "first" in player_served_str) or \
+                       (not is_player1 and "second" in player_served_str)
 
             set_number_raw = str(game_data.get("set_number", "Set 1"))
-            is_tiebreak_game = "tiebreak" in set_number_raw.lower() or                                "tie" in set_number_raw.lower()
+            is_tiebreak_game = "tiebreak" in set_number_raw.lower() or \
+                               "tie" in set_number_raw.lower()
 
             # Set-Stand für Leverage
             set_score_raw = str(game_data.get("score", "0 - 0"))
@@ -2369,8 +2372,21 @@ class PressureRatingEngine:
                 tiebreaks_played += 1
                 # Wer hat den Tiebreak gewonnen?
                 tb_winner = str(game_data.get("serve_winner", "")).lower()
-                if (is_player1 and "first" in tb_winner) or                    (not is_player1 and "second" in tb_winner):
+                if (is_player1 and "first" in tb_winner) or \
+                   (not is_player1 and "second" in tb_winner):
                     tiebreaks_won += 1
+
+            prev_srv_pts = 0
+            prev_ret_pts = 0
+
+            def score_to_pts(s_val):
+                s_val = str(s_val).strip().upper()
+                if s_val == "0": return 0
+                if s_val == "15": return 1
+                if s_val == "30": return 2
+                if s_val == "40": return 3
+                if s_val == "A": return 4
+                return 0
 
             points = game_data.get("points", [])
             if not points:
@@ -2387,14 +2403,33 @@ class PressureRatingEngine:
                     total_sets_in_match
                 )
 
-                # Wer hat diesen Punkt gewonnen?
-                srv_won_str = str(pt.get("serve_winner", "")).lower()
-                if srv_won_str == "" or srv_won_str == "none":
-                    # Fallback: serve_lost
-                    srv_lost_str = str(pt.get("serve_lost", "")).lower()
-                    srv_won_this_point = "first" not in srv_lost_str if is_player1 else "second" not in srv_lost_str
-                else:
-                    srv_won_this_point = ("first" in srv_won_str) if is_player1 else ("second" in srv_won_str)
+                # 🚀 SOTA FIX: INFER POINT WINNER FROM SCORE PROGRESSION
+                # API Tennis does not provide serve_winner on the point level, only on the game level.
+                srv_won_this_point = False
+                parts = norm_score.split("-")
+                
+                if len(parts) == 2:
+                    if is_tiebreak_game or is_tb:
+                        try:
+                            cur_srv = int(parts[0].strip())
+                            cur_ret = int(parts[1].strip())
+                            if cur_srv > prev_srv_pts:
+                                srv_won_this_point = True
+                            prev_srv_pts, prev_ret_pts = cur_srv, cur_ret
+                        except:
+                            pass
+                    else:
+                        cur_srv_str = parts[0].strip()
+                        cur_ret_str = parts[1].strip()
+                        cur_srv = score_to_pts(cur_srv_str)
+                        cur_ret = score_to_pts(cur_ret_str)
+                        
+                        if cur_srv_str == "A":
+                            srv_won_this_point = True
+                        elif cur_srv > prev_srv_pts and cur_ret_str != "A":
+                            srv_won_this_point = True
+                            
+                        prev_srv_pts, prev_ret_pts = cur_srv, cur_ret
 
                 # Leverage akkumulieren
                 total_leverage += leverage
