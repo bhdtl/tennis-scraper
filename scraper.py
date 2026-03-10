@@ -1400,37 +1400,134 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
 
 
 # =================================================================
-# PRESSURE RATING BACKFILL
-# Läuft separat von update_past_results_api — befüllt pressure_stats
-# für alle Spieler die noch {} haben, anhand bereits gesettleter Matches
+# FULL PLAYER STATS BACKFILL + KONTINUIERLICHE SYNCHRONISATION
+# Befüllt surface_ratings, form_rating UND pressure_stats für alle Spieler.
+# Beim ersten Run: kompletter Backfill aller Spieler ohne Daten.
+# Danach: kontinuierliche Aktualisierung der zuletzt aktiven Spieler.
 # =================================================================
-async def backfill_pressure_ratings(api: TennisDataAPI, players: List[Dict], max_players: int = 10):
-    """
-    Geht durch player_skills wo pressure_stats = {} oder leer ist,
-    sucht die letzten abgeschlossenen Matches in market_odds,
-    holt pointbypoint via get_fixture_detail und berechnet DPR.
-    Limitiert auf max_players pro Run um API-Requests zu schonen.
-    """
-    log("🧠 [BACKFILL] Starte Pressure Rating Backfill...")
 
-    # Alle player_skills mit leerem pressure_stats holen
+def _derive_surface_from_tournament(tournament_name: str) -> str:
+    """Leitet Surface aus Tournament-Namen ab."""
+    t = tournament_name.lower()
+    if any(x in t for x in ['clay', 'roland', 'monte', 'barcelona', 'madrid', 'rome',
+                              'hamburg', 'geneva', 'lyon', 'bucharest', 'marrakech',
+                              'estoril', 'munich', 'istanbul', 'gstaad', 'umag',
+                              'bastad', 'kitzbuhel', 'cordoba', 'buenos aires', 'rio']):
+        return 'clay'
+    elif any(x in t for x in ['grass', 'wimbledon', 'halle', 'queen', 'eastbourne',
+                               'hertogenbosch', 'mallorca', 'newport', 'birmingham',
+                               "s-hertogenbosch", 'nottingham']):
+        return 'grass'
+    return 'hard'
+
+async def full_backfill_all_players(api: TennisDataAPI, players: List[Dict]):
+    """
+    PHASE 1 — Surface + Form (kein API-Call nötig):
+      Berechnet surface_ratings + form_rating für ALLE Spieler aus market_odds history.
+      Läuft komplett ohne API-Requests, nur DB-Queries.
+      
+    PHASE 2 — Pressure Rating (API-Calls nötig):
+      Für Spieler ohne pressure_stats: holt pointbypoint via get_fixture_detail.
+      Budget-aware: max 5 Calls pro Spieler, alle Spieler in einem Run machbar.
+      
+    KONTINUIERLICH:
+      Beide Phasen laufen jeden Run — Phase 1 für alle, Phase 2 nur für leere/veraltete.
+    """
+    log("🚀 [FULL BACKFILL] Starte kompletten Player Stats Sync...")
+    
+    # -------------------------------------------------------
+    # PHASE 1: surface_ratings + form_rating für ALLE Spieler
+    # -------------------------------------------------------
+    log("📊 [PHASE 1] Surface + Form Ratings für alle Spieler...")
+    
+    phase1_updated = 0
+    phase1_skipped = 0
+
+    # Alle market_odds auf einmal laden (eine Query statt N Queries)
     try:
-        skills_res = supabase.table('player_skills').select('player_id, pressure_stats').execute()
+        all_history_res = supabase.table("market_odds")            .select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text")            .not_.is_("actual_winner_name", "null")            .order("created_at", desc=True)            .limit(5000)            .execute()
+        all_history = all_history_res.data or []
+    except Exception as e:
+        log(f"⚠️ [PHASE 1] Fehler beim Laden der History: {e}")
+        all_history = []
+
+    log(f"  📥 {len(all_history)} historische Matches geladen")
+
+    for player_obj in players:
+        p_id = player_obj.get('id')
+        p_last_name = player_obj.get('last_name', '').strip()
+        if not p_id or not p_last_name:
+            continue
+
+        try:
+            # History aus dem bereits geladenen Bulk-Dataset filtern
+            p_hist = [
+                m for m in all_history
+                if p_last_name.lower() in m.get('player1_name', '').lower()
+                or p_last_name.lower() in m.get('player2_name', '').lower()
+            ][:80]
+
+            if not p_hist:
+                phase1_skipped += 1
+                continue
+
+            # Surface Profil + Form berechnen
+            p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_last_name)
+            p_form    = MomentumV2Engine.calculate_rating(p_hist[:20], p_last_name)
+
+            supabase.table('players').update({
+                'surface_ratings': p_profile,
+                'form_rating':     p_form
+            }).eq('id', p_id).execute()
+
+            phase1_updated += 1
+
+        except Exception as e:
+            log(f"  ⚠️ [PHASE 1] {p_last_name}: {e}")
+
+    log(f"  ✅ [PHASE 1] {phase1_updated} Spieler aktualisiert, {phase1_skipped} ohne History übersprungen")
+
+    # -------------------------------------------------------
+    # PHASE 2: pressure_stats via pointbypoint
+    # -------------------------------------------------------
+    log("🧠 [PHASE 2] Pressure Ratings via API pointbypoint...")
+
+    # Alle player_skills laden — welche haben schon Daten?
+    try:
+        skills_res = supabase.table('player_skills')            .select('player_id, pressure_stats, updated_at')            .execute()
         all_skills = skills_res.data or []
     except Exception as e:
-        log(f"⚠️ [BACKFILL] Fehler beim Laden der Skills: {e}")
+        log(f"⚠️ [PHASE 2] Fehler beim Laden der Skills: {e}")
         return
 
-    # Nur die ohne echte Daten
-    empty_skills = [
-        s for s in all_skills
-        if not s.get('pressure_stats') or s['pressure_stats'] == {} or s['pressure_stats'] == '{}'
-    ]
-    log(f"🧠 [BACKFILL] {len(empty_skills)} Spieler ohne Pressure Stats gefunden. Verarbeite {max_players}...")
+    # Spieler ohne Daten zuerst, dann nach ältestem updated_at sortiert
+    def pressure_priority(s):
+        ps = s.get('pressure_stats')
+        if not ps or ps == {} or ps == '{}':
+            return 0  # höchste Priorität
+        sample = ps.get('sample_size', 0) if isinstance(ps, dict) else 0
+        return sample  # weniger Matches = höhere Priorität
 
-    processed = 0
-    for skill_row in empty_skills:
-        if processed >= max_players:
+    all_skills_sorted = sorted(all_skills, key=pressure_priority)
+
+    # Market_odds mit api_match_key laden (für Backfill)
+    try:
+        mk_res = supabase.table('market_odds')            .select('player1_name, player2_name, api_match_key, tournament, created_at')            .not_.is_('actual_winner_name', 'null')            .not_.is_('api_match_key', 'null')            .order('created_at', desc=True)            .limit(3000)            .execute()
+        matches_with_keys = mk_res.data or []
+    except Exception as e:
+        log(f"⚠️ [PHASE 2] Fehler beim Laden der Match-Keys: {e}")
+        matches_with_keys = []
+
+    log(f"  📥 {len(matches_with_keys)} Matches mit api_match_key verfügbar")
+
+    phase2_updated  = 0
+    phase2_no_data  = 0
+    api_calls_made  = 0
+    MAX_API_CALLS   = 600  # Konservatives Budget: 600 Calls für Backfill
+
+    for skill_row in all_skills_sorted:
+        if api_calls_made >= MAX_API_CALLS:
+            log(f"  ⏸️ API-Budget ({MAX_API_CALLS} Calls) erreicht — Rest beim nächsten Run")
             break
 
         p_id = skill_row['player_id']
@@ -1438,48 +1535,57 @@ async def backfill_pressure_ratings(api: TennisDataAPI, players: List[Dict], max
         if not player_obj:
             continue
 
-        p_last_name = player_obj.get('last_name', '')
+        p_last_name = player_obj.get('last_name', '').strip()
         if not p_last_name:
             continue
 
-        # Letzte abgeschlossene Matches aus market_odds holen
-        try:
-            hist_res = supabase.table('market_odds')                .select('player1_name, player2_name, api_match_key, tournament, created_at')                .or_(f"player1_name.ilike.%{p_last_name}%,player2_name.ilike.%{p_last_name}%")                .not_.is_('actual_winner_name', 'null')                .not_.is_('api_match_key', 'null')                .order('created_at', desc=True)                .limit(15)                .execute()
-            past_matches = hist_res.data or []
-        except Exception as e:
-            continue
+        # Schon genug Sample Size? Dann nur alle 7 Tage refreshen
+        existing_ps = skill_row.get('pressure_stats')
+        if isinstance(existing_ps, dict) and existing_ps.get('sample_size', 0) >= 10:
+            last_upd = existing_ps.get('last_updated', '')
+            if last_upd:
+                try:
+                    days_since = (datetime.now(timezone.utc).date() - 
+                                  datetime.strptime(last_upd, '%Y-%m-%d').date()).days
+                    if days_since < 7:
+                        continue  # Frisch genug
+                except:
+                    pass
 
-        if not past_matches:
-            log(f"  ↳ {p_last_name}: Keine Matches mit api_match_key gefunden")
+        # Matches dieses Spielers mit api_match_key finden
+        player_matches = [
+            m for m in matches_with_keys
+            if p_last_name.lower() in m.get('player1_name', '').lower()
+            or p_last_name.lower() in m.get('player2_name', '').lower()
+        ][:8]  # Max 8 Matches pro Spieler suchen
+
+        if not player_matches:
+            phase2_no_data += 1
             continue
 
         all_pressure = []
-        fetched = 0
+        fetched      = 0
 
-        for pm in past_matches:
-            if fetched >= 5:  # Max 5 pointbypoint-Requests pro Spieler
+        for pm in player_matches:
+            if fetched >= 5 or api_calls_made >= MAX_API_CALLS:
                 break
 
-            mk = pm.get('api_match_key', '')
-            if not mk:
+            mk = str(pm.get('api_match_key', '')).strip()
+            if not mk or mk == 'None':
                 continue
 
-            fix_detail = await api.get_fixture_detail(str(mk))
+            try:
+                fix_detail = await api.get_fixture_detail(mk)
+                api_calls_made += 1
+            except Exception as e:
+                continue
+
             pbp = fix_detail.get('pointbypoint', [])
             if not pbp:
                 continue
 
-            # Herausfinden ob Spieler p1 oder p2 in diesem Match
-            is_p1 = p_last_name.lower() in pm.get('player1_name', '').lower()
-
-            # Surface aus Tournament ableiten
-            tour_lower = pm.get('tournament', '').lower()
-            if any(x in tour_lower for x in ['clay', 'roland', 'monte', 'barcelona', 'madrid', 'rome', 'hamburg']):
-                surface = 'clay'
-            elif any(x in tour_lower for x in ['grass', 'wimbledon', 'halle', 'queen', 'eastbourne', 'hertogenbosch']):
-                surface = 'grass'
-            else:
-                surface = 'hard'
+            is_p1    = p_last_name.lower() in pm.get('player1_name', '').lower()
+            surface  = _derive_surface_from_tournament(pm.get('tournament', ''))
 
             pressure_result = PressureRatingEngine.calculate_from_pointbypoint(
                 pbp, is_player1=is_p1, surface=surface
@@ -1495,24 +1601,26 @@ async def backfill_pressure_ratings(api: TennisDataAPI, players: List[Dict], max
                 fetched += 1
 
         if not all_pressure:
+            phase2_no_data += 1
             continue
 
-        # Alle Matches mergen
-        merged = {}
+        # Alle Matches mergen (auf bestehendes aufbauen falls vorhanden)
+        merged = existing_ps if isinstance(existing_ps, dict) else {}
         for pr, surf in all_pressure:
             merged = PressureRatingEngine.merge_into_existing(merged, pr, surf)
 
-        # In Supabase schreiben
         try:
             supabase.table('player_skills').update({
                 'pressure_stats': merged
             }).eq('player_id', p_id).execute()
-            log(f"  ✅ {p_last_name}: DPR={merged.get('overall', 50.0)} (n={merged.get('sample_size', 0)}, {fetched} Matches)")
-            processed += 1
+            phase2_updated += 1
+            log(f"  🧠 {p_last_name}: DPR={merged.get('overall', 50.0)} bp_saved={merged.get('bp_saved', '?')} (n={merged.get('sample_size', 0)})")
         except Exception as e:
             log(f"  ⚠️ {p_last_name}: Schreib-Fehler: {e}")
 
-    log(f"🧠 [BACKFILL] Fertig. {processed} Spieler aktualisiert.")
+    log(f"  ✅ [PHASE 2] {phase2_updated} Spieler mit Pressure Stats, {phase2_no_data} ohne pointbypoint-Daten, {api_calls_made} API-Calls")
+    log(f"🏁 [FULL BACKFILL] Abgeschlossen.")
+
 
 
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
@@ -2567,12 +2675,13 @@ async def run_pipeline():
         
     await update_past_results_api(api, players)
 
-    # 🧠 PRESSURE BACKFILL: Befüllt pressure_stats für Spieler die noch {} haben
-    # max_players=8 → max ~40 API Requests (5 Matches pro Spieler) — Request-Budget schonend
+    # 🚀 FULL PLAYER STATS SYNC
+    # Phase 1: surface_ratings + form_rating für ALLE (kein API-Call)
+    # Phase 2: pressure_stats für Spieler ohne/veraltete Daten (API-Budget-aware)
     try:
-        await backfill_pressure_ratings(api, players, max_players=8)
+        await full_backfill_all_players(api, players)
     except Exception as bf_err:
-        log(f"⚠️ Pressure Backfill Exception: {bf_err}")
+        log(f"⚠️ Full Backfill Exception: {bf_err}")
         
     try:
         NeuralOptimizer.trigger_learning_cycle(players, all_skills)
