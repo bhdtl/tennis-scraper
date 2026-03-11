@@ -38,15 +38,13 @@ jobs:
       - name: Run Scraper
         env:
           # SECURITY: Ensure these secrets are set in GitHub Repo Settings
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}             # <--- NEU: Der Schlüssel für Groq
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}             
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}             # Public Anon Key usually
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}             
           API_TENNIS_KEY: ${{ secrets.API_TENNIS_KEY }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # Admin Key for bypass RLS
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
           
-          # 🚀 SOTA UPGRADE: Push Notifications & Telegram Auth
+          # 🚀 SOTA UPGRADE: Push Notifications
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python scraper.py
