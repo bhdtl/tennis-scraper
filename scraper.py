@@ -56,8 +56,12 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # 🚀 SOTA: WEB PUSH SECRETS (Clean Architecture)
-VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
-VAPID_CLAIMS = {"sub": "mailto:admin@backhandtl.com"} 
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY") 
+if not VAPID_PRIVATE_KEY:
+    # Neuer Private Key als kugelsicherer Fallback
+    VAPID_PRIVATE_KEY = "lilvmR9dnAWN-u4G5Skyu-2IYb6n4E_OIRy7IGrGTWo"
+# Neue E-Mail Adresse aus deinem Generator!
+VAPID_CLAIMS = {"sub": "mailto:bh.dtl@web.de"}
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
