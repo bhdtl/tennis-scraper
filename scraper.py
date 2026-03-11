@@ -30,6 +30,13 @@ logging.basicConfig(
     format='[%(asctime)s] %(levelname)s: %(message)s',
     datefmt='%H:%M:%S'
 )
+
+# 🚀 SOTA FIX: Schalldämpfer für externe Bibliotheken (verhindert den "1000 HTTP Requests" Spam)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("postgrest").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 logger = logging.getLogger("NeuralScout_Architect")
 
 def log(msg: str):
@@ -40,16 +47,15 @@ log("🔌 Initialisiere Neural Scout (V204.3 - HYBRID SCORE SCHEMA EDITION)...")
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# 🚀 SOTA FIX: Zwinge Python, die Master-Rechte zu nutzen, um RLS zu umgehen!
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 
 # 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 🚀 SOTA: WEB PUSH SECRETS
-VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
+# 🚀 SOTA: WEB PUSH SECRETS (HARDCODED BRECHSTANGE)
+VAPID_PRIVATE_KEY = "0hkglJiemIFEJeBE4XpU-2IdJBlE2lx4zwCHD3hExCI"
 VAPID_CLAIMS = {"sub": "mailto:admin@backhandtl.com"} 
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
@@ -635,19 +641,16 @@ async def send_sniper_alert(
     except Exception as e:
         log(f"⚠️ Telegram Alert Fehler: {e}")
 
-# 🚀 SOTA: NATIVE MOBILE PUSH ALERT (FIXED ERROR HANDLING)
+# 🚀 SOTA: NATIVE MOBILE PUSH ALERT
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
         if not VAPID_PRIVATE_KEY:
-            log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Web Push abgebrochen.")
             return
 
-        log("🔍 Lese Push-Abonnements aus der Datenbank...")
         subs_res = supabase.table("push_subscriptions").select("subscription").execute()
         subscriptions = subs_res.data or []
         
         if not subscriptions:
-            log("⚠️ Keine Abonnements in der Datenbank gefunden.")
             return
 
         payload = json.dumps({
@@ -668,9 +671,7 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                 )
                 success_count += 1
             except WebPushException as ex:
-                log(f"⚠️ WebPush Auth/Delivery Error: {repr(ex)}")
-                if hasattr(ex, 'response') and ex.response:
-                    log(f"Apple/Google Server Response: {ex.response.text}")
+                pass
         
         if success_count > 0:
             log(f"📲 NATIVE PUSH GESENDET an {success_count} Geräte: {pick_name}")
