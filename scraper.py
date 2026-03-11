@@ -56,12 +56,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # 🚀 SOTA: WEB PUSH SECRETS (Clean Architecture)
-VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY") 
-if not VAPID_PRIVATE_KEY:
-    # Neuer Private Key als kugelsicherer Fallback
-    VAPID_PRIVATE_KEY = "lilvmR9dnAWN-u4G5Skyu-2IYb6n4E_OIRy7IGrGTWo"
-# Neue E-Mail Adresse aus deinem Generator!
-VAPID_CLAIMS = {"sub": "mailto:bh.dtl@web.de"}
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
+VAPID_CLAIMS = {"sub": "mailto:admin@backhandtl.com"} 
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
@@ -2405,7 +2401,8 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
-                    ai_text_final = re.sub(r'\[VALUE.*?\]', '', cached_ai['ai_text']).strip() + value_tag
+                    # 🚀 SOTA FIX: Bulletproof Regex against AI String formatting shifts
+                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE).*?\]', '', cached_ai['ai_text']).strip() + value_tag
                     hist_fair1 = fair1
                     hist_fair2 = fair2
                     
