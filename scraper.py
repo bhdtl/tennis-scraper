@@ -40,7 +40,8 @@ log("🔌 Initialisiere Neural Scout (V204.3 - HYBRID SCORE SCHEMA EDITION)...")
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+# 🚀 SOTA FIX: Zwinge Python, die Master-Rechte zu nutzen, um RLS zu umgehen!
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 
 # 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
@@ -634,16 +635,19 @@ async def send_sniper_alert(
     except Exception as e:
         log(f"⚠️ Telegram Alert Fehler: {e}")
 
-# 🚀 SOTA: NATIVE MOBILE PUSH ALERT
+# 🚀 SOTA: NATIVE MOBILE PUSH ALERT (FIXED ERROR HANDLING)
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
         if not VAPID_PRIVATE_KEY:
+            log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Web Push abgebrochen.")
             return
 
+        log("🔍 Lese Push-Abonnements aus der Datenbank...")
         subs_res = supabase.table("push_subscriptions").select("subscription").execute()
         subscriptions = subs_res.data or []
         
         if not subscriptions:
+            log("⚠️ Keine Abonnements in der Datenbank gefunden.")
             return
 
         payload = json.dumps({
@@ -664,7 +668,9 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                 )
                 success_count += 1
             except WebPushException as ex:
-                pass
+                log(f"⚠️ WebPush Auth/Delivery Error: {repr(ex)}")
+                if hasattr(ex, 'response') and ex.response:
+                    log(f"Apple/Google Server Response: {ex.response.text}")
         
         if success_count > 0:
             log(f"📲 NATIVE PUSH GESENDET an {success_count} Geräte: {pick_name}")
