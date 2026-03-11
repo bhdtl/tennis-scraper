@@ -28,7 +28,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          # 🚀 SOTA FIX: Dependency Pinning (Löst den EllipticCurve Bug endgültig)
+          # 🚀 SOTA FIX: Dependency Pinning (Verhindert den EllipticCurve Crash)
           pip install "cryptography==41.0.7" "pyjwt==2.8.0" pywebpush
 
       - name: Install Playwright & System Deps
@@ -43,7 +43,7 @@ jobs:
           API_TENNIS_KEY: ${{ secrets.API_TENNIS_KEY }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
           
-          # 🚀 SOTA: Push Key
+          # Hier wird das Secret aus GitHub Actions korrekt injiziert
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: |
           python scraper.py
