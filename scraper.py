@@ -57,7 +57,9 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 # 🚀 SOTA: WEB PUSH SECRETS (Clean Architecture)
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
-VAPID_CLAIMS = {"sub": "mailto:admin@backhandtl.com"} 
+if not VAPID_PRIVATE_KEY:
+    VAPID_PRIVATE_KEY = "lilvmR9dnAWN-u4G5Skyu-2IYb6n4E_OIRy7IGrGTWo"
+VAPID_CLAIMS = {"sub": "mailto:bh.dtl@web.de"} 
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
@@ -1341,31 +1343,36 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
                     p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
                     
-                    if p1_id and p2_id:
+                    # SOTA: Independent Skill Updates (Supports Shadow Tracking)
+                    db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
+                    if db_player_ids:
                         try:
-                            skills_res = supabase.table('player_skills').select('*').in_('player_id', [p1_id, p2_id]).execute()
+                            skills_res = supabase.table('player_skills').select('*').in_('player_id', db_player_ids).execute()
                             db_skills = skills_res.data or []
                             
-                            p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
-                            p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
-                            
-                            odds1 = to_float(matched_pm.get('odds1', 1.85))
-                            odds2 = to_float(matched_pm.get('odds2', 1.85))
-                            
-                            if p1_skills_db:
-                                new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
-                                if new_s1:
-                                    new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                    supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
-                                    
-                            if p2_skills_db:
-                                new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
-                                if new_s2:
-                                    new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                    supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
+                            if p1_id:
+                                p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
+                                odds1 = to_float(matched_pm.get('odds1', 1.85))
+                                if p1_skills_db:
+                                    new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
+                                    if new_s1:
+                                        new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                        supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
+                                        
+                            if p2_id:
+                                p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
+                                odds2 = to_float(matched_pm.get('odds2', 1.85))
+                                if p2_skills_db:
+                                    new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
+                                    if new_s2:
+                                        new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                                        supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
                         except Exception as se: pass
 
                     for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
+                        p_exists = next((p for p in players if p.get('last_name') == p_name_hook), None)
+                        if not p_exists: continue
+                        
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
                         
                         p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
@@ -2239,14 +2246,17 @@ async def run_pipeline():
             if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
                 continue
 
-            if not p1_obj or not p2_obj: 
+            # 🚀 SOTA: Erlaube Single-Player "Shadow Tracking"
+            if not p1_obj and not p2_obj: 
                 continue
                 
-            n1_last = p1_obj['last_name']
-            n2_last = p2_obj['last_name']
+            both_players_found = (p1_obj is not None) and (p2_obj is not None)
             
-            full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip()
-            full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip()
+            n1_last = p1_obj['last_name'] if p1_obj else normalize_db_name(get_last_name(m['p1_raw']))
+            n2_last = p2_obj['last_name'] if p2_obj else normalize_db_name(get_last_name(m['p2_raw']))
+            
+            full_n1 = f"{p1_obj.get('first_name', '')} {p1_obj.get('last_name', '')}".strip() if p1_obj else clean_player_name(m['p1_raw'])
+            full_n2 = f"{p2_obj.get('first_name', '')} {p2_obj.get('last_name', '')}".strip() if p2_obj else clean_player_name(m['p2_raw'])
             
             if n1_last == n2_last: 
                 continue
@@ -2293,7 +2303,44 @@ async def run_pipeline():
                 continue 
                 
             final_time_str = m['time'] 
-            
+
+            # 🚀 SOTA: SHADOW TRACKING (Data Collection Mode for 1-Player Matchups)
+            if not both_players_found:
+                c1_country = p1_obj.get('country', 'Unknown') if p1_obj else 'Unknown'
+                c2_country = p2_obj.get('country', 'Unknown') if p2_obj else 'Unknown'
+                surf, bsi, notes, city_for_weather, matched_tour_name = await find_best_court_match_smart(m['tour'], all_tournaments, full_n1, full_n2, c1_country, c2_country, match_date=datetime.now())
+
+                shadow_data = {
+                    "player1_name": full_n1, 
+                    "player2_name": full_n2, 
+                    "tournament": matched_tour_name,
+                    "match_time": final_time_str, 
+                    "odds1": m['odds1'], 
+                    "odds2": m['odds2'],
+                    "bookmaker_odds": m['bookmaker_odds'],
+                    "is_visible_in_scanner": False, # <--- HIDDEN FROM FRONTEND!
+                    "api_match_key": m['api_match_key'],
+                    "ai_analysis_text": "[SHADOW TRACKING] Match collected for historical player metrics."
+                }
+                if not db_match_id:
+                    shadow_data["created_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    shadow_data["opening_odds1"] = m['odds1']
+                    shadow_data["opening_odds2"] = m['odds2']
+                    try:
+                        res_ins = supabase.table("market_odds").insert(shadow_data).execute()
+                        if res_ins.data:
+                            db_match_id = res_ins.data[0]['id']
+                        log(f"👻 SHADOW MATCH (1 Player known): {full_n1} vs {full_n2}")
+                    except: pass
+                else:
+                    try:
+                        supabase.table("market_odds").update(shadow_data).eq("id", db_match_id).execute()
+                    except: pass
+                
+                # Shadow Tracker braucht keine komplexe AI / Markov Berechnung. Wir springen zum nächsten Spiel!
+                continue 
+
+            # --- FULL MATCHUP PATH (Both players found) --->
             hist_fair1, hist_fair2 = 0, 0
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
