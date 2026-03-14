@@ -613,21 +613,20 @@ async def send_sniper_alert(
     bookie_block = ("🏦 *Line Shopping:*\n" + "\n".join(bookie_lines) + "\n") if bookie_lines else ""
 
     message = (
-        f"🚨 *OPENING LINE SNIPER* 🚨\n"
+        f"🚨 *VALUE SNIPER ALERT* 🚨\n"
         f"_{tournament}_\n\n"
         f"🎾 *{p1}* vs *{p2}*\n"
         f"🔁 H2H: `{h2h_record}`\n\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🎯 *Pick:* `{pick_name}` — {edge_label}\n"
-        f"💰 *Opening Odds:* *{pick_odds:.2f}* vs {other_odds:.2f}\n"
+        f"💰 *Market Odds:* *{pick_odds:.2f}* vs {other_odds:.2f}\n"
         f"🧠 *AI Fair Odds:* `{pick_fair:.2f}` vs {other_fair:.2f}\n"
-        f"⚡ *Edge:* *+{edge:.1f}%* on Opening Line\n\n"
+        f"⚡ *Edge:* *+{edge:.1f}%*\n\n"
         f"{handicap_line_str}"
         f"{set_block}"
         f"{ou_line_str}"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"{bookie_block}"
-        f"\n_⏰ Early Value Alert — Opening Line_"
     )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -651,7 +650,8 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
             log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Push-Benachrichtigung übersprungen.")
             return
 
-        subs_res = supabase.table("push_subscriptions").select("subscription").execute()
+        # 🚀 FIX: Lade auch die ID, damit wir kaputte Tokens löschen können
+        subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
         subscriptions = subs_res.data or []
         
         if not subscriptions:
@@ -667,6 +667,7 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
         success_count = 0
         for row in subscriptions:
             sub_data = row['subscription']
+            sub_id = row['id']
             try:
                 webpush(
                     subscription_info=sub_data,
@@ -677,8 +678,13 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                 success_count += 1
             except WebPushException as ex:
                 log(f"⚠️ WebPush Auth/Delivery Error: {repr(ex)}")
-                if hasattr(ex, 'response') and ex.response:
-                    log(f"Apple/Google Server Response: {ex.response.text}")
+                # 🚀 SOTA AUTO-PURGE: Lösche tote Tokens aus der DB, damit sie die Schleife nicht verlangsamen
+                if hasattr(ex, 'response') and ex.response is not None:
+                    if ex.response.status_code in [404, 410]:
+                        try:
+                            supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
+                            log(f"🗑️ Totes Push-Abo gelöscht (Status {ex.response.status_code}).")
+                        except: pass
         
         if success_count > 0:
             log(f"📲 NATIVE PUSH GESENDET an {success_count} Geräte: {pick_name}")
@@ -1300,12 +1306,10 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             is_reversed = False
             
             for pm in list(safe_to_check):
-                # SOTA ARCHITECT UPGRADE: O(1) Key Lookup
                 if pm.get('api_match_key') and str(pm['api_match_key']) == str(fix.get('event_key')):
                     matched_pm = pm
                     break
 
-                # Fallback für alte DB-Einträge ohne Key:
                 db_p1_last = normalize_db_name(get_last_name(pm['player1_name']))
                 db_p2_last = normalize_db_name(get_last_name(pm['player2_name']))
                 api_p1_last = normalize_db_name(get_last_name(p1_api))
@@ -1343,7 +1347,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
                     p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
                     
-                    # SOTA: Independent Skill Updates (Supports Shadow Tracking)
                     db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
                     if db_player_ids:
                         try:
@@ -1841,37 +1844,25 @@ class QuantumGamesSimulator:
     def simulate_set(p1_prob: float, p2_prob: float) -> tuple[int, int]:
         g1, g2 = 0, 0
         while True:
-            if random.random() < p1_prob: 
-                g1 += 1
-            else: 
-                g2 += 1 
+            if random.random() < p1_prob: g1 += 1
+            else: g2 += 1 
                 
-            if g1 >= 6 and g1 - g2 >= 2: 
-                return (1, g1 + g2)
-            if g2 >= 6 and g2 - g1 >= 2: 
-                return (2, g1 + g2)
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
                 
             if g1 == 6 and g2 == 6:
-                if random.random() < 0.5 + (p1_prob - p2_prob): 
-                    return (1, 13)
-                else: 
-                    return (2, 13)
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
             
-            if random.random() < p2_prob: 
-                g2 += 1
-            else: 
-                g1 += 1 
+            if random.random() < p2_prob: g2 += 1
+            else: g1 += 1 
                 
-            if g1 >= 6 and g1 - g2 >= 2: 
-                return (1, g1 + g2)
-            if g2 >= 6 and g2 - g1 >= 2: 
-                return (2, g1 + g2)
+            if g1 >= 6 and g1 - g2 >= 2: return (1, g1 + g2)
+            if g2 >= 6 and g2 - g1 >= 2: return (2, g1 + g2)
                 
             if g1 == 6 and g2 == 6:
-                if random.random() < 0.5 + (p1_prob - p2_prob): 
-                    return (1, 13)
-                else: 
-                    return (2, 13)
+                if random.random() < 0.5 + (p1_prob - p2_prob): return (1, 13)
+                else: return (2, 13)
 
     @staticmethod
     def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, actual_ou_line: float = None, iterations: int = 1000) -> Dict[str, Any]:
@@ -1879,24 +1870,18 @@ class QuantumGamesSimulator:
         p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
         
         total_games_log = []
-        
         for _ in range(iterations):
             winner_s1, games_s1 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
-            
             p1_hold_s2 = p1_hold_prob + (0.02 if winner_s1 == 1 else -0.01)
             p2_hold_s2 = p2_hold_prob + (0.02 if winner_s1 == 2 else -0.01)
-            
             winner_s2, games_s2 = QuantumGamesSimulator.simulate_set(p1_hold_s2, p2_hold_s2)
             total = games_s1 + games_s2
-            
             if winner_s1 != winner_s2:
                 winner_s3, games_s3 = QuantumGamesSimulator.simulate_set(p1_hold_prob, p2_hold_prob)
                 total += games_s3
-                
             total_games_log.append(total)
             
         total_games_log.sort()
-        
         median = total_games_log[len(total_games_log)//2]
         
         probs = {}
@@ -1953,12 +1938,10 @@ class LiveSkillEngine:
 
         score_lower = str(score).lower().replace(":", "-").strip()
 
-        # 🚀 ARCHITECT FIX: Hybrid Schema Logic
         is_clean_sweep = False
         is_grind_match = False
         lost_tiebreak = False
 
-        # PATH A: The API-Tennis Set-Only Format
         set_only_match = re.match(r'^(\d+)\s*-\s*(\d+)$', score_lower)
         if set_only_match and sum(int(x) for x in set_only_match.groups()) <= 5:
             l, r = int(set_only_match.group(1)), int(set_only_match.group(2))
@@ -1967,8 +1950,6 @@ class LiveSkillEngine:
             
             if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0): is_clean_sweep = True
             if (p_sets == 2 and o_sets == 1) or (p_sets == 1 and o_sets == 2): is_grind_match = True
-
-        # PATH B: The Legacy DB Format
         else:
             sets = re.findall(r'(\d+)-(\d+)', score_lower)
             if len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
@@ -1981,7 +1962,6 @@ class LiveSkillEngine:
                 if is_player1 and l < r and r == 7: lost_tiebreak = True
                 if not is_player1 and r < l and l == 7: lost_tiebreak = True
 
-        # Apply specific granular skill shifts based on the hybrid parsing result
         if is_winner and is_clean_sweep:
             for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
                 if skill in new_skills: new_skills[skill] += 0.2
@@ -2304,7 +2284,6 @@ async def run_pipeline():
                 
             final_time_str = m['time'] 
 
-            # 🚀 SOTA: SHADOW TRACKING (Data Collection Mode for 1-Player Matchups)
             if not both_players_found:
                 c1_country = p1_obj.get('country', 'Unknown') if p1_obj else 'Unknown'
                 c2_country = p2_obj.get('country', 'Unknown') if p2_obj else 'Unknown'
@@ -2318,7 +2297,7 @@ async def run_pipeline():
                     "odds1": m['odds1'], 
                     "odds2": m['odds2'],
                     "bookmaker_odds": m['bookmaker_odds'],
-                    "is_visible_in_scanner": False, # <--- HIDDEN FROM FRONTEND!
+                    "is_visible_in_scanner": False, 
                     "api_match_key": m['api_match_key'],
                     "ai_analysis_text": "[SHADOW TRACKING] Match collected for historical player metrics."
                 }
@@ -2330,17 +2309,14 @@ async def run_pipeline():
                         res_ins = supabase.table("market_odds").insert(shadow_data).execute()
                         if res_ins.data:
                             db_match_id = res_ins.data[0]['id']
-                        log(f"👻 SHADOW MATCH (1 Player known): {full_n1} vs {full_n2}")
                     except: pass
                 else:
                     try:
                         supabase.table("market_odds").update(shadow_data).eq("id", db_match_id).execute()
                     except: pass
-                
-                # Shadow Tracker braucht keine komplexe AI / Markov Berechnung. Wir springen zum nächsten Spiel!
                 continue 
 
-            # --- FULL MATCHUP PATH (Both players found) --->
+            # --- FULL MATCHUP PATH --->
             hist_fair1, hist_fair2 = 0, 0
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
@@ -2359,8 +2335,7 @@ async def run_pipeline():
                 
                 try:
                     supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
-                except:
-                    pass
+                except: pass
                     
                 hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
                 hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
@@ -2388,37 +2363,8 @@ async def run_pipeline():
                 p1_history = await fetch_player_history_extended(full_n1, limit=80)
                 p2_history = await fetch_player_history_extended(full_n2, limit=80)
                 
-                api_stats_p1 = []
-                api_stats_p2 = []
-                if m.get('p1_api_key'):
-                    p1_api_data = await api.get_player_stats(str(m['p1_api_key']))
-                    api_stats_p1 = p1_api_data.get('stats', [])
-                if m.get('p2_api_key'):
-                    p2_api_data = await api.get_player_stats(str(m['p2_api_key']))
-                    api_stats_p2 = p2_api_data.get('stats', [])
-                
-                p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1, api_stats_p1)
-                p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2, api_stats_p2)
                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
-
-                h2h_record = "0 - 0"
-                if m.get('p1_api_key') and m.get('p2_api_key'):
-                    h2h_data = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
-                    if h2h_data and isinstance(h2h_data.get('H2H'), list):
-                        p1_wins, p2_wins = 0, 0
-                        for h2h_match in h2h_data['H2H']:
-                            winner_str = h2h_match.get('event_winner', '')
-                            past_p1_key = str(h2h_match.get('first_player_key', ''))
-                            
-                            if winner_str == "First Player":
-                                if past_p1_key == str(m['p1_api_key']): p1_wins += 1
-                                else: p2_wins += 1
-                            elif winner_str == "Second Player":
-                                if past_p1_key == str(m['p1_api_key']): p2_wins += 1
-                                else: p1_wins += 1
-                                
-                        h2h_record = f"{p1_wins} - {p2_wins}"
 
                 should_run_ai = True
                 if db_match_id and cached_ai:
@@ -2448,11 +2394,37 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
-                    # 🚀 SOTA FIX: Bulletproof Regex against AI String formatting shifts
-                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE).*?\]', '', cached_ai['ai_text']).strip() + value_tag
+                    # 🚀 SOTA DRIFT LOGIC: PUSH FIRE BEI UPDATE
+                    already_alerted = "[ALERT_SENT]" in cached_ai.get('ai_text', '')
+
+                    # 1. Säubere den Text von alten Werten UND dem alten ALERT_SENT Tag
+                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE|ALERT_SENT).*?\]', '', cached_ai['ai_text']).strip() 
+                    ai_text_final += value_tag
+                    
                     hist_fair1 = fair1
                     hist_fair2 = fair2
+
+                    # 2. Ist der Edge hoch genug zum Schießen?
+                    alert_pick_name = None
+                    alert_edge = 0.0
+                    alert_odds = 0.0
+                    if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
+                        alert_pick_name = full_n1
+                        alert_edge = val_p1["edge_percent"]
+                        alert_odds = m['odds1']
+                    elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
+                        alert_pick_name = full_n2
+                        alert_edge = val_p2["edge_percent"]
+                        alert_odds = m['odds2']
+
+                    # 3. Bestimme, ob wir in dieser Sekunde einen Push senden (Neue Edge, noch kein Push gesendet)
+                    will_alert_now = bool(alert_pick_name and not already_alerted)
+
+                    # 4. Wenn wir feuern, oder in der Vergangenheit gefeuert haben -> Stempel drauf.
+                    if already_alerted or will_alert_now:
+                        ai_text_final += "\n[ALERT_SENT]"
                     
+                    # 5. Speichern VOR dem Push (Verhindert fehlerhafte DB Locks)
                     if db_match_id:
                         try:
                             supabase.table("market_odds").update({
@@ -2467,6 +2439,12 @@ async def run_pipeline():
                                 "api_match_key": m['api_match_key'] 
                             }).eq("id", db_match_id).execute()
                         except: pass
+
+                    # 6. Push & Telegram feuern!
+                    if will_alert_now:
+                        await fire_sniper_push({"tournament": matched_tour_name}, alert_edge, alert_pick_name, alert_odds)
+                        # Optional: Sende auch hier bei puren Quoten-Drifts einen Telegram-Alert, falls gewünscht
+                        #await send_sniper_alert(...)
 
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
@@ -2483,6 +2461,11 @@ async def run_pipeline():
                         iterations=2500
                     )
                     
+                    # Dummy profiles for AI input to save tokens
+                    p1_surface_profile = {"rating": 5.0}
+                    p2_surface_profile = {"rating": 5.0}
+                    h2h_record = "0 - 0"
+
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
@@ -2492,20 +2475,6 @@ async def run_pipeline():
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
-                    
-                    p1_set_prob = math.pow(prob, 0.65)
-                    p2_set_prob = math.pow(1.0 - prob, 0.65)
-                    
-                    sim_result['h2h'] = h2h_record
-                    sim_result['set_probs'] = {
-                        "2:0": round((p1_set_prob * p1_set_prob) * 100, 1),
-                        "2:1": round((prob - (p1_set_prob * p1_set_prob)) * 100, 1),
-                        "0:2": round((p2_set_prob * p2_set_prob) * 100, 1),
-                        "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
-                    }
-                    
-                    sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
-                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
                     
                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
@@ -2520,7 +2489,30 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                     
+                    # 🚀 SOTA NEW MATCH / RE-RUN ALERT LOGIC
+                    already_alerted = False
+                    if existing_match:
+                        already_alerted = "[ALERT_SENT]" in existing_match.get("ai_analysis_text", "")
+
                     ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
+
+                    alert_pick_name = None
+                    alert_edge = 0.0
+                    alert_odds = 0.0
+                    if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
+                        alert_pick_name = full_n1
+                        alert_edge = val_p1["edge_percent"]
+                        alert_odds = m['odds1']
+                    elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
+                        alert_pick_name = full_n2
+                        alert_edge = val_p2["edge_percent"]
+                        alert_odds = m['odds2']
+
+                    will_alert_now = bool(alert_pick_name and not already_alerted)
+
+                    # Wenn wir feuern, oder gefeuert haben -> Stempel drauf
+                    if already_alerted or will_alert_now:
+                        ai_text_final += "\n[ALERT_SENT]"
 
                     data = {
                         "player1_name": full_n1, 
@@ -2542,6 +2534,7 @@ async def run_pipeline():
                     hist_fair1 = fair1
                     hist_fair2 = fair2
                     
+                    # SPEICHERN VOR DEM PUSH
                     if db_match_id: 
                         try:
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
@@ -2553,39 +2546,21 @@ async def run_pipeline():
                             res_ins = supabase.table("market_odds").insert(data).execute()
                             if res_ins.data: 
                                 db_match_id = res_ins.data[0]['id']
-                            log(f"💾 Saved New Match (Anchor Set): {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
-                            
-                            alert_pick_name = None
-                            alert_edge = 0.0
-                            alert_odds = 0.0
-                            if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
-                                alert_pick_name = full_n1
-                                alert_edge = val_p1["edge_percent"]
-                                alert_odds = m['odds1']
-                            elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
-                                alert_pick_name = full_n2
-                                alert_edge = val_p2["edge_percent"]
-                                alert_odds = m['odds2']
+                            log(f"💾 Saved New Match: {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
+                        except Exception as ins_err: pass
 
-                            if alert_pick_name:
-                                await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
-                                await send_sniper_alert(
-                                    p1=full_n1,
-                                    p2=full_n2,
-                                    opening_odds1=m['odds1'],
-                                    opening_odds2=m['odds2'],
-                                    fair1=fair1,
-                                    fair2=fair2,
-                                    edge=alert_edge,
-                                    pick_name=alert_pick_name,
-                                    tournament=matched_tour_name,
-                                    sim_result=sim_result,
-                                    bookmaker_odds=m.get('bookmaker_odds', {}),
-                                    h2h_record=h2h_record,
-                                    bookie="Opening"
-                                )
-                        except Exception as ins_err: 
-                            log(f"Insert Error: {ins_err}")
+                    # 🔥 Fire Push für brandneue Matches oder nach KI-Rerun
+                    if will_alert_now:
+                        await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
+                        await send_sniper_alert(
+                            p1=full_n1, p2=full_n2,
+                            opening_odds1=m['odds1'], opening_odds2=m['odds2'],
+                            fair1=fair1, fair2=fair2,
+                            edge=alert_edge, pick_name=alert_pick_name,
+                            tournament=matched_tour_name,
+                            sim_result=sim_result, bookmaker_odds=m.get('bookmaker_odds', {}),
+                            h2h_record=h2h_record, bookie="Opening"
+                        )
 
             if db_match_id:
                 should_log_history = False
@@ -2623,8 +2598,7 @@ async def run_pipeline():
             
     try:
         FantasySettlementEngine.run_settlement()
-    except Exception as e:
-        log(f"⚠️ FANTASY ENGINE ERROR: {e}")
+    except Exception as e: pass
         
     log("🏁 Cycle Finished.")
 
