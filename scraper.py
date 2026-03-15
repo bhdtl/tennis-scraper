@@ -51,10 +51,6 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
 
-# 🚀 SOTA: TELEGRAM SNIPER BOT SECRETS
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
 # 🚀 SOTA: WEB PUSH SECRETS (Clean Architecture)
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
 if not VAPID_PRIVATE_KEY:
