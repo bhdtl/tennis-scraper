@@ -523,146 +523,27 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         
     return False
 
-# 🚀 SOTA: TELEGRAM SNIPER ALERT FUNCTION
-async def send_sniper_alert(
-    p1: str, p2: str,
-    opening_odds1: float, opening_odds2: float,
-    fair1: float, fair2: float,
-    edge: float, pick_name: str,
-    tournament: str,
-    sim_result: Dict,
-    bookmaker_odds: Dict,
-    h2h_record: str = "N/A",
-    bookie: str = "Market"
-):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-
-    # --- 1. EDGE LABEL ---
-    if edge >= 15.0:
-        edge_label = "🔥 HIGH VALUE"
-    elif edge >= 8.0:
-        edge_label = "✨ GOOD VALUE"
-    elif edge >= 5.0:
-        edge_label = "📈 VALUE"
-    else:
-        edge_label = "👀 WATCH"
-
-    # --- 2. FAIR ODDS BLOCK ---
-    p1_is_pick = pick_name.lower() in p1.lower() or p1.lower() in pick_name.lower()
-    pick_odds   = opening_odds1 if p1_is_pick else opening_odds2
-    other_odds  = opening_odds2 if p1_is_pick else opening_odds1
-    pick_fair   = fair1 if p1_is_pick else fair2
-    other_fair  = fair2 if p1_is_pick else fair1
-
-    # --- 3. HANDICAP LINE ---
-    projected_handicap = sim_result.get('projected_handicap', None)
-    handicap_line_str = ""
-    if projected_handicap is not None:
-        active_fair_line = projected_handicap if p1_is_pick else -projected_handicap
-        if abs(active_fair_line) >= 1.0:
-            rounded = round(active_fair_line * 2) / 2
-            sign = "+" if rounded > 0 else ""
-            handicap_line_str = f"📐 *Proj\\. Spread:* `{sign}{rounded:.1f} Games` _{pick_name.split()[-1]}_\n"
-
-    # --- 4. SET BETTING PROBS ---
-    set_probs = sim_result.get('set_probs', {})
-    set_lines = []
-    if set_probs:
-        if p1_is_pick:
-            if set_probs.get("2:0", 0) >= 40:
-                set_lines.append(f"  • 2:0 {p1.split()[-1]}: *{set_probs['2:0']}%* (Fair: `{round(1/(set_probs['2:0']/100),2) if set_probs['2:0'] > 0 else '—'}`)")
-            if set_probs.get("2:1", 0) >= 25:
-                set_lines.append(f"  • 2:1 {p1.split()[-1]}: *{set_probs['2:1']}%*")
-        else:
-            if set_probs.get("0:2", 0) >= 40:
-                set_lines.append(f"  • 2:0 {p2.split()[-1]}: *{set_probs['0:2']}%* (Fair: `{round(1/(set_probs['0:2']/100),2) if set_probs['0:2'] > 0 else '—'}`)")
-            if set_probs.get("1:2", 0) >= 25:
-                set_lines.append(f"  • 2:1 {p2.split()[-1]}: *{set_probs['1:2']}%*")
-    set_block = ("🎯 *Set Probs:*\n" + "\n".join(set_lines) + "\n") if set_lines else ""
-
-    # --- 5. O/U TOTALS ---
-    probabilities = sim_result.get('probabilities', {})
-    predicted_line = sim_result.get('predicted_line', None)
-    ou_line_str = ""
-    dynamic_key = next((k for k in probabilities if k.startswith('over_') and k not in ['over_20_5', 'over_21_5', 'over_22_5', 'over_23_5']), None)
-    if dynamic_key:
-        line_val = dynamic_key.replace('over_', '').replace('_', '.')
-        over_prob = probabilities[dynamic_key] * 100
-        under_prob = 100 - over_prob
-        if over_prob >= 55:
-            ou_line_str = f"📊 *O/U:* OVER {line_val} Games — `{over_prob:.1f}%` (Fair: `{round(1/(over_prob/100),2)}`)\n"
-        elif under_prob >= 55:
-            ou_line_str = f"📊 *O/U:* UNDER {line_val} Games — `{under_prob:.1f}%` (Fair: `{round(1/(under_prob/100),2)}`)\n"
-    elif predicted_line:
-        ou_line_str = f"📊 *Predicted Total:* `{predicted_line} Games`\n"
-
-    # --- 6. LINE SHOPPING ---
-    bookie_lines = []
-    if bookmaker_odds:
-        sorted_bookies = sorted(
-            bookmaker_odds.items(),
-            key=lambda x: x[1].get('odds1', 0) if p1_is_pick else x[1].get('odds2', 0),
-            reverse=True
-        )
-        for bname, bodds in sorted_bookies[:5]: 
-            bval = bodds.get('odds1', 0) if p1_is_pick else bodds.get('odds2', 0)
-            if bval > 1.01:
-                star = "⭐" if bval == pick_odds else "  "
-                bookie_lines.append(f"{star} `{bname.upper()}` → *{bval:.2f}*")
-    bookie_block = ("🏦 *Line Shopping:*\n" + "\n".join(bookie_lines) + "\n") if bookie_lines else ""
-
-    message = (
-        f"🚨 *OPENING LINE SNIPER* 🚨\n"
-        f"_{tournament}_\n\n"
-        f"🎾 *{p1}* vs *{p2}*\n"
-        f"🔁 H2H: `{h2h_record}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *Pick:* `{pick_name}` — {edge_label}\n"
-        f"💰 *Opening Odds:* *{pick_odds:.2f}* vs {other_odds:.2f}\n"
-        f"🧠 *AI Fair Odds:* `{pick_fair:.2f}` vs {other_fair:.2f}\n"
-        f"⚡ *Edge:* *+{edge:.1f}%* on Opening Line\n\n"
-        f"{handicap_line_str}"
-        f"{set_block}"
-        f"{ou_line_str}"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"{bookie_block}"
-        f"\n_⏰ Early Value Alert — Opening Line_"
-    )
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(url, json=payload, timeout=5.0)
-            log(f"📲 TELEGRAM FULL ALERT GESENDET: {pick_name} +{edge:.1f}% Edge | {tournament}")
-    except Exception as e:
-        pass
-
-# 🚀 SOTA: NATIVE MOBILE PUSH ALERT
+# 🚀 SOTA: NATIVE MOBILE PUSH ALERT (iOS Koma-Sicher)
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
         if not VAPID_PRIVATE_KEY:
-            log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Push-Benachrichtigung übersprungen.")
+            log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Push übersprungen.")
             return
 
-        # 🚀 SOTA FIX: ID mitladen für den Auto-Purge von toten Tokens
         subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
         subscriptions = subs_res.data or []
         
         if not subscriptions:
-            log("⚠️ Keine Push-Abonnements in der Datenbank gefunden.")
             return
 
+        # 🚀 SOTA FIX: PWA / iOS konformer Payload. 
+        # Wir verpacken die Daten so, dass Service Worker sie auch im Background Wakeup korrekt parsen können.
         payload = json.dumps({
             "title": f"🚨 +{round(edge, 1)}% Edge Detected!",
-            "body": f"Pick: {pick_name} @ {odds} \nTournament: {match_data.get('tournament', 'Unknown')}",
-            "url": "/sniper-feed"
+            "body": f"Pick: {pick_name} @ {odds:.2f} \nTournament: {match_data.get('tournament', 'Unknown')}",
+            "url": "/sniper-feed",
+            "icon": "/icon-192x192.png", # Wichtig für einige Android/iOS Versionen
+            "badge": "/badge-72x72.png"  # Optional, verhindert Default-Icons
         })
 
         success_count = 0
@@ -674,17 +555,23 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                     subscription_info=sub_data,
                     data=payload,
                     vapid_private_key=VAPID_PRIVATE_KEY,
-                    vapid_claims=VAPID_CLAIMS
+                    vapid_claims=VAPID_CLAIMS,
+                    ttl=43200 # 🚀 SOTA FIX: Time To Live (12h). Verhindert, dass alte Pushes am nächsten Tag ankommen, wenn das Handy offline war.
                 )
                 success_count += 1
             except WebPushException as ex:
-                log(f"⚠️ WebPush Auth/Delivery Error: {repr(ex)}")
-                # 🚀 AUTO-PURGE: Zerstört tote Tokens automatisch aus der Datenbank
+                # 🚀 ARCHITECT LOGGING: Wenn Apple meckert, wollen wir den GRUND sehen!
+                err_msg = repr(ex)
+                if hasattr(ex, 'response') and ex.response is not None:
+                    err_msg += f" | Response Body: {ex.response.text}"
+                log(f"⚠️ WebPush Delivery Error (Gerät {sub_id}): {err_msg}")
+                
+                # Auto-Purge von toten Tokens
                 if hasattr(ex, 'response') and ex.response is not None:
                     if ex.response.status_code in [404, 410]:
                         try:
                             supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
-                            log(f"🗑️ Totes Push-Abo gelöscht (Status {ex.response.status_code}).")
+                            log(f"🗑️ Totes Push-Abo gelöscht.")
                         except: pass
         
         if success_count > 0:
