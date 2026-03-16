@@ -42,7 +42,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.3 - HYBRID SCORE SCHEMA EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.4 - PURE QUANT EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -102,7 +102,7 @@ class TennisDataAPI:
             "Wta Singles", 
             "Challenger Men Singles",
             "Challenger Women Singles",  
-            "Itf Men Singles",           
+            "Itf Men Singles",            
             "Itf Women Singles"          
         ]
 
@@ -522,14 +522,18 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 # 🚀 SOTA: NATIVE MOBILE PUSH ALERT (iOS Koma-Sicher)
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
+        log("🔍 [PUSH DEBUG] Starte Vorbereitung für Mobile Push...")
         if not VAPID_PRIVATE_KEY:
-            log("⚠️ VAPID_PRIVATE_KEY ist nicht gesetzt. Push übersprungen.")
+            log("⚠️ [PUSH DEBUG] VAPID_PRIVATE_KEY fehlt.")
             return
 
         subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
         subscriptions = subs_res.data or []
         
+        log(f"🔍 [PUSH DEBUG] Gefundene Tokens in Supabase: {len(subscriptions)}")
+
         if not subscriptions:
+            log("❌ [PUSH DEBUG] ABBRUCH: 0 Abonnements in der Datenbank! (Vielleicht ein RLS-Lese-Problem?)")
             return
 
         # 🚀 SOTA FIX: PWA / iOS konformer Payload. 
@@ -663,26 +667,26 @@ class MomentumV2Engine:
                         if won:
                             if opp_sets_won == 0: 
                                 game_diff = player_games_won - opp_games_won
-                                if game_diff >= 8: actual_perf = 1.0      
-                                elif game_diff >= 5: actual_perf = 0.9    
-                                elif game_diff >= 3: actual_perf = 0.8    
+                                if game_diff >= 8: actual_perf = 1.0     
+                                elif game_diff >= 5: actual_perf = 0.9   
+                                elif game_diff >= 3: actual_perf = 0.8   
                                 else: actual_perf = 0.7                    
                             else: 
                                 game_diff = player_games_won - opp_games_won
-                                if game_diff >= 4: actual_perf = 0.75     
-                                elif game_diff >= 1: actual_perf = 0.65   
+                                if game_diff >= 4: actual_perf = 0.75      
+                                elif game_diff >= 1: actual_perf = 0.65    
                                 else: actual_perf = 0.55                  
                         else:
                             if player_sets_won == 1: 
                                 game_diff = opp_games_won - player_games_won
-                                if game_diff <= 1: actual_perf = 0.45     
-                                elif game_diff <= 4: actual_perf = 0.35   
+                                if game_diff <= 1: actual_perf = 0.45      
+                                elif game_diff <= 4: actual_perf = 0.35    
                                 else: actual_perf = 0.25                  
                             else: 
                                 game_diff = opp_games_won - player_games_won
-                                if game_diff <= 3: actual_perf = 0.30     
-                                elif game_diff <= 5: actual_perf = 0.20   
-                                elif game_diff <= 7: actual_perf = 0.10   
+                                if game_diff <= 3: actual_perf = 0.30      
+                                elif game_diff <= 5: actual_perf = 0.20    
+                                elif game_diff <= 7: actual_perf = 0.10    
                                 else: actual_perf = 0.0                    
 
             match_edge = actual_perf - expected_perf 
@@ -1899,124 +1903,10 @@ class LiveSkillEngine:
         return new_skills
 
 # =================================================================
-# 12. FANTASY SETTLEMENT ENGINE
-# =================================================================
-class FantasySettlementEngine:
-    @staticmethod
-    def run_settlement():
-        log("🏆 [FANTASY ENGINE] Starte Settlement & Gameweek Management...")
-        now = datetime.now(timezone.utc)
-        
-        res_gw = supabase.table("fantasy_gameweeks").select("*").eq("status", "active").execute()
-        active_gws = res_gw.data or []
-        
-        for gw in active_gws:
-            deadline = datetime.fromisoformat(gw['deadline_time'].replace('Z', '+00:00'))
-            end_of_week = deadline + timedelta(days=7) 
-            
-            if now > end_of_week:
-                log(f"📉 [FANTASY ENGINE] Deadline + 7 Tage erreicht. Settling Gameweek {gw['week_number']}...")
-                FantasySettlementEngine.settle_gameweek(gw, deadline, end_of_week)
-                
-        res_latest = supabase.table("fantasy_gameweeks").select("*").order("start_time", desc=True).limit(1).execute()
-        latest_gw = res_latest.data[0] if res_latest.data else None
-        
-        if not latest_gw or datetime.fromisoformat(latest_gw['deadline_time'].replace('Z', '+00:00')) < now:
-            next_week_num = latest_gw['week_number'] + 1 if latest_gw else int(now.strftime("%V"))
-            next_year = latest_gw['year'] if latest_gw else now.year
-            if next_week_num > 52:
-                next_week_num = 1
-                next_year += 1
-                
-            days_ahead = 0 - now.weekday()
-            if days_ahead <= 0: days_ahead += 7
-            next_monday = now + timedelta(days=days_ahead)
-            next_deadline = next_monday.replace(hour=8, minute=0, second=0, microsecond=0)
-            
-            new_gw = {
-                "week_number": next_week_num,
-                "year": next_year,
-                "start_time": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "deadline_time": next_deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "status": "active"
-            }
-            supabase.table("fantasy_gameweeks").insert(new_gw).execute()
-            log(f"🌱 [FANTASY ENGINE] Neue Woche generiert: Week {next_week_num}, {next_year}")
-
-    @staticmethod
-    def settle_gameweek(gw: Dict, deadline: datetime, end_of_week: datetime):
-        gw_id = gw['id']
-        
-        lineups_res = supabase.table("fantasy_lineups").select("*").eq("gameweek_id", gw_id).execute()
-        lineups = lineups_res.data or []
-        
-        if not lineups:
-            supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
-            log(f"⏭️ [FANTASY ENGINE] Gameweek {gw['week_number']} geschlossen (Keine Aufstellungen).")
-            return
-
-        matches_res = supabase.table("market_odds").select("*").not_.is_("actual_winner_name", "null").gte("created_at", deadline.isoformat()).lte("created_at", end_of_week.isoformat()).execute()
-        matches = matches_res.data or []
-        
-        players_res = supabase.table("players").select("id, last_name, first_name").execute()
-        players_map = {p['id']: p for p in (players_res.data or [])}
-
-        for lineup in lineups:
-            total_pts = 0
-            for pid in [lineup.get('player1_id'), lineup.get('player2_id'), lineup.get('player3_id')]:
-                if not pid or pid not in players_map: continue
-                p_name = players_map[pid]['last_name'].lower()
-                
-                p_matches = [m for m in matches if p_name in str(m.get('player1_name')).lower() or p_name in str(m.get('player2_name')).lower()]
-                
-                for m in p_matches:
-                    won = p_name in str(m.get('actual_winner_name')).lower()
-                    is_p1 = p_name in str(m.get('player1_name')).lower()
-                    odds = float(m.get('odds1', 1.5)) if is_p1 else float(m.get('odds2', 1.5))
-                    
-                    if won:
-                        base = 50
-                        bonus = max(0, (odds - 1.5) * 20) 
-                        total_pts += (base + bonus)
-                    else:
-                        total_pts -= 10
-                        
-            total_pts = round(max(0, total_pts), 1)
-            uid = lineup['user_id']
-            
-            supabase.table("fantasy_lineups").update({"total_points": total_pts}).eq("id", lineup['id']).execute()
-            
-            xp_gain = int(total_pts * 10)
-            credits_gain = int(total_pts / 5) 
-            
-            prof_res = supabase.table("fantasy_profiles").select("*").eq("user_id", uid).execute()
-            if prof_res.data:
-                old_xp = prof_res.data[0].get('total_xp', 0)
-                supabase.table("fantasy_profiles").update({
-                    "total_xp": old_xp + xp_gain
-                }).eq("user_id", uid).execute()
-            else:
-                supabase.table("fantasy_profiles").insert({"user_id": uid, "total_xp": xp_gain}).execute()
-                
-            try:
-                main_prof_res = supabase.table("profiles").select("credits").eq("id", uid).execute()
-                if main_prof_res.data:
-                    old_credits = main_prof_res.data[0].get('credits') or 0
-                    supabase.table("profiles").update({
-                        "credits": old_credits + credits_gain
-                    }).eq("id", uid).execute()
-                    log(f"💰 {credits_gain} Echt-Credits an User {uid} (profiles) ausgeschüttet!")
-            except Exception as cred_err:
-                log(f"❌ Fehler beim Credit-Update für User {uid}: {cred_err}")
-        
-        supabase.table("fantasy_gameweeks").update({"status": "completed"}).eq("id", gw_id).execute()
-        log(f"✅ [FANTASY ENGINE] Gameweek {gw['week_number']} settled für {len(lineups)} Scouts. Points & Credits verteilt.")
-
-# =================================================================
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.3 (JUICE REEL QUANT SPREAD EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.4 (PURE QUANT EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2350,8 +2240,6 @@ async def run_pipeline():
                     # 🔥 PUSH FEUERN BEI UPDATE DRIFTS
                     if alert_pick_name and not already_sent:
                         await fire_sniper_push({"tournament": matched_tour_name}, alert_edge, alert_pick_name, alert_odds)
-                        # Option für Telegram (auskommentiert um Spam in deiner Telegram Gruppe zu vermeiden, aktivier es wenn du magst)
-                        # await send_sniper_alert(p1=full_n1, p2=full_n2, opening_odds1=m['odds1'], opening_odds2=m['odds2'], fair1=fair1, fair2=fair2, edge=alert_edge, pick_name=alert_pick_name, tournament=matched_tour_name, sim_result={}, bookmaker_odds=m.get('bookmaker_odds', {}))
 
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
@@ -2459,15 +2347,6 @@ async def run_pipeline():
                     # 🔥 PUSH FEUERN FÜR KOMPLETT NEUE SPIELE
                     if alert_pick_name and not already_sent:
                         await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
-                        await send_sniper_alert(
-                            p1=full_n1, p2=full_n2,
-                            opening_odds1=m['odds1'], opening_odds2=m['odds2'],
-                            fair1=fair1, fair2=fair2,
-                            edge=alert_edge, pick_name=alert_pick_name,
-                            tournament=matched_tour_name,
-                            sim_result=sim_result, bookmaker_odds=m.get('bookmaker_odds', {}),
-                            h2h_record=h2h_record, bookie="Opening"
-                        )
 
             if db_match_id:
                 should_log_history = False
@@ -2502,12 +2381,11 @@ async def run_pipeline():
             log(f"⚠️ Match Error bei Iteration: {e}")
             
     log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
-            
-    try:
-        FantasySettlementEngine.run_settlement()
-    except Exception as e: pass
         
     log("🏁 Cycle Finished.")
 
 if __name__ == "__main__":
-    asyncio.run(run_pipeline())
+    async def main():
+        await run_pipeline()
+    
+    asyncio.run(main())
