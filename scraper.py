@@ -42,7 +42,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.5 - TARGETED SNIPER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.6 - TARGETED SNIPER & H2H RESTORED)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1988,7 +1988,7 @@ async def process_user_sniper_alerts():
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.5 (TARGETED SNIPER EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.6 (TARGETED SNIPER & H2H RESTORED) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2341,7 +2341,29 @@ async def run_pipeline():
                     # Dummy profiles for AI input to save tokens
                     p1_surface_profile = {"rating": 5.0}
                     p2_surface_profile = {"rating": 5.0}
+                    
+                    # 🚀 SOTA FIX: Echtes H2H laden statt Dummy "0 - 0"
                     h2h_record = "0 - 0"
+                    if m.get('p1_api_key') and m.get('p2_api_key'):
+                        h2h_data = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
+                        if h2h_data and isinstance(h2h_data, list):
+                            w1, w2 = 0, 0
+                            p1_last = get_last_name(m['p1_raw']).lower()
+                            for h_match in h2h_data:
+                                winner = str(h_match.get("event_winner", "")).lower()
+                                if winner:
+                                    # Fall 1: API sagt "First Player" oder "Second Player"
+                                    if winner == "first player":
+                                        if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
+                                        else: w2 += 1
+                                    elif winner == "second player":
+                                        if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
+                                        else: w2 += 1
+                                    # Fall 2: API gibt den Namen aus
+                                    else:
+                                        if p1_last in winner: w1 += 1
+                                        else: w2 += 1
+                            h2h_record = f"{w1} - {w2}"
 
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
