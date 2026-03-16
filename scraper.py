@@ -522,13 +522,18 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 # 🚀 SOTA: NATIVE MOBILE PUSH ALERT (iOS Koma-Sicher) - MASS BROADCAST
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
+        log(f"🚨 [PUSH ENGINE] Trigger ausgelöst für {pick_name}! Prüfe Datenbank auf Handys...")
         if not VAPID_PRIVATE_KEY:
+            log("⚠️ [PUSH ENGINE] VAPID_PRIVATE_KEY fehlt in Secrets!")
             return
 
         subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
         subscriptions = subs_res.data or []
         
+        log(f"🔍 [PUSH ENGINE] Supabase Antwort: {len(subscriptions)} Token(s) gefunden.")
+
         if not subscriptions:
+            log("❌ [PUSH ENGINE] ABBRUCH! Tabelle 'push_subscriptions' ist leer ODER RLS blockiert den Lesezugriff (Service Role Key fehlt).")
             return
 
         payload = json.dumps({
@@ -557,13 +562,14 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                     if ex.response.status_code in [404, 410]:
                         try:
                             supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
+                            log(f"🗑️ [PUSH ENGINE] Totes Push-Abo gelöscht.")
                         except: pass
         
         if success_count > 0:
             log(f"📲 GLOBAL PUSH GESENDET an {success_count} Geräte: {pick_name}")
     except Exception as e:
         log(f"⚠️ Global Push Error: {e}")
-
+        
 # 🚀 SOTA: PERSONALIZED TARGETED PUSH ALERT (Für OddsLab Limit-Orders)
 async def fire_targeted_user_push(user_id: str, match_data: Dict, pick_name: str, target_odds: float, actual_odds: float):
     try:
