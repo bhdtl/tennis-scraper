@@ -42,7 +42,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.6 - TARGETED SNIPER & H2H RESTORED)...")
+log("🔌 Initialisiere Neural Scout (V204.7 - INFINITE MEMORY EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -522,18 +522,13 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 # 🚀 SOTA: NATIVE MOBILE PUSH ALERT (iOS Koma-Sicher) - MASS BROADCAST
 async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
     try:
-        log(f"🚨 [PUSH ENGINE] Trigger ausgelöst für {pick_name}! Prüfe Datenbank auf Handys...")
         if not VAPID_PRIVATE_KEY:
-            log("⚠️ [PUSH ENGINE] VAPID_PRIVATE_KEY fehlt in Secrets!")
             return
 
         subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
         subscriptions = subs_res.data or []
         
-        log(f"🔍 [PUSH ENGINE] Supabase Antwort: {len(subscriptions)} Token(s) gefunden.")
-
         if not subscriptions:
-            log("❌ [PUSH ENGINE] ABBRUCH! Tabelle 'push_subscriptions' ist leer ODER RLS blockiert den Lesezugriff (Service Role Key fehlt).")
             return
 
         payload = json.dumps({
@@ -562,14 +557,13 @@ async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: 
                     if ex.response.status_code in [404, 410]:
                         try:
                             supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
-                            log(f"🗑️ [PUSH ENGINE] Totes Push-Abo gelöscht.")
                         except: pass
         
         if success_count > 0:
             log(f"📲 GLOBAL PUSH GESENDET an {success_count} Geräte: {pick_name}")
     except Exception as e:
         log(f"⚠️ Global Push Error: {e}")
-        
+
 # 🚀 SOTA: PERSONALIZED TARGETED PUSH ALERT (Für OddsLab Limit-Orders)
 async def fire_targeted_user_push(user_id: str, match_data: Dict, pick_name: str, target_odds: float, actual_odds: float):
     try:
@@ -1403,6 +1397,24 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     except: 
         return "Unknown"
 
+def fetch_all_rows(table_name: str) -> List[Dict]:
+    """🚀 SOTA FIX: Paginates through Supabase to bypass the 1000-row limit."""
+    data = []
+    offset = 0
+    limit = 1000
+    while True:
+        try:
+            res = supabase.table(table_name).select("*").range(offset, offset + limit - 1).execute()
+            chunk = res.data or []
+            data.extend(chunk)
+            if len(chunk) < limit:
+                break
+            offset += limit
+        except Exception as e:
+            log(f"⚠️ Pagination error on {table_name}: {e}")
+            break
+    return data
+
 async def get_db_data():
     try:
         weights_res = supabase.table("ai_system_weights").select("*").execute()
@@ -1416,10 +1428,10 @@ async def get_db_data():
                     "MC_VARIANCE": to_float(w.get("mc_variance"), 1.20)
                 }
 
-        players = supabase.table("players").select("*").execute().data
-        skills = supabase.table("player_skills").select("*").execute().data
-        reports = supabase.table("scouting_reports").select("*").execute().data
-        tournaments = supabase.table("tournaments").select("*").execute().data
+        players = fetch_all_rows("players")
+        skills = fetch_all_rows("player_skills")
+        reports = fetch_all_rows("scouting_reports")
+        tournaments = fetch_all_rows("tournaments")
         
         if tournaments:
             for t in tournaments:
@@ -1994,7 +2006,7 @@ async def process_user_sniper_alerts():
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.6 (TARGETED SNIPER & H2H RESTORED) Starting...")
+    log(f"🚀 Neural Scout V204.7 (INFINITE MEMORY EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
