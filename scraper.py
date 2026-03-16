@@ -42,7 +42,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.7 - INFINITE MEMORY EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.8 - GHOST PROTOCOL EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -2006,7 +2006,7 @@ async def process_user_sniper_alerts():
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.7 (INFINITE MEMORY EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.8 (GHOST PROTOCOL EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2030,7 +2030,10 @@ async def run_pipeline():
         fixtures = await api.get_fixtures(target_date)
         
         for fix in fixtures:
-            if fix.get("event_status", "") != "": continue
+            # 🚀 SOTA FIX 1: Sichere Status-Abfrage (Ignoriere nur beendete/abgesagte)
+            status = fix.get("event_status", "")
+            if status in ["Finished", "Cancelled", "Retired", "Walkover"]: 
+                continue
             
             p1_raw = fix.get("event_first_player")
             p2_raw = fix.get("event_second_player")
@@ -2149,12 +2152,13 @@ async def run_pipeline():
             res1 = supabase.table("market_odds").select("*").eq("api_match_key", m['api_match_key']).execute()
             existing_match = res1.data[0] if res1.data else None
 
+            # 🚀 SOTA FIX 2: Fallback darf nur OFFENE Spiele finden, keine historischen!
             if not existing_match:
-                res_fb1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").order("created_at", desc=True).limit(1).execute()
+                res_fb1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").is_("actual_winner_name", "null").order("created_at", desc=True).limit(1).execute()
                 existing_match = res_fb1.data[0] if res_fb1.data else None
                 
             if not existing_match:
-                res_fb2 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n2_last}%").ilike("player2_name", f"%{n1_last}%").order("created_at", desc=True).limit(1).execute()
+                res_fb2 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n2_last}%").ilike("player2_name", f"%{n1_last}%").is_("actual_winner_name", "null").order("created_at", desc=True).limit(1).execute()
                 existing_match = res_fb2.data[0] if res_fb2.data else None
                 
                 if existing_match:
