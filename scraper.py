@@ -2014,7 +2014,7 @@ async def process_user_sniper_alerts():
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.8 (GHOST PROTOCOL EDITION) Starting...")
+    log(f"🚀 Neural Scout V204.9 (ULTIMATE H2H & PUSH EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2242,9 +2242,8 @@ async def run_pipeline():
                     "api_match_key": m['api_match_key'] 
                 }
                 
-                if final_time_str and not final_time_str.endswith("T00:00:00Z"):
-                    update_data["match_time"] = final_time_str
-                
+                # Wenn wir im Code für Update landen, wollen wir auch einen Push triggern (falls Edge > 5)
+                # Wir müssen hist_fair1/2 wieder laden, um Edge zu berechnen:
                 try:
                     supabase.table("market_odds").update(update_data).eq("id", db_match_id).execute()
                 except: pass
@@ -2252,6 +2251,30 @@ async def run_pipeline():
                 hist_fair1 = to_float(existing_match.get('ai_fair_odds1'), 0)
                 hist_fair2 = to_float(existing_match.get('ai_fair_odds2'), 0)
                 
+                val_p1 = calculate_value_metrics(1/hist_fair1, m['odds1']) if hist_fair1 > 0 else {"is_value": False, "edge_percent": 0}
+                val_p2 = calculate_value_metrics(1/hist_fair2, m['odds2']) if hist_fair2 > 0 else {"is_value": False, "edge_percent": 0}
+                
+                already_sent = "[ALERT_SENT]" in existing_match.get('ai_analysis_text', '')
+                alert_pick_name = None
+                alert_edge = 0.0
+                alert_odds = 0.0
+                if val_p1.get("is_value") and val_p1.get("edge_percent", 0) >= 5.0:
+                    alert_pick_name = full_n1
+                    alert_edge = val_p1["edge_percent"]
+                    alert_odds = m['odds1']
+                elif val_p2.get("is_value") and val_p2.get("edge_percent", 0) >= 5.0:
+                    alert_pick_name = full_n2
+                    alert_edge = val_p2["edge_percent"]
+                    alert_odds = m['odds2']
+                    
+                if alert_pick_name and not already_sent:
+                    # Stempel nachtragen
+                    ai_text_new = existing_match.get('ai_analysis_text', '') + "\n[ALERT_SENT]"
+                    try:
+                        supabase.table("market_odds").update({"ai_analysis_text": ai_text_new}).eq("id", db_match_id).execute()
+                    except: pass
+                    await fire_sniper_push(update_data, alert_edge, alert_pick_name, alert_odds)
+
             else:
                 cached_ai = {}
                 if existing_match and existing_match.get('ai_analysis_text'):
@@ -2351,7 +2374,7 @@ async def run_pipeline():
 
                     # 🔥 PUSH FEUERN BEI UPDATE DRIFTS
                     if alert_pick_name and not already_sent:
-                        await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
+                        await fire_sniper_push({"tournament": matched_tour_name}, alert_edge, alert_pick_name, alert_odds)
 
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
@@ -2372,29 +2395,36 @@ async def run_pipeline():
                     p1_surface_profile = {"rating": 5.0}
                     p2_surface_profile = {"rating": 5.0}
                     
-                    # 🚀 SOTA FIX: Echtes H2H laden statt Dummy "0 - 0"
+                    # 🚀 SOTA FIX: Echtes H2H laden (API gibt ein DICT zurück!)
                     h2h_record = "0 - 0"
                     if m.get('p1_api_key') and m.get('p2_api_key'):
                         try:
-                            h2h_data = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
-                            if h2h_data and isinstance(h2h_data, list):
-                                w1, w2 = 0, 0
-                                p1_last = get_last_name(m['p1_raw']).lower()
-                                for h_match in h2h_data:
-                                    winner = str(h_match.get("event_winner", "")).lower()
-                                    if winner:
-                                        # Fall 1: API sagt "First Player" oder "Second Player"
-                                        if winner == "first player":
-                                            if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
-                                            else: w2 += 1
-                                        elif winner == "second player":
-                                            if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
-                                            else: w2 += 1
-                                        # Fall 2: API gibt den Namen aus
-                                        else:
-                                            if p1_last in winner: w1 += 1
-                                            else: w2 += 1
-                                h2h_record = f"{w1} - {w2}"
+                            # Die API gibt {"H2H": [], "firstPlayerResults": [], ...} zurück
+                            h2h_response = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
+                            
+                            if h2h_response and isinstance(h2h_response, dict):
+                                h2h_matches = h2h_response.get("H2H", [])
+                                
+                                if isinstance(h2h_matches, list) and len(h2h_matches) > 0:
+                                    w1, w2 = 0, 0
+                                    p1_last = get_last_name(m['p1_raw']).lower()
+                                    
+                                    for h_match in h2h_matches:
+                                        winner = str(h_match.get("event_winner", "")).lower()
+                                        if winner:
+                                            # Fall 1: API sagt "First Player" oder "Second Player"
+                                            if winner == "first player":
+                                                if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
+                                                else: w2 += 1
+                                            elif winner == "second player":
+                                                if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
+                                                else: w2 += 1
+                                            # Fall 2: API gibt direkt den Namen aus
+                                            else:
+                                                if p1_last in winner: w1 += 1
+                                                else: w2 += 1
+                                                
+                                    h2h_record = f"{w1} - {w2}"
                         except Exception as e:
                             log(f"⚠️ H2H Error: {e}")
 
@@ -2506,26 +2536,4 @@ async def run_pipeline():
                         "odds2": m['odds2'], 
                         "fair_odds1": hist_fair1, 
                         "fair_odds2": hist_fair2, 
-                        "is_hunter_pick": (hist_is_value or is_signal_locked),
-                        "pick_player_name": "LOCKED" if is_signal_locked else hist_pick_player,
-                        "recorded_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    }
-                    try: 
-                        supabase.table("odds_history").insert(h_data).execute()
-                    except: pass
-
-        except Exception as e: 
-            log(f"⚠️ Match Error bei Iteration: {e}")
-            
-    log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
-    
-    # 🚀 SOTA: USER LIMIT ORDERS (SNIPER) SWEEP AUSFÜHREN
-    await process_user_sniper_alerts()
-        
-    log("🏁 Cycle Finished.")
-
-if __name__ == "__main__":
-    async def main():
-        await run_pipeline()
-    
-    asyncio.run(main())
+                        "is_hunter_pick": (hist_is_value or is_signal
