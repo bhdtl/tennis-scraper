@@ -2382,28 +2382,32 @@ async def run_pipeline():
                             if h2h_response and isinstance(h2h_response, dict):
                                 h2h_matches = h2h_response.get("H2H", [])
                                 
-                                if isinstance(h2h_matches, list) and len(h2h_matches) > 0:
-                                    w1, w2 = 0, 0
-                                    p1_last = get_last_name(m['p1_raw']).lower()
-                                    
-                                    for h_match in h2h_matches:
-                                        winner = str(h_match.get("event_winner", "")).lower()
-                                        if winner:
-                                            # Fall 1: API sagt "First Player" oder "Second Player"
-                                            if winner == "first player":
-                                                if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
-                                                else: w2 += 1
-                                            elif winner == "second player":
-                                                if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
-                                                else: w2 += 1
-                                            # Fall 2: API gibt direkt den Namen aus
-                                            else:
-                                                if p1_last in winner: w1 += 1
-                                                else: w2 += 1
-                                            
-                                                            h2h_record = f"{w1} - {w2}"
-                        except Exception as e:
-                            log(f"⚠️ H2H Error: {e}")
+                                                  # ... davorerliegender Code ...
+                    if isinstance(h2h_matches, list) and len(h2h_matches) > 0:
+                        w1, w2 = 0, 0
+                        p1_last = get_last_name(m['p1_raw']).lower()
+                        
+                        for h_match in h2h_matches:
+                            winner = str(h_match.get("event_winner", "")).lower()
+                            if winner:
+                                # Fall 1: API sagt "First Player" oder "Second Player"
+                                if winner == "first player":
+                                    if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
+                                    else: w2 += 1
+                                elif winner == "second player":
+                                    if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
+                                    else: w2 += 1
+                                # Fall 2: API gibt direkt den Namen aus
+                                else:
+                                    if p1_last in winner: w1 += 1
+                                    else: w2 += 1
+                        
+                        # KORREKTUR: Zuweisung nach der Schleife auf gleicher Ebene wie das 'for'
+                        h2h_record = f"{w1} - {w2}"
+                        
+            except Exception as e:
+                log(f"⚠️ H2H Error: {e}")
+
 
                     # 🚀 SOTA FRONTEND FIX: Packe das H2H in das sim_result JSON, damit React es findet!
                     sim_result["h2h"] = h2h_record
