@@ -17,7 +17,6 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 import urllib.parse
 import numpy as np # SOTA: Required for Neural Grid Search
-from pywebpush import webpush, WebPushException # 🚀 SOTA: Mobile Push Notifications
 
 import httpx
 from supabase import create_client, Client
@@ -42,20 +41,13 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.9 - ULTIMATE H2H & PUSH EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.9 - CORE SCANNER EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# Zwinge Python, die Master-Rechte zu nutzen (für Push-Sub-Abfrage)
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
-
-# 🚀 SOTA: WEB PUSH SECRETS (Clean Architecture)
-VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY")
-if not VAPID_PRIVATE_KEY:
-    VAPID_PRIVATE_KEY = "lilvmR9dnAWN-u4G5Skyu-2IYb6n4E_OIRy7IGrGTWo"
-VAPID_CLAIMS = {"sub": "mailto:bh.dtl@web.de"} 
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
@@ -518,101 +510,6 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
         return True
         
     return False
-
-# 🚀 SOTA: NATIVE MOBILE PUSH ALERT (iOS Koma-Sicher) - MASS BROADCAST
-async def fire_sniper_push(match_data: Dict, edge: float, pick_name: str, odds: float):
-    try:
-        log(f"🚨 [PUSH ENGINE] Trigger ausgelöst für {pick_name}! Prüfe Datenbank auf Handys...")
-        if not VAPID_PRIVATE_KEY:
-            log("⚠️ [PUSH ENGINE] VAPID_PRIVATE_KEY fehlt in Secrets!")
-            return
-
-        subs_res = supabase.table("push_subscriptions").select("id, subscription").execute()
-        subscriptions = subs_res.data or []
-        
-        log(f"🔍 [PUSH ENGINE] Supabase Antwort: {len(subscriptions)} Token(s) gefunden.")
-
-        if not subscriptions:
-            log("❌ [PUSH ENGINE] ABBRUCH! Tabelle 'push_subscriptions' ist leer ODER RLS blockiert den Lesezugriff (Service Role Key fehlt).")
-            return
-
-        payload = json.dumps({
-            "title": f"🚨 +{round(edge, 1)}% Edge Detected!",
-            "body": f"Pick: {pick_name} @ {odds:.2f} \nTournament: {match_data.get('tournament', 'Unknown')}",
-            "url": "/sniper-feed",
-            "icon": "/icon-192x192.png", 
-            "badge": "/badge-72x72.png"  
-        })
-
-        success_count = 0
-        for row in subscriptions:
-            sub_data = row['subscription']
-            sub_id = row['id']
-            try:
-                webpush(
-                    subscription_info=sub_data,
-                    data=payload,
-                    vapid_private_key=VAPID_PRIVATE_KEY,
-                    vapid_claims=VAPID_CLAIMS,
-                    ttl=43200 
-                )
-                success_count += 1
-            except WebPushException as ex:
-                if hasattr(ex, 'response') and ex.response is not None:
-                    if ex.response.status_code in [404, 410]:
-                        try:
-                            supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
-                            log(f"🗑️ [PUSH ENGINE] Totes Push-Abo gelöscht.")
-                        except: pass
-        
-        if success_count > 0:
-            log(f"📲 GLOBAL PUSH GESENDET an {success_count} Geräte: {pick_name}")
-    except Exception as e:
-        log(f"⚠️ Global Push Error: {e}")
-
-# 🚀 SOTA: PERSONALIZED TARGETED PUSH ALERT (Für OddsLab Limit-Orders)
-async def fire_targeted_user_push(user_id: str, match_data: Dict, pick_name: str, target_odds: float, actual_odds: float):
-    try:
-        log(f"🎯 [PUSH ENGINE] Bereite gezielten Push für User {user_id} vor...")
-        if not VAPID_PRIVATE_KEY:
-            return
-
-        # Wir holen exakt NUR den Token für diesen einen User
-        subs_res = supabase.table("push_subscriptions").select("id, subscription").eq("user_id", user_id).execute()
-        subscriptions = subs_res.data or []
-        
-        if not subscriptions:
-            log(f"⚠️ [PUSH ENGINE] Kein Push-Token für User {user_id} gefunden. Alarm wird übersprungen.")
-            return
-
-        payload = json.dumps({
-            "title": f"🎯 SNIPER ALERT TRIGGERED!",
-            "body": f"Your target of {target_odds:.2f} for {pick_name} has been hit!\nCurrent odds: {actual_odds:.2f}",
-            "url": "/odds-lab",
-            "icon": "/icon-192x192.png",
-            "badge": "/badge-72x72.png"
-        })
-
-        for row in subscriptions:
-            sub_data = row['subscription']
-            sub_id = row['id']
-            try:
-                webpush(
-                    subscription_info=sub_data,
-                    data=payload,
-                    vapid_private_key=VAPID_PRIVATE_KEY,
-                    vapid_claims=VAPID_CLAIMS,
-                    ttl=43200 
-                )
-                log(f"🎯 TARGETED PUSH GESENDET an User {user_id} für Pick: {pick_name}")
-            except WebPushException as ex:
-                if hasattr(ex, 'response') and ex.response is not None:
-                    if ex.response.status_code in [404, 410]:
-                        try:
-                            supabase.table("push_subscriptions").delete().eq("id", sub_id).execute()
-                        except: pass
-    except Exception as e:
-        log(f"⚠️ Targeted Push Error: {e}")
 
 # =================================================================
 # 3. SOTA MOMENTUM V3 ENGINE (🔥 HYBRID PARSER EDITION)
@@ -1956,61 +1853,6 @@ class LiveSkillEngine:
         return new_skills
 
 # =================================================================
-# 12. SOTA USER ALERTS PROCESSOR (SNIPER/LIMIT ORDERS)
-# =================================================================
-async def process_user_sniper_alerts():
-    log("🎯 Checking personalized Sniper Alerts (OddsLab Limit Orders)...")
-    try:
-        alerts_res = supabase.table("sniper_alerts").select("*").eq("is_active", True).execute()
-        alerts = alerts_res.data or []
-        if not alerts:
-            return
-            
-        match_ids = list(set([a['match_id'] for a in alerts]))
-        if not match_ids: return
-        
-        matches_res = supabase.table("market_odds").select("*").in_("id", match_ids).execute()
-        matches_map = {m['id']: m for m in (matches_res.data or [])}
-        
-        hit_count = 0
-        for alert in alerts:
-            m = matches_map.get(alert['match_id'])
-            if not m: continue
-            
-            p1 = str(m.get('player1_name', ''))
-            p2 = str(m.get('player2_name', ''))
-            o1 = to_float(m.get('odds1'), 0.0)
-            o2 = to_float(m.get('odds2'), 0.0)
-            
-            pick_name = alert['pick_player_name']
-            target_odds = to_float(alert['target_odds'], 0.0)
-            
-            is_p1 = pick_name.lower() in p1.lower() or p1.lower() in pick_name.lower()
-            actual_odds = o1 if is_p1 else o2
-            
-            # Hat die aktuelle Marktquote das vom User gewählte Target erreicht?
-            if actual_odds >= target_odds and actual_odds > 1.01:
-                hit_count += 1
-                log(f"🎯 TARGET HIT für User {alert['user_id']}: {pick_name} @ {actual_odds} (Ziel: {target_odds})")
-                
-                # Sende dem EINEN User seinen Push
-                await fire_targeted_user_push(
-                    user_id=alert['user_id'], 
-                    match_data=m, 
-                    pick_name=pick_name, 
-                    target_odds=target_odds, 
-                    actual_odds=actual_odds
-                )
-                # Alarm deaktivieren (kein Spam mehr)
-                supabase.table("sniper_alerts").update({"is_active": False}).eq("id", alert['id']).execute()
-                
-        if hit_count > 0:
-            log(f"🎯 {hit_count} individuelle User-Limit-Orders erfolgreich ausgeführt!")
-            
-    except Exception as e:
-        log(f"⚠️ Error processing personalized sniper alerts: {e}")
-
-# =================================================================
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
@@ -2306,33 +2148,12 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
-                    # 🚀 SOTA DRIFT LOGIC & STATE MACHINE
-                    already_sent = "[ALERT_SENT]" in cached_ai.get('ai_text', '')
-
-                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE|ALERT_SENT).*?\]', '', cached_ai['ai_text']).strip() 
+                    # 🚀 SOTA DRIFT LOGIC
+                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE).*?\]', '', cached_ai['ai_text']).strip() 
                     ai_text_final += value_tag
                     
                     hist_fair1 = fair1
                     hist_fair2 = fair2
-
-                    # Edge check für Push
-                    alert_pick_name = None
-                    alert_edge = 0.0
-                    alert_odds = 0.0
-                    if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
-                        alert_pick_name = full_n1
-                        alert_edge = val_p1["edge_percent"]
-                        alert_odds = m['odds1']
-                    elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
-                        alert_pick_name = full_n2
-                        alert_edge = val_p2["edge_percent"]
-                        alert_odds = m['odds2']
-
-                    # Stempel setzen
-                    if alert_pick_name and not already_sent:
-                        ai_text_final += "\n[ALERT_SENT]"
-                    elif already_sent:
-                        ai_text_final += "\n[ALERT_SENT]"
                     
                     if db_match_id:
                         try:
@@ -2348,10 +2169,6 @@ async def run_pipeline():
                                 "api_match_key": m['api_match_key'] 
                             }).eq("id", db_match_id).execute()
                         except: pass
-
-                    # 🔥 PUSH FEUERN BEI UPDATE DRIFTS
-                    if alert_pick_name and not already_sent:
-                        await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
 
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
@@ -2431,31 +2248,8 @@ async def run_pipeline():
                         value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
                         hist_is_value = True
                         hist_pick_player = full_n2
-                    
-                    # 🚀 SOTA STATE MACHINE: NEW MATCH / RE-RUN
-                    already_sent = False
-                    if existing_match:
-                        already_sent = "[ALERT_SENT]" in existing_match.get("ai_analysis_text", "")
 
                     ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
-
-                    alert_pick_name = None
-                    alert_edge = 0.0
-                    alert_odds = 0.0
-                    if val_p1["is_value"] and val_p1["edge_percent"] >= 5.0:
-                        alert_pick_name = full_n1
-                        alert_edge = val_p1["edge_percent"]
-                        alert_odds = m['odds1']
-                    elif val_p2["is_value"] and val_p2["edge_percent"] >= 5.0:
-                        alert_pick_name = full_n2
-                        alert_edge = val_p2["edge_percent"]
-                        alert_odds = m['odds2']
-
-                    # Stempel setzen
-                    if alert_pick_name and not already_sent:
-                        ai_text_final += "\n[ALERT_SENT]"
-                    elif already_sent:
-                        ai_text_final += "\n[ALERT_SENT]"
 
                     data = {
                         "player1_name": full_n1, 
@@ -2477,7 +2271,7 @@ async def run_pipeline():
                     hist_fair1 = fair1
                     hist_fair2 = fair2
                     
-                    # DB SPEICHERN VOR DEM PUSH (um Locks zu verhindern)
+                    # DB SPEICHERN
                     if db_match_id: 
                         try:
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
@@ -2491,10 +2285,6 @@ async def run_pipeline():
                                 db_match_id = res_ins.data[0]['id']
                             log(f"💾 Saved New Match: {full_n1} vs {full_n2} - Open: {m['odds1']} | {m['odds2']}")
                         except Exception as ins_err: pass
-
-                    # 🔥 PUSH FEUERN FÜR KOMPLETT NEUE SPIELE
-                    if alert_pick_name and not already_sent:
-                        await fire_sniper_push(data, alert_edge, alert_pick_name, alert_odds)
 
             if db_match_id:
                 should_log_history = False
@@ -2529,9 +2319,6 @@ async def run_pipeline():
             log(f"⚠️ Match Error bei Iteration: {e}")
             
     log(f"📊 SUMMARY: {db_matched_count} relevante DB-Matches erfolgreich prozessiert.")
-    
-    # 🚀 SOTA: USER LIMIT ORDERS (SNIPER) SWEEP AUSFÜHREN
-    await process_user_sniper_alerts()
         
     log("🏁 Cycle Finished.")
 
