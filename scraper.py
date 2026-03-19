@@ -2400,10 +2400,13 @@ async def run_pipeline():
                                             else:
                                                 if p1_last in winner: w1 += 1
                                                 else: w2 += 1
-                                                
-                                    h2h_record = f"{w1} - {w2}"
+                                            
+                                                            h2h_record = f"{w1} - {w2}"
                         except Exception as e:
                             log(f"⚠️ H2H Error: {e}")
+
+                    # 🚀 SOTA FRONTEND FIX: Packe das H2H in das sim_result JSON, damit React es findet!
+                    sim_result["h2h"] = h2h_record
 
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
