@@ -27,7 +27,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V153.9 SOTA Parity - Name Initial Fix + Cynical Synergy Agent)...")
+log("🔮 Initializing Oracle Pre-Warmer (V153.9 SOTA Parity - Name Initial Fix + Quant Synergy Agent)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -365,13 +365,13 @@ async def call_edge_function(payload: dict):
             return None
 
 # =================================================================
-# 🚀 TOURNAMENT SYNERGY AGENT (CYNICAL MODE + BSI ROI)
+# 🚀 TOURNAMENT SYNERGY AGENT (BALANCED QUANT MODE + BSI ROI)
 # =================================================================
 async def generate_synergy_for_player(player_name, tournament_name, surface, bsi, notes, strengths, weaknesses, play_style, roi, total_matches):
     prompt = f"""
-    You are a ruthless, highly cynical Senior Tennis Betting Sharp specializing in "Horses for Courses" strategy.
-    Your job is to critically analyze how {player_name}'s playstyle fits the EXACT physical conditions of {tournament_name}.
-    DO NOT hype the player up. Most players DO NOT fit a court perfectly. Find the flaws. 
+    You are an elite, data-driven Quantitative Tennis Analyst specializing in "Horses for Courses" strategy.
+    Your goal is absolute accuracy and objective nuance, avoiding both blind hype and artificial harshness.
+    Analyze how perfectly {player_name}'s playstyle fits the EXACT physical conditions of {tournament_name}.
 
     Player: {player_name}
     Playstyle: {play_style}
@@ -386,19 +386,20 @@ async def generate_synergy_for_player(player_name, tournament_name, surface, bsi
     Historical ROI on exactly this Court Profile (Surface + BSI Speed Bucket): {roi:.1f}% (over {total_matches} matches)
 
     INSTRUCTIONS:
-    1. Calculate a 'synergy_score' from 1.0 to 10.0. 
-       - USE THE FULL SCALE. 5.0 is exactly average. 
-       - Give 3.0 or 4.0 if their weaknesses are exposed by this court speed/bounce.
-       - Only give 8.0+ for truly exceptional generational specialists on this surface.
+    1. Calculate a highly accurate 'synergy_score' from 1.0 to 10.0. 
+       - 5.0 is a neutral/average fit.
+       - 6.0 - 7.5 means a strong, advantageous fit where strengths align with the court.
+       - 8.0 - 10.0 is reserved for exceptional harmony between style and surface (e.g. big server on high altitude).
+       - 1.0 - 4.5 means their game is actively hindered or weaknesses are exposed by these conditions.
        - Weight the final score: 90% based on your tactical playstyle physics analysis, and 10% based on the Historical ROI.
-    2. Provide a 1-3 word 'verdict' (e.g. "Vulnerable", "Exposed", "Dangerous Underdog", "Neutral", "Lethal Edge"). Make it highly individualized!
-    3. Write 3 highly technical 'tactical_bullets' explaining WHY. Reference specific strokes and how they interact negatively or positively with the {bsi} BSI rating and court notes.
+    2. Provide a 1-3 word 'verdict' (e.g. "Slight Advantage", "Exposed", "Perfect Conditions", "Neutral Fit"). Be precise and objective.
+    3. Write 3 highly technical 'tactical_bullets' explaining WHY. Detail how specific strokes (e.g., flat forehand, kick serve, slice) interact negatively or positively with the {bsi} BSI rating and court notes.
     4. RETURN ONLY VALID JSON. English language. No markdown wrappers.
 
     JSON FORMAT:
     {{
-      "synergy_score": 4.2,
-      "verdict": "Vulnerable",
+      "synergy_score": 6.8,
+      "verdict": "Strong Advantage",
       "tactical_bullets": ["Reason 1", "Reason 2", "Reason 3"]
     }}
     """
@@ -504,7 +505,7 @@ async def execute_synergy_analysis():
             except Exception as e:
                 log(f"    ⚠️ ROI Calc error for {p_name}: {e}")
             
-            log(f"🤖 Generating Cynical Court Synergy Analysis for {p_name} @ {t_name} (ROI: {roi:.1f}%)...")
+            log(f"🤖 Generating Quant Court Synergy Analysis for {p_name} @ {t_name} (ROI: {roi:.1f}%)...")
             try:
                 ai_data = await generate_synergy_for_player(
                     p_name, t_name, 
