@@ -10,6 +10,7 @@ import unicodedata
 import httpx
 import math
 import difflib
+import json
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Any, Set
 
@@ -26,11 +27,12 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V153.9 SOTA Parity - Name Initial Fix)...")
+log("🔮 Initializing Oracle Pre-Warmer (V153.9 SOTA Parity - Name Initial Fix + Synergy Agent)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 FUNCTION_URL = os.environ.get("SUPABASE_FUNCTION_URL")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") # 🚀 NEU: OpenRouter API für Synergy
 
 if not SUPABASE_URL or not SUPABASE_KEY or not FUNCTION_URL:
     log("❌ CRITICAL: Secrets missing (Need URL, KEY and FUNCTION_URL)!")
@@ -351,6 +353,127 @@ async def call_edge_function(payload: dict):
             return None
 
 # =================================================================
+# 🚀 NEU: TOURNAMENT SYNERGY AGENT
+# =================================================================
+async def generate_synergy_for_player(player_name, tournament_name, surface, bsi, notes, strengths, weaknesses, play_style):
+    prompt = f"""
+    You are an elite Senior Tennis Analyst specializing in "Horses for Courses" strategy.
+    Analyze how perfectly {player_name}'s playstyle fits the EXACT physical conditions of {tournament_name}.
+
+    Player: {player_name}
+    Playstyle: {play_style}
+    Strengths: {strengths}
+    Weaknesses: {weaknesses}
+
+    Court: {tournament_name}
+    Surface: {surface}
+    BSI Speed Rating (1-10): {bsi} 
+    Court Notes: {notes}
+
+    INSTRUCTIONS:
+    1. Calculate a 'synergy_score' from 1.0 to 10.0 (how perfectly style matches court physics).
+    2. Provide a 1-3 word 'verdict' (e.g. "Perfect Fit", "Vulnerable", "Dangerous Underdog").
+    3. Write 3 highly technical 'tactical_bullets' explaining WHY strengths/weaknesses are amplified.
+    4. RETURN ONLY VALID JSON. English language.
+
+    JSON FORMAT:
+    {{
+      "synergy_score": 8.5,
+      "verdict": "Perfect Match",
+      "tactical_bullets": ["Reason 1", "Reason 2", "Reason 3"]
+    }}
+    """
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            'https://openrouter.ai/api/v1/chat/completions',
+            headers={'Authorization': f'Bearer {OPENROUTER_API_KEY}', 'Content-Type': 'application/json'},
+            json={
+                "model": "meta-llama/llama-3.3-70b-instruct",
+                "messages": [{"role": "system", "content": "Return only JSON."}, {"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"}
+            }
+        )
+        data = response.json()
+        content = data['choices'][0]['message']['content']
+        return json.loads(content)
+
+async def execute_synergy_analysis():
+    log("🚀 Starting Pre-Calculation Synergy Pipeline...")
+    if not OPENROUTER_API_KEY:
+        log("⚠️ OPENROUTER_API_KEY missing, skipping Synergy Pipeline.")
+        return
+
+    # 1. Hole alle aktuellen Oracle Draws (Turniere & Spieler)
+    draws_res = supabase.table('tournament_oracle_draws').select('tournament_name, player_a_name, player_b_name').execute()
+    draws = draws_res.data if draws_res else []
+    
+    tournaments = {}
+    for draw in draws:
+        t_name = draw.get('tournament_name', '').strip()
+        if not t_name: continue
+        if t_name not in tournaments: tournaments[t_name] = set()
+        if draw.get('player_a_name'): tournaments[t_name].add(draw['player_a_name'].strip())
+        if draw.get('player_b_name'): tournaments[t_name].add(draw['player_b_name'].strip())
+
+    # 2. Hole Turnier-Details (BSI, Notes)
+    tour_details = supabase.table('tournaments').select('name, surface, bsi_rating, notes').execute().data
+    tour_map = {t['name'].strip().lower(): t for t in (tour_details or [])}
+
+    # 3. Hole Spieler & Scout-Reports
+    players = supabase.table('players').select('id, last_name, play_style, first_name').execute().data
+    reports = supabase.table('scouting_reports').select('player_id, strengths, weaknesses').execute().data
+    
+    report_map = {r['player_id']: r for r in (reports or [])}
+    player_map = {p['last_name'].strip().lower(): p for p in (players or [])}
+
+    # 4. Hole bereits berechnete Synergies
+    existing = supabase.table('tournament_court_synergy').select('tournament_name, player_name').execute().data
+    existing_set = {f"{e['tournament_name']}_{e['player_name']}" for e in (existing or [])}
+
+    for t_name, player_set in tournaments.items():
+        t_info = tour_map.get(t_name.lower())
+        if not t_info: continue
+
+        for p_name in player_set:
+            if f"{t_name}_{p_name}" in existing_set:
+                continue # Schon berechnet, überspringen
+
+            last_name_part = p_name.split(' ')[-1].lower()
+            p_info = player_map.get(last_name_part) 
+            if not p_info: continue
+            
+            p_report = report_map.get(p_info['id'])
+            
+            log(f"🤖 Generating Court Synergy Analysis for {p_name} @ {t_name}...")
+            try:
+                ai_data = await generate_synergy_for_player(
+                    p_name, t_name, 
+                    t_info.get('surface', 'Hard'), 
+                    t_info.get('bsi_rating', 5.0), 
+                    t_info.get('notes', ''),
+                    p_report['strengths'] if p_report and p_report.get('strengths') else 'Solid baseline game',
+                    p_report['weaknesses'] if p_report and p_report.get('weaknesses') else 'Struggles with heavy spin',
+                    p_info.get('play_style') or 'All-Rounder'
+                )
+                
+                # In Supabase abspeichern
+                supabase.table('tournament_court_synergy').upsert({
+                    'tournament_name': t_name,
+                    'player_name': p_name,
+                    'surface': t_info.get('surface', 'Hard'),
+                    'bsi_rating': t_info.get('bsi_rating', 5.0),
+                    'synergy_score': ai_data.get('synergy_score', 5.0),
+                    'verdict': ai_data.get('verdict', 'Unknown'),
+                    'tactical_bullets': ai_data.get('tactical_bullets', [])
+                }, on_conflict="tournament_name,player_name").execute()
+                log(f"  ✅ Saved Synergy Matrix for {p_name}!")
+                await asyncio.sleep(1) # Schutz gegen API-Rate-Limits
+            except Exception as e:
+                log(f"  ❌ Failed Synergy Generation for {p_name}: {e}")
+
+# =================================================================
 # 4. ORACLE SCRAPER & PIPELINE
 # =================================================================
 async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime, db_data: Dict):
@@ -519,6 +642,10 @@ async def run_pipeline():
                 target_date = datetime.now() + timedelta(days=day_offset)
                 await scrape_tennis_oracle_for_date(browser, target_date, db_data)
             await browser.close()
+        
+        # 🚀 SOTA FIX: Synergy Analysis nach dem Scraping anstoßen!
+        await execute_synergy_analysis()
+
         log("🏁 Oracle Cycle Finished.")
         
     except Exception as e:
