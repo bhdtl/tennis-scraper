@@ -27,13 +27,13 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V155.1 SOTA Parity - Full Context Quant Synergy)...")
+log("🔮 Initializing Oracle Pre-Warmer (V155.1 SOTA Parity - Auto-Discovery & Pure Data Physics)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 FUNCTION_URL = os.environ.get("SUPABASE_FUNCTION_URL")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") 
-API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") 
+API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 Externe API für historische Ground Truth
 
 if not SUPABASE_URL or not SUPABASE_KEY or not FUNCTION_URL:
     log("❌ CRITICAL: Secrets missing (Need URL, KEY and FUNCTION_URL)!")
@@ -127,7 +127,7 @@ def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids:
                 if db_first.startswith(scrape_initial): 
                     match_score += 20 
                 else: 
-                    match_score -= 50  
+                    match_score -= 50  # FATAL PENALTY FOR WRONG INITIAL
             if match_score > 50: 
                 candidates.append((p, match_score))
                 
@@ -208,6 +208,17 @@ def extract_rating(rating_obj: Any, default: float = 5.0) -> float:
     if isinstance(rating_obj, (int, float)): return float(rating_obj)
     if isinstance(rating_obj, dict) and 'score' in rating_obj: return float(rating_obj['score'])
     return default
+
+def get_surface_rating(surface_ratings: Any, surface_type: str) -> float:
+    if not surface_ratings or not isinstance(surface_ratings, dict): return 5.0
+    surf_key = 'hard'
+    if 'clay' in surface_type.lower(): surf_key = 'clay'
+    elif 'grass' in surface_type.lower(): surf_key = 'grass'
+    
+    surf_data = surface_ratings.get(surf_key)
+    if isinstance(surf_data, dict) and 'rating' in surf_data:
+        return float(surf_data['rating'])
+    return 5.0
 
 # 🚀 BSI Bucket Resolution
 def get_bsi_bucket(surface: str, bsi: float) -> str:
@@ -454,11 +465,7 @@ async def call_edge_function(payload: dict):
 # =================================================================
 # 🚀 TOURNAMENT SYNERGY AGENT (TRUE QUANT MODE WITH GROUND TRUTH)
 # =================================================================
-async def generate_synergy_for_player(
-    player_name, tournament_name, surface, bsi, bounce, notes, 
-    strengths, weaknesses, tactical_patterns, mental_game, 
-    play_style, roi, total_matches, macro_win_rate
-):
+async def generate_synergy_for_player(player_name, tournament_name, surface, bsi, notes, strengths, weaknesses, play_style, roi, total_matches, macro_win_rate):
     prompt = f"""
     You are an elite, data-driven Quantitative Tennis Analyst for a major betting syndicate.
     Your objective is to find true "Horses for Courses" Alpha by analyzing how perfectly a player fits a SPECIFIC court.
@@ -470,30 +477,27 @@ async def generate_synergy_for_player(
     - Playstyle: {play_style}
     - Strengths: {strengths}
     - Weaknesses: {weaknesses}
-    - Tactical Patterns: {tactical_patterns}
-    - Mental Game: {mental_game}
     - Overall Macro Win-Rate on {surface}: {macro_win_rate}
 
     COURT PROFILE:
     - Tournament: {tournament_name}
     - Surface: {surface}
     - BSI Speed Rating (1-10): {bsi} (1 = extremely slow clay, 10 = lightning fast indoor hard)
-    - Court Bounce: {bounce}
     - Court Notes: {notes}
     
     HISTORICAL PERFORMANCE ON THIS EXACT SPEED BUCKET:
     - ROI on this specific BSI range: {roi:.1f}% (over {total_matches} tracked betting matches)
 
     CRITICAL ANALYTICAL LOGIC TO FOLLOW:
-    1. Read the Court Notes and Bounce characteristics very carefully. Does the player's 'Tactical Patterns' align with this bounce? 
-    2. Fast Clay/Altitude strictly rewards aggressive baseliners, big servers, and flatter hitters. DO NOT penalize them just because it's "Clay". If the court is fast/altitude, aggressive styles get a massive BOOST.
+    1. Read the Court Notes very carefully. Is this FAST clay (like Houston/Madrid/Altitude) or SLOW clay? Is it fast indoor hard or slow outdoor hard?
+    2. Fast Clay/Altitude strictly rewards aggressive baseliners, big servers, and flatter hitters (e.g. Shelton, Etcheverry, Gomez). DO NOT penalize them just because it's "Clay". If the court is fast/altitude, aggressive styles get a massive BOOST.
     3. Slow Clay punishes bad rally tolerance. If a player lacks patience, and the BSI is low, penalize them heavily.
     4. Ground your rating in the 'Macro Win-Rate'. If a player wins >55% on this surface historically, they are objectively good on it. Do not rate them below 6.0 unless this specific BSI entirely destroys their game.
 
     INSTRUCTIONS:
     1. Calculate a 'synergy_score' (1.0 to 10.0). 5.0 is neutral. 6.5-7.5 is a strong fit. 8.0-9.5 is an elite specialist on this specific physics profile.
     2. Provide a 1-3 word 'verdict' (e.g. "Lethal Edge", "Solid Fit", "Vulnerable", "Exposed by Speed").
-    3. Write 3 highly technical 'tactical_bullets' explaining WHY. Connect their specific tactical patterns, strengths, or weaknesses to the Court Notes, Bounce, and BSI rating.
+    3. Write 3 highly technical 'tactical_bullets' explaining WHY. Connect their specific strokes to the Court Notes and the BSI rating.
     4. RETURN ONLY VALID JSON. English language.
 
     JSON FORMAT:
@@ -511,7 +515,7 @@ async def generate_synergy_for_player(
             json={
                 "model": "meta-llama/llama-3.3-70b-instruct",
                 "messages": [{"role": "system", "content": "Return only JSON."}, {"role": "user", "content": prompt}],
-                "temperature": 0.25, 
+                "temperature": 0.25, # Leicht reduziert für mehr logische Präzision
                 "response_format": {"type": "json_object"}
             }
         )
@@ -524,6 +528,8 @@ async def execute_synergy_analysis():
     if not OPENROUTER_API_KEY:
         log("⚠️ OPENROUTER_API_KEY missing, skipping Synergy Pipeline.")
         return
+        
+    api_player_map = await build_api_tennis_player_map()
 
     # 1. Hole alle aktuellen Oracle Draws (Turniere & Spieler)
     draws_res = supabase.table('tournament_oracle_draws').select('tournament_name, player_a_name, player_b_name').execute()
@@ -537,20 +543,13 @@ async def execute_synergy_analysis():
         if draw.get('player_a_name'): tournaments[t_name].add(draw['player_a_name'].strip())
         if draw.get('player_b_name'): tournaments[t_name].add(draw['player_b_name'].strip())
 
-    # 2. Hole Turnier-Details (BSI, Notes, Bounce)
-    tour_details = supabase.table('tournaments').select('name, surface, bsi_rating, bounce, notes').execute().data
+    # 2. Hole Turnier-Details (BSI, Notes)
+    tour_details = supabase.table('tournaments').select('name, surface, bsi_rating, notes').execute().data
     tour_map = {t['name'].strip().lower(): t for t in (tour_details or [])}
 
     # 3. Hole Spieler & Scout-Reports
-    try:
-        players_res = supabase.table('players').select('id, last_name, play_style, first_name, api_tennis_id').execute()
-        players = players_res.data
-    except Exception as e:
-        log(f"⚠️ 'api_tennis_id' column not found in 'players' table. Running safe-mode fallback... ({e})")
-        players_res = supabase.table('players').select('id, last_name, play_style, first_name').execute()
-        players = players_res.data
-
-    reports = supabase.table('scouting_reports').select('player_id, strengths, weaknesses, tactical_patterns, mental_game_notes').execute().data
+    players = supabase.table('players').select('id, last_name, play_style, first_name').execute().data
+    reports = supabase.table('scouting_reports').select('player_id, strengths, weaknesses').execute().data
     
     report_map = {r['player_id']: r for r in (reports or [])}
     player_map = {p['last_name'].strip().lower(): p for p in (players or [])}
@@ -577,10 +576,10 @@ async def execute_synergy_analysis():
             
             p_report = report_map.get(p_info['id'])
             
-            api_key_db = p_info.get('api_tennis_id')
-            macro_win_rate = await fetch_macro_surface_winrate(api_key_db, last_name_part, t_surface)
+            api_key_discovered = api_player_map.get(last_name_part)
+            macro_win_rate = await fetch_macro_surface_winrate(api_key_discovered, last_name_part, t_surface)
 
-            # 🚀 ROI BERECHNUNG (Auf exakten Court Speed Bucket gefiltert)
+            # 🚀 DATA PURITY FIX FOR ROI BERECHNUNG: Same Logic as Frontend
             roi, total_matches = 0.0, 0
             try:
                 res = supabase.table('market_odds').select('player1_name, player2_name, odds1, odds2, actual_winner_name, tournament, ai_analysis_text').or_(f"player1_name.ilike.%{last_name_part}%,player2_name.ilike.%{last_name_part}%").neq('actual_winner_name', 'None').limit(300).execute()
@@ -592,7 +591,7 @@ async def execute_synergy_analysis():
                     m_info = tour_map.get(m_tour)
                     
                     m_surf = m_info['surface'] if m_info else 'Hard'
-                    m_bsi = m_info['bsi_rating'] if m_info and m_info.get('bsi_rating') is not None else None
+                    m_bsi = m_info.get('bsi_rating') if m_info else None
                     
                     if not m_info:
                         text_search = f"{m.get('tournament', '')} {m.get('ai_analysis_text', '')}".lower()
@@ -600,6 +599,7 @@ async def execute_synergy_analysis():
                         elif 'grass' in text_search or 'wimbledon' in text_search: m_surf = 'Grass'
                         elif 'indoor' in text_search or 'carpet' in text_search: m_surf = 'Indoor Hard'
                     
+                    # 🚀 Default BSI fix für saubere Brackets (Exakt wie Frontend)
                     if m_bsi is None:
                         if m_surf == 'Clay': m_bsi = 3.5
                         elif m_surf == 'Grass': m_bsi = 8.0
@@ -627,20 +627,16 @@ async def execute_synergy_analysis():
             log(f"🤖 Quant Synergy Analysis for {p_name} @ {t_name} | Form: {macro_win_rate} | BSI ROI: {roi:.1f}%")
             try:
                 ai_data = await generate_synergy_for_player(
-                    player_name=p_name, 
-                    tournament_name=t_name, 
-                    surface=t_surface, 
-                    bsi=t_bsi, 
-                    bounce=t_info.get('bounce', 'Unknown'),
-                    notes=t_info.get('notes', ''),
-                    strengths=p_report.get('strengths', 'Solid baseline game') if p_report else 'Solid baseline game',
-                    weaknesses=p_report.get('weaknesses', 'Struggles with heavy spin') if p_report else 'Struggles with heavy spin',
-                    tactical_patterns=p_report.get('tactical_patterns', 'Standard patterns') if p_report else 'Standard patterns',
-                    mental_game=p_report.get('mental_game_notes', 'Average mental toughness') if p_report else 'Average mental toughness',
-                    play_style=p_info.get('play_style', 'All-Rounder') or 'All-Rounder',
-                    roi=roi,
-                    total_matches=total_matches,
-                    macro_win_rate=macro_win_rate
+                    p_name, t_name, 
+                    t_surface, 
+                    t_bsi, 
+                    t_info.get('notes', ''),
+                    p_report['strengths'] if p_report and p_report.get('strengths') else 'Solid baseline game',
+                    p_report['weaknesses'] if p_report and p_report.get('weaknesses') else 'Struggles with heavy spin',
+                    p_info.get('play_style') or 'All-Rounder',
+                    roi,
+                    total_matches,
+                    macro_win_rate
                 )
                 
                 # In Supabase abspeichern
@@ -782,15 +778,14 @@ async def run_pipeline():
     try:
         log("📥 Loading DB Context (Players)...")
         try:
-            res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings, api_tennis_id").execute()
-            players = res.data
-        except Exception as e:
-            log(f"🚨 DB Fallback: 'api_tennis_id' missing. Error: {str(e)}")
             res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute()
             players = res.data
+        except Exception as e:
+            log(f"🚨 CRITICAL: Database fetch failed. Error details: {str(e)}")
+            return
 
         log("📥 Loading DB Context (Tournaments)...")
-        tournaments = supabase.table("tournaments").select("id, name, surface, bsi_rating, bounce, notes").execute().data
+        tournaments = supabase.table("tournaments").select("id, name, surface, bsi_rating, notes").execute().data
         
         if not players or not tournaments:
             log("❌ Error: Could not load critical DB reference data.")
@@ -811,7 +806,7 @@ async def run_pipeline():
 
         reports = []
         try:
-            reports = supabase.table("scouting_reports").select("player_id, strengths, weaknesses, tactical_patterns, mental_game_notes").execute().data
+            reports = supabase.table("scouting_reports").select("player_id, strengths, weaknesses").execute().data
         except: log("⚠️ Skipping scouting_reports due to data error.")
 
         skills_dict = {s['player_id']: s for s in (skills or [])}
@@ -825,6 +820,7 @@ async def run_pipeline():
                 await scrape_tennis_oracle_for_date(browser, target_date, db_data)
             await browser.close()
         
+        # 🚀 SOTA FIX: Synergy Analysis nach dem Scraping anstoßen!
         await execute_synergy_analysis()
 
         log("🏁 Oracle Cycle Finished.")
