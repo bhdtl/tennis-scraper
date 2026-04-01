@@ -27,13 +27,13 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V154.0 SOTA Parity - API-Tennis Integration & Quant Synergy)...")
+log("🔮 Initializing Oracle Pre-Warmer (V155.0 SOTA Parity - Auto-Discovery ID Engine & Quant Synergy)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 FUNCTION_URL = os.environ.get("SUPABASE_FUNCTION_URL")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY") 
-API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 NEU: Externe API für historische Ground Truth
+API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 Externe API für historische Ground Truth
 
 if not SUPABASE_URL or not SUPABASE_KEY or not FUNCTION_URL:
     log("❌ CRITICAL: Secrets missing (Need URL, KEY and FUNCTION_URL)!")
@@ -209,18 +209,7 @@ def extract_rating(rating_obj: Any, default: float = 5.0) -> float:
     if isinstance(rating_obj, dict) and 'score' in rating_obj: return float(rating_obj['score'])
     return default
 
-def get_surface_rating(surface_ratings: Any, surface_type: str) -> float:
-    if not surface_ratings or not isinstance(surface_ratings, dict): return 5.0
-    surf_key = 'hard'
-    if 'clay' in surface_type.lower(): surf_key = 'clay'
-    elif 'grass' in surface_type.lower(): surf_key = 'grass'
-    
-    surf_data = surface_ratings.get(surf_key)
-    if isinstance(surf_data, dict) and 'rating' in surf_data:
-        return float(surf_data['rating'])
-    return 5.0
-
-# 🚀 NEU: BSI Bucket Resolution
+# 🚀 BSI Bucket Resolution
 def get_bsi_bucket(surface: str, bsi: float) -> str:
     surf = str(surface).lower()
     b = float(bsi) if bsi else 5.0
@@ -232,20 +221,56 @@ def get_bsi_bucket(surface: str, bsi: float) -> str:
     if b < 5.0: return 'slow_hard'
     return 'medium_hard'
 
+
 # =================================================================
-# 🚀 NEU: API-TENNIS.COM INTEGRATION (Ground Truth Win Rates)
+# 🚀 NEU: API-TENNIS.COM AUTO-DISCOVERY ENGINE
 # =================================================================
+async def build_api_tennis_player_map() -> Dict[str, str]:
+    """
+    Zieht die aktuellen ATP und WTA Standings von API-Tennis, 
+    um die player_keys dynamisch in einer Map zu speichern. 
+    Dadurch brauchen wir keine manuellen IDs in der Supabase.
+    """
+    if not API_TENNIS_KEY:
+        log("⚠️ No API_TENNIS_KEY found. Skipping auto-discovery.")
+        return {}
+        
+    log("🌍 Auto-Discovering Player Keys via API-Tennis Standings...")
+    player_map = {}
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for tour in ['ATP', 'WTA']:
+            try:
+                url = f"https://api.api-tennis.com/tennis/?method=get_standings&event_type={tour}&APIkey={API_TENNIS_KEY}"
+                res = await client.get(url)
+                data = res.json()
+                
+                if data.get("success") == 1 and data.get("result"):
+                    for p in data["result"]:
+                        name_raw = p.get("player", "")
+                        p_key = p.get("player_key")
+                        if name_raw and p_key:
+                            # z.B. "Iga Swiatek" -> "swiatek"
+                            last_name = name_raw.split(' ')[-1].lower().strip()
+                            player_map[last_name] = str(p_key)
+            except Exception as e:
+                log(f"    ⚠️ Failed to fetch {tour} standings for ID mapping: {e}")
+                
+    log(f"✅ Discovered {len(player_map)} player keys from global standings.")
+    return player_map
+
+
 async def fetch_macro_surface_winrate(player_key: str, last_name: str, surface: str) -> str:
     """
-    Zieht die echte Win-Rate des Spielers von api-tennis.com.
-    Falls der API Key fehlt oder der Spieler keinen Key hat, berechnet es die Win-Rate
-    als Fallback aus der Supabase market_odds Tabelle.
+    Zieht die echte Win-Rate des Spielers von api-tennis.com mittels In-Memory ID.
+    Falls der API Key fehlt oder der Spieler nicht in den Top-Ranks ist, 
+    fällt es auf die Supabase market_odds Tabelle zurück.
     """
     target_surf = surface.lower()
     is_clay = 'clay' in target_surf or 'sand' in target_surf
     is_grass = 'grass' in target_surf
     
-    # 1. VERSUCH: Externe API (api.api-tennis.com)
+    # 1. VERSUCH: Externe API (api.api-tennis.com) via Memory-Key
     if API_TENNIS_KEY and player_key:
         try:
             url = f"https://api.api-tennis.com/tennis/?method=get_players&player_key={player_key}&APIkey={API_TENNIS_KEY}"
@@ -272,11 +297,11 @@ async def fetch_macro_surface_winrate(player_key: str, last_name: str, surface: 
                     total = surf_won + surf_lost
                     if total >= 10: # Brauchen eine solide Sample Size
                         win_rate = (surf_won / total) * 100
-                        return f"{win_rate:.1f}% ({surf_won}W - {surf_lost}L via API)"
+                        return f"{win_rate:.1f}% ({surf_won}W - {surf_lost}L via Global API)"
         except Exception as e:
             log(f"    ⚠️ API-Tennis fetch failed for {last_name}: {e}")
 
-    # 2. FALLBACK: Supabase Market Odds (Wenn API Key fehlt oder keine Daten hat)
+    # 2. FALLBACK: Supabase Market Odds
     try:
         res = supabase.table('market_odds').select('player1_name, player2_name, actual_winner_name, tournament, ai_analysis_text').or_(f"player1_name.ilike.%{last_name}%,player2_name.ilike.%{last_name}%").neq('actual_winner_name', 'None').limit(300).execute()
         matches = res.data or []
@@ -287,7 +312,6 @@ async def fetch_macro_surface_winrate(player_key: str, last_name: str, surface: 
             m_is_clay = 'clay' in m_surf_text or 'roland' in m_surf_text
             m_is_grass = 'grass' in m_surf_text or 'wimbledon' in m_surf_text
             
-            # Prüfe ob das historische Match auf dem gesuchten Macro-Belag stattfand
             match_fits = False
             if is_clay and m_is_clay: match_fits = True
             elif is_grass and m_is_grass: match_fits = True
@@ -506,6 +530,9 @@ async def execute_synergy_analysis():
     if not OPENROUTER_API_KEY:
         log("⚠️ OPENROUTER_API_KEY missing, skipping Synergy Pipeline.")
         return
+        
+    # 🚀 SOTA: Auto-Discover Player IDs via API-Tennis In-Memory Map
+    api_player_map = await build_api_tennis_player_map()
 
     # 1. Hole alle aktuellen Oracle Draws (Turniere & Spieler)
     draws_res = supabase.table('tournament_oracle_draws').select('tournament_name, player_a_name, player_b_name').execute()
@@ -523,9 +550,8 @@ async def execute_synergy_analysis():
     tour_details = supabase.table('tournaments').select('name, surface, bsi_rating, notes').execute().data
     tour_map = {t['name'].strip().lower(): t for t in (tour_details or [])}
 
-    # 3. Hole Spieler & Scout-Reports
-    # 🚀 SOTA: Wir holen api_tennis_id aus der DB falls vorhanden!
-    players = supabase.table('players').select('id, last_name, play_style, first_name, api_tennis_id').execute().data
+    # 3. Hole Spieler & Scout-Reports (Standard-Tabelle, OHNE api_tennis_id)
+    players = supabase.table('players').select('id, last_name, play_style, first_name').execute().data
     reports = supabase.table('scouting_reports').select('player_id, strengths, weaknesses').execute().data
     
     report_map = {r['player_id']: r for r in (reports or [])}
@@ -553,9 +579,10 @@ async def execute_synergy_analysis():
             
             p_report = report_map.get(p_info['id'])
             
-            # 🚀 1. Fetch Macro Win-Rate (API-Tennis or DB Fallback)
-            api_key_db = p_info.get('api_tennis_id')
-            macro_win_rate = await fetch_macro_surface_winrate(api_key_db, last_name_part, t_surface)
+            # 🚀 1. Fetch Macro Win-Rate über die In-Memory Map
+            # Wenn last_name_part in der Map ist, schickt er die ID mit an die Fetch-Methode!
+            api_key_discovered = api_player_map.get(last_name_part)
+            macro_win_rate = await fetch_macro_surface_winrate(api_key_discovered, last_name_part, t_surface)
 
             # 🚀 2. ROI BERECHNUNG (Auf exakten Court Speed Bucket gefiltert)
             roi, total_matches = 0.0, 0
@@ -748,15 +775,13 @@ async def scrape_tennis_oracle_for_date(browser: Browser, target_date: datetime,
 async def run_pipeline():
     try:
         log("📥 Loading DB Context (Players)...")
+        # 🚀 SOTA FAILSAFE: Wir holen NICHT MEHR api_tennis_id, sondern nutzen Auto-Discovery im Speicher.
         try:
-            # 🚀 SOTA FIX: Lade api_tennis_id mit aus der DB
-            res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings, api_tennis_id").execute()
+            res = supabase.table("players").select("id, last_name, first_name, form_rating, surface_ratings").execute()
             players = res.data
         except Exception as e:
             log(f"🚨 CRITICAL: Database fetch failed. Error details: {str(e)}")
-            log("🔄 Attempting Emergency Load (Safe Mode - No Ratings)...")
-            res = supabase.table("players").select("id, last_name, first_name").execute()
-            players = res.data
+            return
 
         log("📥 Loading DB Context (Tournaments)...")
         tournaments = supabase.table("tournaments").select("id, name, surface, bsi_rating, notes").execute().data
