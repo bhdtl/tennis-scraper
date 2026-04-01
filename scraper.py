@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.9 - CORE SCANNER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V204.9 - CORE SCANNER EDITION + ARCHITECT FIX)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -2218,7 +2218,6 @@ async def run_pipeline():
                                                 if p1_last in winner: w1 += 1
                                                 else: w2 += 1
                                     
-                                    # KORREKTUR: Zuweisung nach der Schleife auf gleicher Ebene wie das 'for'
                                     h2h_record = f"{w1} - {w2}"
                         except Exception as e:
                             log(f"⚠️ H2H Error: {e}")
@@ -2236,6 +2235,23 @@ async def run_pipeline():
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                     
+                    # =================================================================
+                    # 🚀 ARCHITECT FIX: RE-INJECTING LOST DATA BINDINGS
+                    # =================================================================
+                    p1_set_prob = math.pow(prob, 0.65)
+                    p2_set_prob = math.pow(1.0 - prob, 0.65)
+                    
+                    sim_result['set_probs'] = {
+                        "2:0": round((p1_set_prob * p1_set_prob) * 100, 1),
+                        "2:1": round((prob - (p1_set_prob * p1_set_prob)) * 100, 1),
+                        "0:2": round((p2_set_prob * p2_set_prob) * 100, 1),
+                        "1:2": round(((1.0 - prob) - (p2_set_prob * p2_set_prob)) * 100, 1)
+                    }
+                    
+                    sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
+                    sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
+                    # =================================================================
+
                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
                     
