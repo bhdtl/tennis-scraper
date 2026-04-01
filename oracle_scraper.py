@@ -27,7 +27,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V155.1 SOTA Parity - High Variance Quant Synergy)...")
+log("🔮 Initializing Oracle Pre-Warmer (V155.2 SOTA Parity - High Variance Quant Synergy)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -208,6 +208,17 @@ def extract_rating(rating_obj: Any, default: float = 5.0) -> float:
     if isinstance(rating_obj, (int, float)): return float(rating_obj)
     if isinstance(rating_obj, dict) and 'score' in rating_obj: return float(rating_obj['score'])
     return default
+
+def get_surface_rating(surface_ratings: Any, surface_type: str) -> float:
+    if not surface_ratings or not isinstance(surface_ratings, dict): return 5.0
+    surf_key = 'hard'
+    if 'clay' in surface_type.lower(): surf_key = 'clay'
+    elif 'grass' in surface_type.lower(): surf_key = 'grass'
+    
+    surf_data = surface_ratings.get(surf_key)
+    if isinstance(surf_data, dict) and 'rating' in surf_data:
+        return float(surf_data['rating'])
+    return 5.0
 
 # 🚀 BSI Bucket Resolution
 def get_bsi_bucket(surface: str, bsi: float) -> str:
@@ -452,14 +463,13 @@ async def call_edge_function(payload: dict):
             return None
 
 # =================================================================
-# 🚀 TOURNAMENT SYNERGY AGENT (HIGH VARIANCE QUANT MODE)
+# 🚀 TOURNAMENT SYNERGY AGENT (HIGH VARIANCE SILICON VALLEY QUANT)
 # =================================================================
 async def generate_synergy_for_player(player_name, tournament_name, surface, bsi, notes, strengths, weaknesses, play_style, roi, total_matches, macro_win_rate):
     prompt = f"""
-    You are an elite, data-driven Quantitative Tennis Analyst for a major betting syndicate.
-    Your objective is to find true "Horses for Courses" Alpha by analyzing how perfectly a player fits a SPECIFIC court.
-    
-    Avoid generic hype. Avoid being artificially harsh. Be mathematically precise.
+    You are the Lead Quantitative Tennis Modeler for a ruthless Silicon Valley betting syndicate.
+    Your objective: Generate highly individualized, high-variance "Court Synergy" scores. 
+    Most AI models give everyone a generic 7.5 or 8.1. YOU MUST BREAK THIS PATTERN. Use the FULL 1.0 to 10.0 scale.
 
     PLAYER PROFILE:
     - Name: {player_name}
@@ -474,30 +484,24 @@ async def generate_synergy_for_player(player_name, tournament_name, surface, bsi
     - BSI Speed Rating (1-10): {bsi} (1 = extremely slow clay, 10 = lightning fast indoor hard)
     - Court Notes: {notes}
     
-    HISTORICAL PERFORMANCE ON THIS EXACT SPEED BUCKET:
-    - ROI on this specific BSI range: {roi:.1f}% (over {total_matches} tracked betting matches)
+    HISTORICAL ROI ON THIS EXACT SPEED BUCKET: {roi:.1f}% (over {total_matches} tracked betting matches)
 
-    CRITICAL ANALYTICAL LOGIC TO FOLLOW:
-    1. Read the Court Notes very carefully. Is this FAST clay (like Houston/Madrid/Altitude) or SLOW clay? Is it fast indoor hard or slow outdoor hard?
-    2. Fast Clay/Altitude strictly rewards aggressive baseliners, big servers, and flatter hitters (e.g. Shelton, Etcheverry, Gomez). DO NOT penalize them just because it's "Clay". If the court is fast/altitude, aggressive styles get a massive BOOST.
-    3. Slow Clay punishes bad rally tolerance. If a player lacks patience, and the BSI is low, penalize them heavily.
-    4. Ground your rating in the 'Macro Win-Rate'. If a player wins >55% on this surface historically, they are objectively good on it. Do not rate them below 6.0 unless this specific BSI entirely destroys their game.
+    THE SYNDICATE'S GRADING ALGORITHM (CRITICAL!):
+    1. EXTREME VARIANCE: If a player's weakness (e.g., poor rally tolerance) is exposed by the court (e.g., slow clay), CRUSH their score (2.0 - 4.5). If a player's strength (e.g., massive serve, aggressive baseline) is perfectly amplified by the court (e.g., altitude fast clay like Houston, or fast indoor hard), SKYROCKET their score (8.5 - 10.0).
+    2. FAST CLAY / ALTITUDE RULE: Tournaments like Houston or Madrid play FAST. Big servers and aggressive flat hitters (e.g., Etcheverry, Shelton, Gomez) MUST get massive boosts here. Do not penalize them just because the surface is labeled "Clay".
+    3. THE GROUND TRUTH RULE: Look at the Macro Win-Rate! If the player wins >55% on this surface historically (like Kypson, Paul, Zhang on clay), their baseline score MUST be high (7.0+), adjusted further by the specific BSI. Do not give a good clay player a bad rating on clay!
+    4. PRECISION: Give highly specific decimals (e.g., 2.3, 4.8, 7.1, 9.4). Do not cluster around 7.0 or 8.0. Use mathematics, not politeness.
 
-    INSTRUCTIONS FOR HIGH VARIANCE SCORING:
-    1. Calculate a highly precise 'synergy_score' from 1.00 to 10.00 using TWO decimal places (e.g., 7.84, 6.31, 9.12) to ensure maximum variance and individuality.
-       - 5.00 is a dead-neutral fit.
-       - 6.00 - 7.50 means a strong, advantageous fit where strengths align with the court.
-       - 8.00 - 10.00 is reserved ONLY for exceptional harmony (e.g., a massive server on extreme altitude/fast courts with a proven high ROI).
-       - 1.00 - 4.99 means their game is actively hindered by the physics.
-       - Weight the final score: 90% based on your tactical playstyle physics analysis, and 10% based on the Historical ROI. Do not cluster scores around 8.0! Be extremely specific based on the exact matchup of style vs. BSI.
-    2. Provide a 1-3 word 'verdict' (e.g. "Lethal Edge", "Solid Fit", "Vulnerable", "Exposed by Speed").
-    3. Write 3 highly technical 'tactical_bullets' explaining WHY. Connect their specific strokes to the Court Notes and the BSI rating.
+    INSTRUCTIONS:
+    1. Calculate 'synergy_score' (1.0 to 10.0) strictly following the algorithm above.
+    2. Provide a 1-3 word 'verdict' (e.g. "Lethal Synergy", "Exposed Weakness", "Perfect Altitude Fit", "Neutral Baseline").
+    3. Write 3 highly technical 'tactical_bullets' (max 2 sentences each). Directly cross-reference the player's specific strengths/weaknesses with the exact Court Notes.
     4. RETURN ONLY VALID JSON. English language.
 
     JSON FORMAT:
     {{
-      "synergy_score": 7.84,
-      "verdict": "Strong Advantage",
+      "synergy_score": 9.4,
+      "verdict": "Lethal Synergy",
       "tactical_bullets": ["Reason 1", "Reason 2", "Reason 3"]
     }}
     """
@@ -509,7 +513,7 @@ async def generate_synergy_for_player(player_name, tournament_name, surface, bsi
             json={
                 "model": "meta-llama/llama-3.3-70b-instruct",
                 "messages": [{"role": "system", "content": "Return only JSON."}, {"role": "user", "content": prompt}],
-                "temperature": 0.35, # 🚀 SOTA FIX: Leicht erhöht für mehr Score-Dispersion und Varianz
+                "temperature": 0.45, # 🚀 SOTA FIX: Höhere Temp für echten Spread und keine 8.1-Cluster mehr
                 "response_format": {"type": "json_object"}
             }
         )
@@ -573,7 +577,7 @@ async def execute_synergy_analysis():
             api_key_discovered = api_player_map.get(last_name_part)
             macro_win_rate = await fetch_macro_surface_winrate(api_key_discovered, last_name_part, t_surface)
 
-            # 🚀 ROI BERECHNUNG
+            # 🚀 DATA PURITY FIX FOR ROI BERECHNUNG: Same Logic as Frontend
             roi, total_matches = 0.0, 0
             try:
                 res = supabase.table('market_odds').select('player1_name, player2_name, odds1, odds2, actual_winner_name, tournament, ai_analysis_text').or_(f"player1_name.ilike.%{last_name_part}%,player2_name.ilike.%{last_name_part}%").neq('actual_winner_name', 'None').limit(300).execute()
@@ -593,6 +597,7 @@ async def execute_synergy_analysis():
                         elif 'grass' in text_search or 'wimbledon' in text_search: m_surf = 'Grass'
                         elif 'indoor' in text_search or 'carpet' in text_search: m_surf = 'Indoor Hard'
                     
+                    # 🚀 Default BSI fix für saubere Brackets (Exakt wie Frontend)
                     if m_bsi is None:
                         if m_surf == 'Clay': m_bsi = 3.5
                         elif m_surf == 'Grass': m_bsi = 8.0
@@ -813,6 +818,7 @@ async def run_pipeline():
                 await scrape_tennis_oracle_for_date(browser, target_date, db_data)
             await browser.close()
         
+        # 🚀 SOTA FIX: Synergy Analysis nach dem Scraping anstoßen!
         await execute_synergy_analysis()
 
         log("🏁 Oracle Cycle Finished.")
