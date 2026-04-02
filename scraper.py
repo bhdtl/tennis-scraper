@@ -41,13 +41,14 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.9 - CORE SCANNER EDITION + ARCHITECT FIX)...")
+log("🔌 Initialisiere Neural Scout (V205.0 - DUAL ORACLE EDITION + QUANTUM CACHE)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 API_TENNIS_KEY = os.environ.get("API_TENNIS_KEY") # 🚀 SOTA API KEY
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY") # 🚀 THE NEW MATCHSTAT ORACLE KEY
 
 if not OPENROUTER_API_KEY or not SUPABASE_URL or not SUPABASE_KEY or not API_TENNIS_KEY:
     log("❌ CRITICAL: Secrets fehlen! Prüfe GitHub/OpenRouter/API_TENNIS Secrets.")
@@ -152,6 +153,76 @@ class TennisDataAPI:
             except:
                 pass
         return {}
+
+# =================================================================
+# 1.2 THE PHYSICS ORACLE (MATCHSTAT RAPIDAPI)
+# =================================================================
+class MatchstatAPI:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://tennis-api-atp-wta-itf.p.rapidapi.com/tennis/v2"
+        self.headers = {
+            "X-RapidAPI-Key": self.api_key if self.api_key else "",
+            "X-RapidAPI-Host": "tennis-api-atp-wta-itf.p.rapidapi.com"
+        }
+
+    async def get_match_stats(self, tour: str, player_id: int) -> Dict:
+        tour_str = "wta" if "wta" in tour.lower() else "atp"
+        url = f"{self.base_url}/{tour_str}/player/match-stats/{player_id}"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, headers=self.headers, timeout=15.0)
+                return res.json()
+            except: return {}
+
+    async def get_profile(self, tour: str, player_id: int) -> Dict:
+        tour_str = "wta" if "wta" in tour.lower() else "atp"
+        url = f"{self.base_url}/{tour_str}/player/profile/{player_id}?include=form"
+        async with httpx.AsyncClient() as client:
+            try:
+                res = await client.get(url, headers=self.headers, timeout=15.0)
+                return res.json()
+            except: return {}
+
+async def sync_matchstat_deep_data(p_obj: Dict, tour_name: str, matchstat_api: MatchstatAPI):
+    """🚀 THE SMART LAZY CACHE: Prevents RapidAPI billing explosion."""
+    if not p_obj or not matchstat_api.api_key: return p_obj
+    
+    ms_id = p_obj.get('matchstat_id')
+    if not ms_id:
+        # We need the ID mapped manually in DB first, as /search doesn't return IDs safely.
+        return p_obj 
+        
+    last_update = p_obj.get('matchstat_updated_at')
+    if last_update:
+        try:
+            lu_date = datetime.fromisoformat(last_update.replace('Z', '+00:00'))
+            if (datetime.now(timezone.utc) - lu_date).days < 14:
+                return p_obj # Cache is still fresh. Zero API calls used!
+        except: pass
+
+    log(f"🧠 [MATCHSTAT ORACLE] Führe Deep-Scan für {p_obj.get('last_name')} durch...")
+    
+    stats = await matchstat_api.get_match_stats(tour_name, ms_id)
+    profile = await matchstat_api.get_profile(tour_name, ms_id)
+    
+    combined_data = {
+        "stats": stats.get('data', {}),
+        "profile": profile
+    }
+    
+    try:
+        supabase.table('players').update({
+            'matchstat_data': combined_data,
+            'matchstat_updated_at': datetime.now(timezone.utc).isoformat()
+        }).eq('id', p_obj['id']).execute()
+        
+        p_obj['matchstat_data'] = combined_data
+        p_obj['matchstat_updated_at'] = datetime.now(timezone.utc).isoformat()
+    except Exception as e:
+        log(f"⚠️ Failed to save Matchstat data to Supabase: {e}")
+        
+    return p_obj
 
 # =================================================================
 # 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
@@ -1577,6 +1648,13 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     
     validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
     
+    # 🚀 SOTA: MATCHSTAT DEEP DATA INJECTION (Falls vorhanden)
+    ms_a = p1.get('matchstat_data', {}).get('stats', {}).get('serviceStats', {})
+    ms_b = p2.get('matchstat_data', {}).get('stats', {}).get('serviceStats', {})
+    
+    deep_stats_A = f"Real 1st Serve IN: {ms_a.get('firstServeGm', 0)}/{ms_a.get('firstServeOfGm', 1)} | BreakPts Saved: {p1.get('matchstat_data', {}).get('stats', {}).get('breakPointsServeStats', {}).get('breakPointSavedGm', 0)}" if ms_a else "No deep data"
+    deep_stats_B = f"Real 1st Serve IN: {ms_b.get('firstServeGm', 0)}/{ms_b.get('firstServeOfGm', 1)} | BreakPts Saved: {p2.get('matchstat_data', {}).get('stats', {}).get('breakPointsServeStats', {}).get('breakPointSavedGm', 0)}" if ms_b else "No deep data"
+
     aWins = mc_results['probA'] > mc_results['probB']
     predictedMCWinner = p1['last_name'] if aWins else p2['last_name']
     predictedMCLoser = p2['last_name'] if aWins else p1['last_name']
@@ -1610,6 +1688,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - Form / Momentum: {form1_data['text']}
     - Surface Rating ({current_surf_key}): {p1_s_rating}/10
     - Granular Skills: {format_skills(s1)}
+    - Deep Matchstat Oracle: {deep_stats_A}
     - Scouting Report: {scoutA}
     - Fatigue: {fatigueA}
     
@@ -1618,6 +1697,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - Form / Momentum: {form2_data['text']}
     - Surface Rating ({current_surf_key}): {p2_s_rating}/10
     - Granular Skills: {format_skills(s2)}
+    - Deep Matchstat Oracle: {deep_stats_B}
     - Scouting Report: {scoutB}
     - Fatigue: {fatigueB}
     
@@ -1856,9 +1936,10 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.8 (GHOST PROTOCOL EDITION) Starting...")
+    log(f"🚀 Neural Scout V205.0 (DUAL ORACLE EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
+    matchstat_api = MatchstatAPI(RAPIDAPI_KEY)
 
     players, all_skills, all_reports, all_tournaments = await get_db_data()
     if not players: 
@@ -2074,6 +2155,12 @@ async def run_pipeline():
             hist_fair1, hist_fair2 = 0, 0
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
+            
+            # =================================================================
+            # 🚀 DUAL ORACLE INTEGRATION: THE MATCHSTAT CACHE PULL
+            # =================================================================
+            p1_obj = await sync_matchstat_deep_data(p1_obj, m['tour'], matchstat_api)
+            p2_obj = await sync_matchstat_deep_data(p2_obj, m['tour'], matchstat_api)
             
             if is_signal_locked:
                 update_data = {
