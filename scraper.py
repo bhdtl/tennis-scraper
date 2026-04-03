@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.3 - ULTIMATE NAME PARSER EDITION)...")
+log("🔌 Initialisiere Neural Scout (V205.4 - FINAL NAME PARSER POLISH)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -88,6 +88,7 @@ class TennisDataAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.api-tennis.com/tennis/"
+        # 🚀 SOTA: Wir covern jetzt ATP, WTA, Challenger UND ITF
         self.valid_tours = [
             "Atp Singles", 
             "Wta Singles", 
@@ -98,6 +99,7 @@ class TennisDataAPI:
         ]
 
     async def get_fixtures(self, date_str: str) -> List[Dict]:
+        """Holt saubere JSON-Fixtures für ein bestimmtes Datum."""
         log(f"📡 [API] Fetching Fixtures for {date_str}...")
         url = f"{self.base_url}?method=get_fixtures&APIkey={self.api_key}&date_start={date_str}&date_stop={date_str}&timezone=UTC"
         async with httpx.AsyncClient() as client:
@@ -113,6 +115,7 @@ class TennisDataAPI:
         return []
 
     async def get_odds(self, match_key: str) -> Dict:
+        """Holt die Pre-Match-Quoten für eine bestimmte Match-ID."""
         url = f"{self.base_url}?method=get_odds&APIkey={self.api_key}&match_key={match_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -125,6 +128,7 @@ class TennisDataAPI:
         return {}
 
     async def get_player_stats(self, player_key: str) -> Dict:
+        """🚀 SOTA: Holt tiefe historische API-Daten (W/L auf Belägen, Rank etc.) eines Spielers."""
         url = f"{self.base_url}?method=get_players&APIkey={self.api_key}&player_key={player_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -137,6 +141,7 @@ class TennisDataAPI:
         return {}
 
     async def get_h2h(self, p1_key: str, p2_key: str) -> Dict:
+        """🚀 JUICE REEL FEATURE: Holt offizielle H2H Daten für zwei Spieler."""
         url = f"{self.base_url}?method=get_H2H&APIkey={self.api_key}&first_player_key={p1_key}&second_player_key={p2_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -544,28 +549,33 @@ class MomentumV2Engine:
             
             score_str = str(m.get('score', '')).lower().replace(":", "-").strip()
             
+            # 🚀 ARCHITECT FIX: Hybrid Schema Logic (Legacy vs API-Tennis)
             if "ret" in score_str or "w.o" in score_str:
                 actual_perf = 0.6 if won else 0.4
             else:
+                # Extrahiert alle Nummernpaare sicher, egal wie viele Leerzeichen/Zeichen drumherum sind
                 sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str)
                 
                 if not sets:
                     actual_perf = 0.75 if won else 0.25
                 elif len(sets) == 1 and (int(sets[0][0]) + int(sets[0][1]) <= 5):
+                    # PATH A: The API-Tennis Set-Only Format (e.g. "2-0", "1-2")
                     l, r = int(sets[0][0]), int(sets[0][1])
                     p_sets = l if is_p1 else r
                     o_sets = r if is_p1 else l
                     
                     if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0):
-                        actual_perf = 0.85  
+                        actual_perf = 0.85  # Absolute Dominance
                     elif p_sets > o_sets:
-                        actual_perf = 0.65  
+                        actual_perf = 0.65  # Grind/Resilience Win
                     elif o_sets >= p_sets + 2 or (o_sets == 2 and p_sets == 0):
-                        actual_perf = 0.15  
+                        actual_perf = 0.15  # Outclassed
                     elif o_sets > p_sets:
-                        actual_perf = 0.35  
+                        actual_perf = 0.35  # Competitive Loss
                     else:
-                        actual_perf = 0.75 if won else 0.25 
+                        actual_perf = 0.75 if won else 0.25 # Fallback
+                
+                # PATH B: The Legacy DB Format (e.g. "6-4 6-2", "3-6 7-6 6-2")
                 else:
                     player_sets_won = 0
                     opp_sets_won = 0
@@ -612,11 +622,13 @@ class MomentumV2Engine:
 
             match_edge = actual_perf - expected_perf 
             
+            # Win/Loss Bias (Psychological Momentum)
             if won:
                 match_edge += 0.40  
             else:
                 match_edge -= 0.20
             
+            # Time Decay: Aktuellste Matches zählen bis zu 100%, ältuälteste ~30%
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
@@ -624,6 +636,7 @@ class MomentumV2Engine:
             
             history_log.append("W" if won else "L")
 
+        # Streak Multiplier
         streak_bonus = 0.0
         if len(history_log) >= 3:
             recent_3 = history_log[-3:]
@@ -639,6 +652,7 @@ class MomentumV2Engine:
         final_rating = base_rating + (avg_edge * 10.0) + streak_bonus
         final_rating = max(1.0, min(10.0, final_rating))
         
+        # Color & Text Generation
         desc = "Average"
         color_hex = "#F0C808" 
         
@@ -732,21 +746,26 @@ class SurfaceIntelligence:
 
     @staticmethod
     def extract_api_surface_stats(api_stats: List[Dict], surface_key: str) -> tuple:
+        """🚀 SOTA FIX: Tiefen-Crawler für API-Tennis JSON-Strukturen, filtert Doubles heraus."""
         if not api_stats or not isinstance(api_stats, list):
             return 0, 0
             
         total_wins = 0
         total_losses = 0
         
+        # Mapping API-Tennis Surface Bezeichnungen zu unserem Key
         search_keys = [f"{surface_key}_won", f"surface_{surface_key}_won", f"matches_won_{surface_key}", f"wins_{surface_key}"]
         loss_keys = [f"{surface_key}_lost", f"surface_{surface_key}_lost", f"matches_lost_{surface_key}", f"losses_{surface_key}"]
         
+        # Extrahiert Stats aus allen verfügbaren Saisons der API
         for season in api_stats:
             if isinstance(season, dict):
                 
+                # 🚀 SOTA FIX: Wir ignorieren Doppel-Spiele strikt, damit das Profil pur bleibt!
                 if str(season.get("type", "")).lower() == "doubles":
                     continue
 
+                # Rekursive Suche für tiefe JSON Bäume
                 def search_dict(d: dict):
                     nonlocal total_wins, total_losses
                     for k, v in d.items():
@@ -790,6 +809,8 @@ class SurfaceIntelligence:
             api_won, api_lost = SurfaceIntelligence.extract_api_surface_stats(api_stats, surf)
             api_total = api_won + api_lost
             
+            # 🚀 SOTA FIX: Wir vertrauen der API nur, wenn sie WIRKLICH Daten geliefert hat.
+            # Ansonsten nutzen wir unsere eigene mächtige DB-Historie (die wir extra auf limit=200 erhöht haben).
             n_surf = n_surf_db
             wins = wins_db
             
@@ -1058,8 +1079,8 @@ class NeuralOptimizer:
                     if (fair1 < fair2 and is_same_player(p1_name, winner)) or (fair2 < fair1 and is_same_player(p2_name, winner)):
                         correct_predictions += 1
 
-                p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
-                p2_obj = next((p for p in players if p.get('last_name') == p2_name and p['id'] in tour_players), None)
+                p1_obj = next((p for p in players if is_same_player(p.get('last_name', ''), p1_name) and p['id'] in tour_players), None)
+                p2_obj = next((p for p in players if is_same_player(p.get('last_name', ''), p2_name) and p['id'] in tour_players), None)
                 
                 if p1_obj and p2_obj:
                     s1 = all_skills.get(p1_obj['id'], {}).get('overall_rating', 50)
@@ -1201,6 +1222,7 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     p1_id = next((p['id'] for p in players if is_same_player(p1_name, p.get('last_name', ''))), None)
                     p2_id = next((p['id'] for p in players if is_same_player(p2_name, p.get('last_name', ''))), None)
                     
+                    # SOTA: Independent Skill Updates (Supports Shadow Tracking)
                     db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
                     if db_player_ids:
                         try:
@@ -1893,7 +1915,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.3 (ULTIMATE NAME PARSER EDITION) Starting...")
+    log(f"🚀 Neural Scout V205.4 (FINAL NAME PARSER POLISH) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2206,7 +2228,6 @@ async def run_pipeline():
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
-                    # 🚀 SOTA ARCHITECT FIX: Die API ID für Surface-Stats ausschließlich durch reines Name-Parsing finden!
                     p1_api_name_live = str(m.get('p1_raw', ''))
                     p2_api_name_live = str(m.get('p2_raw', ''))
                     
@@ -2280,7 +2301,6 @@ async def run_pipeline():
                                     for h_match in h2h_matches:
                                         winner = str(h_match.get("event_winner", "")).lower()
                                         if winner:
-                                            # 🚀 SOTA ARCHITECT FIX: Namensabgleich für H2H Ergebnisse, keine ID-Annahmen!
                                             if winner == "first player":
                                                 if is_same_player(full_n1, str(h_match.get("event_first_player", ""))): w1 += 1
                                                 else: w2 += 1
