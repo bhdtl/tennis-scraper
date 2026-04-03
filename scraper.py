@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V204.9 - CORE SCANNER EDITION + ARCHITECT FIX)...")
+log("🔌 Initialisiere Neural Scout (V205.3 - ULTIMATE NAME PARSER EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -88,7 +88,6 @@ class TennisDataAPI:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.api-tennis.com/tennis/"
-        # 🚀 SOTA: Wir covern jetzt ATP, WTA, Challenger UND ITF
         self.valid_tours = [
             "Atp Singles", 
             "Wta Singles", 
@@ -99,7 +98,6 @@ class TennisDataAPI:
         ]
 
     async def get_fixtures(self, date_str: str) -> List[Dict]:
-        """Holt saubere JSON-Fixtures für ein bestimmtes Datum."""
         log(f"📡 [API] Fetching Fixtures for {date_str}...")
         url = f"{self.base_url}?method=get_fixtures&APIkey={self.api_key}&date_start={date_str}&date_stop={date_str}&timezone=UTC"
         async with httpx.AsyncClient() as client:
@@ -115,7 +113,6 @@ class TennisDataAPI:
         return []
 
     async def get_odds(self, match_key: str) -> Dict:
-        """Holt die Pre-Match-Quoten für eine bestimmte Match-ID."""
         url = f"{self.base_url}?method=get_odds&APIkey={self.api_key}&match_key={match_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -128,7 +125,6 @@ class TennisDataAPI:
         return {}
 
     async def get_player_stats(self, player_key: str) -> Dict:
-        """🚀 SOTA: Holt tiefe historische API-Daten (W/L auf Belägen, Rank etc.) eines Spielers."""
         url = f"{self.base_url}?method=get_players&APIkey={self.api_key}&player_key={player_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -141,7 +137,6 @@ class TennisDataAPI:
         return {}
 
     async def get_h2h(self, p1_key: str, p2_key: str) -> Dict:
-        """🚀 JUICE REEL FEATURE: Holt offizielle H2H Daten für zwei Spieler."""
         url = f"{self.base_url}?method=get_H2H&APIkey={self.api_key}&first_player_key={p1_key}&second_player_key={p2_key}"
         async with httpx.AsyncClient() as client:
             try:
@@ -241,9 +236,7 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-def get_similarity(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, a, b).ratio()
-
+# 🚀 SOTA ARCHITECT: The Ultimate Name-Parsing Gatekeeper
 def is_same_player(target_name: str, db_name: str) -> bool:
     t_norm = normalize_db_name(target_name)
     d_norm = normalize_db_name(db_name)
@@ -262,6 +255,9 @@ def is_same_player(target_name: str, db_name: str) -> bool:
         return t_first[0] == d_first[0]
         
     return True
+
+def get_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
 
 def find_player_smart(scraped_name_raw: str, db_players: List[Dict], report_ids: Set[str] = None) -> Optional[Dict]:
     if report_ids is None: report_ids = set()
@@ -548,88 +544,79 @@ class MomentumV2Engine:
             
             score_str = str(m.get('score', '')).lower().replace(":", "-").strip()
             
-            # 🚀 ARCHITECT FIX: Hybrid Schema Logic (Legacy vs API-Tennis)
             if "ret" in score_str or "w.o" in score_str:
                 actual_perf = 0.6 if won else 0.4
             else:
-                # PATH A: The API-Tennis Set-Only Format (e.g. "2-0", "1-2")
-                # Matches exactly one pair of numbers summing to <= 5
-                set_only_match = re.match(r'^(\d+)\s*-\s*(\d+)$', score_str)
+                sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str)
                 
-                if set_only_match and sum(int(x) for x in set_only_match.groups()) <= 5:
-                    l, r = int(set_only_match.group(1)), int(set_only_match.group(2))
+                if not sets:
+                    actual_perf = 0.75 if won else 0.25
+                elif len(sets) == 1 and (int(sets[0][0]) + int(sets[0][1]) <= 5):
+                    l, r = int(sets[0][0]), int(sets[0][1])
                     p_sets = l if is_p1 else r
                     o_sets = r if is_p1 else l
                     
                     if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0):
-                        actual_perf = 0.85  # Absolute Dominance
+                        actual_perf = 0.85  
                     elif p_sets > o_sets:
-                        actual_perf = 0.65  # Grind/Resilience Win
+                        actual_perf = 0.65  
                     elif o_sets >= p_sets + 2 or (o_sets == 2 and p_sets == 0):
-                        actual_perf = 0.15  # Outclassed
+                        actual_perf = 0.15  
                     elif o_sets > p_sets:
-                        actual_perf = 0.35  # Competitive Loss
+                        actual_perf = 0.35  
                     else:
-                        actual_perf = 0.75 if won else 0.25 # Fallback
-                
-                # PATH B: The Legacy DB Format (e.g. "6-4 6-2", "3-6 7-6 6-2")
+                        actual_perf = 0.75 if won else 0.25 
                 else:
-                    sets = re.findall(r'(\d+)-(\d+)', score_str)
-                    if not sets:
-                        actual_perf = 0.75 if won else 0.25
+                    player_sets_won = 0
+                    opp_sets_won = 0
+                    player_games_won = 0
+                    opp_games_won = 0
+                    
+                    for s in sets:
+                        try:
+                            l, r = int(s[0]), int(s[1])
+                            p_games = l if is_p1 else r
+                            o_games = r if is_p1 else l
+                            
+                            player_games_won += p_games
+                            opp_games_won += o_games
+                            
+                            if p_games > o_games: player_sets_won += 1
+                            elif o_games > p_games: opp_sets_won += 1
+                        except: pass
+                    
+                    if won:
+                        if opp_sets_won == 0: 
+                            game_diff = player_games_won - opp_games_won
+                            if game_diff >= 8: actual_perf = 1.0     
+                            elif game_diff >= 5: actual_perf = 0.9   
+                            elif game_diff >= 3: actual_perf = 0.8   
+                            else: actual_perf = 0.7                    
+                        else: 
+                            game_diff = player_games_won - opp_games_won
+                            if game_diff >= 4: actual_perf = 0.75      
+                            elif game_diff >= 1: actual_perf = 0.65    
+                            else: actual_perf = 0.55                  
                     else:
-                        player_sets_won = 0
-                        opp_sets_won = 0
-                        player_games_won = 0
-                        opp_games_won = 0
-                        
-                        for s in sets:
-                            try:
-                                l, r = int(s[0]), int(s[1])
-                                p_games = l if is_p1 else r
-                                o_games = r if is_p1 else l
-                                
-                                player_games_won += p_games
-                                opp_games_won += o_games
-                                
-                                if p_games > o_games: player_sets_won += 1
-                                elif o_games > p_games: opp_sets_won += 1
-                            except: pass
-                        
-                        if won:
-                            if opp_sets_won == 0: 
-                                game_diff = player_games_won - opp_games_won
-                                if game_diff >= 8: actual_perf = 1.0     
-                                elif game_diff >= 5: actual_perf = 0.9   
-                                elif game_diff >= 3: actual_perf = 0.8   
-                                else: actual_perf = 0.7                    
-                            else: 
-                                game_diff = player_games_won - opp_games_won
-                                if game_diff >= 4: actual_perf = 0.75      
-                                elif game_diff >= 1: actual_perf = 0.65    
-                                else: actual_perf = 0.55                  
-                        else:
-                            if player_sets_won == 1: 
-                                game_diff = opp_games_won - player_games_won
-                                if game_diff <= 1: actual_perf = 0.45      
-                                elif game_diff <= 4: actual_perf = 0.35    
-                                else: actual_perf = 0.25                  
-                            else: 
-                                game_diff = opp_games_won - player_games_won
-                                if game_diff <= 3: actual_perf = 0.30      
-                                elif game_diff <= 5: actual_perf = 0.20    
-                                elif game_diff <= 7: actual_perf = 0.10    
-                                else: actual_perf = 0.0                    
+                        if player_sets_won == 1: 
+                            game_diff = opp_games_won - player_games_won
+                            if game_diff <= 1: actual_perf = 0.45      
+                            elif game_diff <= 4: actual_perf = 0.35    
+                            else: actual_perf = 0.25                  
+                        else: 
+                            game_diff = opp_games_won - player_games_won
+                            if game_diff <= 3: actual_perf = 0.30      
+                            elif game_diff <= 5: actual_perf = 0.20    
+                            elif game_diff <= 7: actual_perf = 0.10    
+                            else: actual_perf = 0.0                    
 
             match_edge = actual_perf - expected_perf 
             
-            # Win/Loss Bias (Psychological Momentum)
             if won:
                 match_edge += 0.40  
             else:
                 match_edge -= 0.20
             
-            # Time Decay: Aktuellste Matches zählen bis zu 100%, ältuälteste ~30%
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
@@ -637,7 +624,6 @@ class MomentumV2Engine:
             
             history_log.append("W" if won else "L")
 
-        # Streak Multiplier
         streak_bonus = 0.0
         if len(history_log) >= 3:
             recent_3 = history_log[-3:]
@@ -653,7 +639,6 @@ class MomentumV2Engine:
         final_rating = base_rating + (avg_edge * 10.0) + streak_bonus
         final_rating = max(1.0, min(10.0, final_rating))
         
-        # Color & Text Generation
         desc = "Average"
         color_hex = "#F0C808" 
         
@@ -746,6 +731,45 @@ class SurfaceIntelligence:
         return filtered
 
     @staticmethod
+    def extract_api_surface_stats(api_stats: List[Dict], surface_key: str) -> tuple:
+        if not api_stats or not isinstance(api_stats, list):
+            return 0, 0
+            
+        total_wins = 0
+        total_losses = 0
+        
+        search_keys = [f"{surface_key}_won", f"surface_{surface_key}_won", f"matches_won_{surface_key}", f"wins_{surface_key}"]
+        loss_keys = [f"{surface_key}_lost", f"surface_{surface_key}_lost", f"matches_lost_{surface_key}", f"losses_{surface_key}"]
+        
+        for season in api_stats:
+            if isinstance(season, dict):
+                
+                if str(season.get("type", "")).lower() == "doubles":
+                    continue
+
+                def search_dict(d: dict):
+                    nonlocal total_wins, total_losses
+                    for k, v in d.items():
+                        if isinstance(v, dict):
+                            search_dict(v)
+                        elif isinstance(v, list):
+                            for item in v:
+                                if isinstance(item, dict):
+                                    search_dict(item)
+                        else:
+                            k_lower = str(k).lower()
+                            if any(sk in k_lower for sk in search_keys):
+                                try: total_wins += int(v)
+                                except: pass
+                            if any(lk in k_lower for lk in loss_keys):
+                                try: total_losses += int(v)
+                                except: pass
+                                
+                search_dict(season)
+                
+        return total_wins, total_losses
+
+    @staticmethod
     def compute_player_surface_profile(matches: List[Dict], player_name: str, api_stats: Dict = None) -> Dict[str, Any]:
         profile = {}
         
@@ -756,22 +780,22 @@ class SurfaceIntelligence:
         }
         
         for surf, surf_matches in surfaces_data.items():
-            n_surf = len(surf_matches)
-            wins = 0
+            n_surf_db = len(surf_matches)
+            wins_db = 0
             for m in surf_matches:
                 winner = str(m.get('actual_winner_name', ""))
                 if is_same_player(player_name, winner):
-                    wins += 1
+                    wins_db += 1
             
-            if api_stats and isinstance(api_stats, list) and len(api_stats) > 0:
-                recent_season = api_stats[0]
-                api_won = int(recent_season.get(f"{surf}_won") or 0)
-                api_lost = int(recent_season.get(f"{surf}_lost") or 0)
-                api_total = api_won + api_lost
-                
-                if api_total > 5:
-                    n_surf = api_total
-                    wins = api_won
+            api_won, api_lost = SurfaceIntelligence.extract_api_surface_stats(api_stats, surf)
+            api_total = api_won + api_lost
+            
+            n_surf = n_surf_db
+            wins = wins_db
+            
+            if api_total > n_surf_db and api_total > 5:
+                n_surf = api_total
+                wins = api_won
 
             if n_surf == 0:
                 profile[surf] = {
@@ -1031,7 +1055,7 @@ class NeuralOptimizer:
                 fair2 = to_float(m.get('ai_fair_odds2'), 0)
                 if fair1 > 0 and fair2 > 0:
                     total_predictions += 1
-                    if (fair1 < fair2 and p1_name.lower() in winner.lower()) or (fair2 < fair1 and p2_name.lower() in winner.lower()):
+                    if (fair1 < fair2 and is_same_player(p1_name, winner)) or (fair2 < fair1 and is_same_player(p2_name, winner)):
                         correct_predictions += 1
 
                 p1_obj = next((p for p in players if p.get('last_name') == p1_name and p['id'] in tour_players), None)
@@ -1043,7 +1067,7 @@ class NeuralOptimizer:
                     history_data.append({
                         "skillA": s1, "formA": 5.5, "surfA": 5.5,
                         "skillB": s2, "formB": 5.5, "surfB": 5.5,
-                        "winner_is_A": p1_name.lower() in winner.lower()
+                        "winner_is_A": is_same_player(p1_name, winner)
                     })
 
             if total_predictions > 0:
@@ -1098,7 +1122,7 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
 # =================================================================
 # 7. DATA FETCHING & ORACLE (API INTEGRATED)
 # =================================================================
-async def fetch_player_history_extended(player_last_name: str, limit: int = 80) -> List[Dict]:
+async def fetch_player_history_extended(player_last_name: str, limit: int = 200) -> List[Dict]:
     try:
         res = supabase.table("market_odds").select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text").or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(limit).execute()
         return res.data or []
@@ -1123,39 +1147,47 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
             if not p1_api or not p2_api: continue
             
             matched_pm = None
-            is_reversed = False
             
             for pm in list(safe_to_check):
-                # SOTA ARCHITECT UPGRADE: O(1) Key Lookup
                 if pm.get('api_match_key') and str(pm['api_match_key']) == str(fix.get('event_key')):
                     matched_pm = pm
                     break
 
-                # Fallback für alte DB-Einträge ohne Key:
-                db_p1_last = normalize_db_name(get_last_name(pm['player1_name']))
-                db_p2_last = normalize_db_name(get_last_name(pm['player2_name']))
-                api_p1_last = normalize_db_name(get_last_name(p1_api))
-                api_p2_last = normalize_db_name(get_last_name(p2_api))
-                
-                if (db_p1_last == api_p1_last and db_p2_last == api_p2_last) or \
-                   (get_similarity(db_p1_last, api_p1_last) > 0.80 and get_similarity(db_p2_last, api_p2_last) > 0.80):
+                # 🚀 SOTA ARCHITECT FIX: Bulletproof Name-Parsing Fallback, ohne sich auf DB-Reihenfolge zu verlassen
+                if (is_same_player(pm['player1_name'], p1_api) and is_same_player(pm['player2_name'], p2_api)) or \
+                   (is_same_player(pm['player1_name'], p2_api) and is_same_player(pm['player2_name'], p1_api)):
                     matched_pm = pm
-                    break
-                elif (db_p1_last == api_p2_last and db_p2_last == api_p1_last) or \
-                     (get_similarity(db_p1_last, api_p2_last) > 0.80 and get_similarity(db_p2_last, api_p1_last) > 0.80):
-                    matched_pm = pm
-                    is_reversed = True
                     break
 
             if matched_pm:
                 api_winner = fix.get("event_winner")
                 winner = None
+                
+                # 🚀 SOTA ARCHITECT FIX: Sieger über Name-Parsing identifizieren, nicht über "First/Second Player" Annahmen
                 if api_winner == "First Player":
-                    winner = matched_pm['player2_name'] if is_reversed else matched_pm['player1_name']
+                    winner = matched_pm['player1_name'] if is_same_player(matched_pm['player1_name'], p1_api) else matched_pm['player2_name']
                 elif api_winner == "Second Player":
-                    winner = matched_pm['player1_name'] if is_reversed else matched_pm['player2_name']
+                    winner = matched_pm['player1_name'] if is_same_player(matched_pm['player1_name'], p2_api) else matched_pm['player2_name']
                     
-                final_score = str(fix.get("event_final_result", ""))
+                scores_array = fix.get("scores", [])
+                if scores_array and isinstance(scores_array, list):
+                    constructed_score = []
+                    try:
+                        scores_array = sorted(scores_array, key=lambda x: int(x.get("score_set", 0)))
+                    except: pass
+                    
+                    for s in scores_array:
+                        sf = s.get("score_first")
+                        ss = s.get("score_second")
+                        if sf is not None and ss is not None and str(sf).strip() != "" and str(ss).strip() != "":
+                            constructed_score.append(f"{sf}-{ss}")
+                    
+                    if constructed_score:
+                        final_score = " ".join(constructed_score)
+                    else:
+                        final_score = str(fix.get("event_final_result", ""))
+                else:
+                    final_score = str(fix.get("event_final_result", ""))
                 
                 if winner:
                     supabase.table("market_odds").update({
@@ -1166,10 +1198,9 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     p1_name = matched_pm['player1_name']
                     p2_name = matched_pm['player2_name']
                     
-                    p1_id = next((p['id'] for p in players if p.get('last_name') == p1_name), None)
-                    p2_id = next((p['id'] for p in players if p.get('last_name') == p2_name), None)
+                    p1_id = next((p['id'] for p in players if is_same_player(p1_name, p.get('last_name', ''))), None)
+                    p2_id = next((p['id'] for p in players if is_same_player(p2_name, p.get('last_name', ''))), None)
                     
-                    # SOTA: Independent Skill Updates (Supports Shadow Tracking)
                     db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
                     if db_player_ids:
                         try:
@@ -1180,7 +1211,7 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                                 p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
                                 odds1 = to_float(matched_pm.get('odds1', 1.85))
                                 if p1_skills_db:
-                                    new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, (winner == p1_name), final_score, is_player1=True)
+                                    new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, is_same_player(winner, p1_name), final_score, is_player1=True)
                                     if new_s1:
                                         new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                         supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
@@ -1189,19 +1220,25 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                                 p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
                                 odds2 = to_float(matched_pm.get('odds2', 1.85))
                                 if p2_skills_db:
-                                    new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, (winner == p2_name), final_score, is_player1=False)
+                                    new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, is_same_player(winner, p2_name), final_score, is_player1=False)
                                     if new_s2:
                                         new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                                         supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
                         except Exception as se: pass
 
                     for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
-                        p_exists = next((p for p in players if p.get('last_name') == p_name_hook), None)
+                        p_exists = next((p for p in players if is_same_player(p_name_hook, p.get('last_name', ''))), None)
                         if not p_exists: continue
                         
-                        p_hist = await fetch_player_history_extended(p_name_hook, limit=80)
+                        p_hist = await fetch_player_history_extended(p_name_hook, limit=200)
                         
-                        p_key = fix.get('first_player_key') if p_name_hook == matched_pm['player1_name'] else fix.get('second_player_key')
+                        # 🚀 SOTA ARCHITECT FIX: Die API ID für Surface-Stats ausschließlich durch reines Name-Parsing finden!
+                        p_key = None
+                        if is_same_player(p_name_hook, p1_api):
+                            p_key = fix.get('first_player_key')
+                        elif is_same_player(p_name_hook, p2_api):
+                            p_key = fix.get('second_player_key')
+
                         api_stats = []
                         if p_key:
                             raw_api_stats = await api.get_player_stats(str(p_key))
@@ -1210,10 +1247,12 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                         p_profile = SurfaceIntelligence.compute_player_surface_profile(p_hist, p_name_hook, api_stats)
                         p_form = MomentumV2Engine.calculate_rating(p_hist[:20], p_name_hook)
                         
-                        supabase.table('players').update({
-                            'surface_ratings': p_profile,
-                            'form_rating': p_form 
-                        }).ilike('last_name', f"%{p_name_hook}%").execute()
+                        target_p_id = p1_id if is_same_player(p_name_hook, matched_pm['player1_name']) else p2_id
+                        if target_p_id:
+                            supabase.table('players').update({
+                                'surface_ratings': p_profile,
+                                'form_rating': p_form 
+                            }).eq('id', target_p_id).execute()
 
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
@@ -1248,10 +1287,10 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
             if 'ret' in score_str or 'wo' in score_str: 
                 fatigue_score *= 0.5
             else:
-                sets = len(re.findall(r'(\d+)-(\d+)', score_str))
+                sets = len(re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str))
                 tiebreaks = len(re.findall(r'7-6|6-7', score_str))
                 total_games = 0
-                for s in re.findall(r'(\d+)-(\d+)', score_str):
+                for s in re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str):
                     try: 
                         total_games += int(s[0]) + int(s[1])
                     except: 
@@ -1276,7 +1315,7 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
                 if (now_ts - mt) < (7 * 24 * 3600):
                     matches_in_week += 1
                     if m.get('score'): 
-                        sets_in_week += len(re.findall(r'\d+-\d+', str(m['score']).replace(":", "-")))
+                        sets_in_week += len(re.findall(r'\b\d+\s*-\s*\d+\b', str(m['score']).replace(":", "-")))
             except: 
                 pass
                 
@@ -1303,7 +1342,6 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
         return "Unknown"
 
 def fetch_all_rows(table_name: str) -> List[Dict]:
-    """🚀 SOTA FIX: Paginates through Supabase to bypass the 1000-row limit."""
     data = []
     offset = 0
     limit = 1000
@@ -1797,35 +1835,34 @@ class LiveSkillEngine:
 
         score_lower = str(score).lower().replace(":", "-").strip()
 
-        # 🚀 ARCHITECT FIX: Hybrid Schema Logic
         is_clean_sweep = False
         is_grind_match = False
         lost_tiebreak = False
 
-        # PATH A: The API-Tennis Set-Only Format
-        set_only_match = re.match(r'^(\d+)\s*-\s*(\d+)$', score_lower)
-        if set_only_match and sum(int(x) for x in set_only_match.groups()) <= 5:
-            l, r = int(set_only_match.group(1)), int(set_only_match.group(2))
-            p_sets = l if is_player1 else r
-            o_sets = r if is_player1 else l
-            
-            if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0): is_clean_sweep = True
-            if (p_sets == 2 and o_sets == 1) or (p_sets == 1 and o_sets == 2): is_grind_match = True
-
-        # PATH B: The Legacy DB Format
+        if "ret" in score_lower or "w.o" in score_lower:
+            pass
         else:
-            sets = re.findall(r'(\d+)-(\d+)', score_lower)
-            if len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
-                is_clean_sweep = True
-            elif len(sets) >= 3:
-                is_grind_match = True
+            sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_lower)
+            if len(sets) == 1 and (int(sets[0][0]) + int(sets[0][1]) <= 5):
+                l, r = int(sets[0][0]), int(sets[0][1])
+                p_sets = l if is_player1 else r
+                o_sets = r if is_player1 else l
+                
+                if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0): is_clean_sweep = True
+                if (p_sets == 2 and o_sets == 1) or (p_sets == 1 and o_sets == 2): is_grind_match = True
+            else:
+                if len(sets) == 2 and not "ret." in score_lower and not "w.o." in score_lower:
+                    is_clean_sweep = True
+                elif len(sets) >= 3:
+                    is_grind_match = True
 
-            for s in sets:
-                l, r = int(s[0]), int(s[1])
-                if is_player1 and l < r and r == 7: lost_tiebreak = True
-                if not is_player1 and r < l and l == 7: lost_tiebreak = True
+                for s in sets:
+                    try:
+                        l, r = int(s[0]), int(s[1])
+                        if is_player1 and l < r and r == 7: lost_tiebreak = True
+                        if not is_player1 and r < l and l == 7: lost_tiebreak = True
+                    except: pass
 
-        # Apply specific granular skill shifts based on the hybrid parsing result
         if is_winner and is_clean_sweep:
             for skill in ['power', 'serve', 'forehand', 'backhand', 'volley', 'speed']:
                 if skill in new_skills: new_skills[skill] += 0.2
@@ -1856,7 +1893,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V204.8 (GHOST PROTOCOL EDITION) Starting...")
+    log(f"🚀 Neural Scout V205.3 (ULTIMATE NAME PARSER EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -1880,7 +1917,6 @@ async def run_pipeline():
         fixtures = await api.get_fixtures(target_date)
         
         for fix in fixtures:
-            # 🚀 SOTA FIX 1: Sichere Status-Abfrage (Ignoriere nur beendete/abgesagte)
             status = fix.get("event_status", "")
             if status in ["Finished", "Cancelled", "Retired", "Walkover"]: 
                 continue
@@ -1979,7 +2015,6 @@ async def run_pipeline():
             if p1_obj == "TIE_BREAKER" or p2_obj == "TIE_BREAKER":
                 continue
 
-            # 🚀 SOTA: Erlaube Single-Player "Shadow Tracking"
             if not p1_obj and not p2_obj: 
                 continue
                 
@@ -2002,7 +2037,6 @@ async def run_pipeline():
             res1 = supabase.table("market_odds").select("*").eq("api_match_key", m['api_match_key']).execute()
             existing_match = res1.data[0] if res1.data else None
 
-            # 🚀 SOTA FIX 2: Fallback darf nur OFFENE Spiele finden, keine historischen!
             if not existing_match:
                 res_fb1 = supabase.table("market_odds").select("*").ilike("player1_name", f"%{n1_last}%").ilike("player2_name", f"%{n2_last}%").is_("actual_winner_name", "null").order("created_at", desc=True).limit(1).execute()
                 existing_match = res_fb1.data[0] if res_fb1.data else None
@@ -2114,8 +2148,8 @@ async def run_pipeline():
                 report1 = next((r for r in all_reports if r.get('player_id') == p1_obj['id']), None)
                 report2 = next((r for r in all_reports if r.get('player_id') == p2_obj['id']), None)
 
-                p1_history = await fetch_player_history_extended(full_n1, limit=80)
-                p2_history = await fetch_player_history_extended(full_n2, limit=80)
+                p1_history = await fetch_player_history_extended(full_n1, limit=200)
+                p2_history = await fetch_player_history_extended(full_n2, limit=200)
                 
                 p1_form_v2 = MomentumV2Engine.calculate_rating(p1_history[:20], full_n1)
                 p2_form_v2 = MomentumV2Engine.calculate_rating(p2_history[:20], full_n2)
@@ -2148,7 +2182,6 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
-                    # 🚀 SOTA DRIFT LOGIC
                     ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE).*?\]', '', cached_ai['ai_text']).strip() 
                     ai_text_final += value_tag
                     
@@ -2173,6 +2206,54 @@ async def run_pipeline():
                 else:
                     log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
+                    # 🚀 SOTA ARCHITECT FIX: Die API ID für Surface-Stats ausschließlich durch reines Name-Parsing finden!
+                    p1_api_name_live = str(m.get('p1_raw', ''))
+                    p2_api_name_live = str(m.get('p2_raw', ''))
+                    
+                    p1_key = None
+                    p2_key = None
+                    
+                    if is_same_player(full_n1, p1_api_name_live): p1_key = m.get('p1_api_key')
+                    elif is_same_player(full_n1, p2_api_name_live): p1_key = m.get('p2_api_key')
+                    
+                    if is_same_player(full_n2, p2_api_name_live): p2_key = m.get('p2_api_key')
+                    elif is_same_player(full_n2, p1_api_name_live): p2_key = m.get('p1_api_key')
+
+                    api_stats_p1 = []
+                    if p1_key:
+                        try:
+                            raw_api_stats1 = await api.get_player_stats(str(p1_key))
+                            api_stats_p1 = raw_api_stats1.get('stats', [])
+                        except: pass
+                        
+                    api_stats_p2 = []
+                    if p2_key:
+                        try:
+                            raw_api_stats2 = await api.get_player_stats(str(p2_key))
+                            api_stats_p2 = raw_api_stats2.get('stats', [])
+                        except: pass
+
+                    p1_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p1_history, full_n1, api_stats_p1)
+                    p2_surface_profile = SurfaceIntelligence.compute_player_surface_profile(p2_history, full_n2, api_stats_p2)
+                    
+                    try:
+                        target_p1_id = p1_obj.get('id')
+                        if target_p1_id:
+                            supabase.table('players').update({
+                                'form_rating': p1_form_v2,
+                                'surface_ratings': p1_surface_profile
+                            }).eq('id', target_p1_id).execute()
+                        
+                        target_p2_id = p2_obj.get('id')
+                        if target_p2_id:
+                            supabase.table('players').update({
+                                'form_rating': p2_form_v2,
+                                'surface_ratings': p2_surface_profile
+                            }).eq('id', target_p2_id).execute()
+                            
+                    except Exception as update_err:
+                        log(f"⚠️ Failed to update live player ratings: {update_err}")
+
                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
                     
                     styleA = p1_obj.get('play_style', '')
@@ -2185,15 +2266,9 @@ async def run_pipeline():
                         iterations=2500
                     )
                     
-                    # Dummy profiles for AI input to save tokens
-                    p1_surface_profile = {"rating": 5.0}
-                    p2_surface_profile = {"rating": 5.0}
-                    
-                    # 🚀 SOTA FIX: Echtes H2H laden (API gibt ein DICT zurück!)
                     h2h_record = "0 - 0"
                     if m.get('p1_api_key') and m.get('p2_api_key'):
                         try:
-                            # Die API gibt {"H2H": [], "firstPlayerResults": [], ...} zurück
                             h2h_response = await api.get_h2h(str(m['p1_api_key']), str(m['p2_api_key']))
                             
                             if h2h_response and isinstance(h2h_response, dict):
@@ -2201,28 +2276,25 @@ async def run_pipeline():
                                 
                                 if isinstance(h2h_matches, list) and len(h2h_matches) > 0:
                                     w1, w2 = 0, 0
-                                    p1_last = get_last_name(m['p1_raw']).lower()
                                     
                                     for h_match in h2h_matches:
                                         winner = str(h_match.get("event_winner", "")).lower()
                                         if winner:
-                                            # Fall 1: API sagt "First Player" oder "Second Player"
+                                            # 🚀 SOTA ARCHITECT FIX: Namensabgleich für H2H Ergebnisse, keine ID-Annahmen!
                                             if winner == "first player":
-                                                if get_last_name(str(h_match.get("event_first_player", ""))).lower() == p1_last: w1 += 1
+                                                if is_same_player(full_n1, str(h_match.get("event_first_player", ""))): w1 += 1
                                                 else: w2 += 1
                                             elif winner == "second player":
-                                                if get_last_name(str(h_match.get("event_second_player", ""))).lower() == p1_last: w1 += 1
+                                                if is_same_player(full_n1, str(h_match.get("event_second_player", ""))): w1 += 1
                                                 else: w2 += 1
-                                            # Fall 2: API gibt direkt den Namen aus
                                             else:
-                                                if p1_last in winner: w1 += 1
+                                                if is_same_player(full_n1, winner): w1 += 1
                                                 else: w2 += 1
                                     
                                     h2h_record = f"{w1} - {w2}"
                         except Exception as e:
                             log(f"⚠️ H2H Error: {e}")
 
-                    # 🚀 SOTA FRONTEND FIX: Packe das H2H in das sim_result JSON, damit React es findet!
                     sim_result["h2h"] = h2h_record
 
                     ai = await analyze_match_with_ai(
@@ -2235,9 +2307,6 @@ async def run_pipeline():
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
                     
-                    # =================================================================
-                    # 🚀 ARCHITECT FIX: RE-INJECTING LOST DATA BINDINGS
-                    # =================================================================
                     p1_set_prob = math.pow(prob, 0.65)
                     p2_set_prob = math.pow(1.0 - prob, 0.65)
                     
@@ -2250,7 +2319,6 @@ async def run_pipeline():
                     
                     sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
                     sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
-                    # =================================================================
 
                     val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
                     val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
@@ -2287,7 +2355,6 @@ async def run_pipeline():
                     hist_fair1 = fair1
                     hist_fair2 = fair2
                     
-                    # DB SPEICHERN
                     if db_match_id: 
                         try:
                             supabase.table("market_odds").update(data).eq("id", db_match_id).execute()
