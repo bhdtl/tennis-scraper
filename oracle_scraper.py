@@ -27,7 +27,7 @@ logger = logging.getLogger("Oracle_PreWarmer_SOTA")
 def log(msg: str):
     logger.info(msg)
 
-log("🔮 Initializing Oracle Pre-Warmer (V155.2 SOTA Parity - High Variance Quant Synergy)...")
+log("🔮 Initializing Oracle Pre-Warmer (V155.3 SOTA - State Synchronization Mode)...")
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -533,10 +533,13 @@ async def execute_synergy_analysis():
     draws_res = supabase.table('tournament_oracle_draws').select('tournament_name, player_a_name, player_b_name').execute()
     draws = draws_res.data if draws_res else []
     
+    # --- 🚀 STATE SYNC FIX: Wir merken uns die aktiven Turniere ---
+    active_tournament_names = set()
     tournaments = {}
     for draw in draws:
         t_name = draw.get('tournament_name', '').strip()
         if not t_name: continue
+        active_tournament_names.add(t_name) # Für die spätere Bereinigung
         if t_name not in tournaments: tournaments[t_name] = set()
         if draw.get('player_a_name'): tournaments[t_name].add(draw['player_a_name'].strip())
         if draw.get('player_b_name'): tournaments[t_name].add(draw['player_b_name'].strip())
@@ -651,6 +654,26 @@ async def execute_synergy_analysis():
                 await asyncio.sleep(1) # Schutz gegen API-Rate-Limits
             except Exception as e:
                 log(f"  ❌ Failed Synergy Generation for {p_name}: {e}")
+
+    # --- 🚀 STATE SYNC FIX: BEREINIGUNG (PURGE) ---
+    log("🧹 Starting Synergy Cleanup (Purging inactive tournaments)...")
+    try:
+        # Holen wir uns alle Turniere, die aktuell in der Synergy-Tabelle stehen
+        synergy_res = supabase.table('tournament_court_synergy').select('tournament_name').execute()
+        synergy_tours = {s['tournament_name'] for s in synergy_res.data} if synergy_res.data else set()
+
+        # Turniere finden, die nicht mehr in den Oracle Draws existieren
+        tours_to_delete = synergy_tours - active_tournament_names
+
+        if tours_to_delete:
+            log(f"🗑️ Found {len(tours_to_delete)} expired tournaments. Deleting...")
+            for t_to_del in tours_to_delete:
+                supabase.table('tournament_court_synergy').delete().eq('tournament_name', t_to_del).execute()
+                log(f"   - Deleted: {t_to_del}")
+        else:
+            log("✨ No old synergy data to purge.")
+    except Exception as e:
+        log(f"⚠️ Cleanup failed: {e}")
 
 # =================================================================
 # 4. ORACLE SCRAPER & PIPELINE
