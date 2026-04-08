@@ -809,57 +809,50 @@ class SurfaceIntelligence:
             api_won, api_lost = SurfaceIntelligence.extract_api_surface_stats(api_stats, surf)
             api_total = api_won + api_lost
             
-            # 🚀 SOTA FIX: Wir vertrauen der API nur, wenn sie WIRKLICH Daten geliefert hat.
-            # Ansonsten nutzen wir unsere eigene mächtige DB-Historie (die wir extra auf limit=200 erhöht haben).
+            # 🚀 ARCHITECT FIX: Pure Win-Rate Logic (Removing Volume Bias)
             n_surf = n_surf_db
             wins = wins_db
             
-            if api_total > n_surf_db and api_total > 5:
+            if api_total > n_surf_db and api_total > 0:
                 n_surf = api_total
                 wins = api_won
 
             if n_surf == 0:
                 profile[surf] = {
-                    "rating": 3.5, 
+                    "rating": 5.0,  # Neutraler Startwert für neue Spieler
                     "color": "#808080",
                     "matches_tracked": 0,
-                    "text": "No Experience"
+                    "text": "No Data"
                 }
                 continue
                 
+            # Berechnung auf einer reinen 1-10 Skala basierend auf Win-Rate
             win_rate = wins / n_surf
-            vol_score = min(1.0, n_surf / 30.0) * 1.95
-            win_score = win_rate * 4.55
+            final_rating = max(1.0, min(10.0, win_rate * 10.0))
             
-            final_rating = 3.5 + vol_score + win_score
-            final_rating = max(1.0, min(10.0, final_rating))
-            
-            desc = "Average"
-            color_hex = "#F0C808" 
-            
+            # Dynamische Beschreibung basierend auf Performance-Clustern
             if final_rating >= 8.5: 
                 desc = "🔥 SPECIALIST"
                 color_hex = "#FF00FF" 
-            elif final_rating >= 7.5: 
+            elif final_rating >= 7.0: 
                 desc = "📈 Strong"
                 color_hex = "#3366FF" 
-            elif final_rating >= 6.5: 
-                color_hex = "#00B25B" 
             elif final_rating >= 5.5: 
                 desc = "Solid"
-                color_hex = "#99CC33" 
-            elif final_rating <= 4.5: 
-                desc = "⚠️ Vulnerable"
-                color_hex = "#CC0000" 
-            elif final_rating < 5.5: 
+                color_hex = "#00B25B" 
+            elif final_rating >= 4.0: 
+                desc = "Average"
+                color_hex = "#F0C808" 
+            else: 
                 desc = "❄️ Weakness"
-                color_hex = "#FF9933" 
+                color_hex = "#CC0000" 
 
             profile[surf] = {
                 "rating": round(final_rating, 2),
                 "color": color_hex,
                 "matches_tracked": n_surf,
-                "text": desc
+                "text": desc,
+                "win_rate": f"{round(win_rate * 100, 1)}%"
             }
             
         profile['_v95_mastery_applied'] = True
