@@ -19,17 +19,42 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # =================================================================
 
 def calculate_surface_rating_v2(wins, total_matches):
+    # Standard-Rating für Spieler ohne Daten
     if total_matches == 0:
-        return 5.0, "#808080", "No Data"
+        return 5.5, "#808080", "Neutral"
     
-    win_rate = wins / total_matches
-    rating = max(1.0, min(10.0, win_rate * 10.0))
+    raw_win_rate = wins / total_matches
     
-    if rating >= 8.5: return round(rating, 2), "#FF00FF", "🔥 SPECIALIST"
-    if rating >= 7.0: return round(rating, 2), "#3366FF", "📈 Strong"
-    if rating >= 5.5: return round(rating, 2), "#00B25B", "Solid"
-    if rating >= 4.0: return round(rating, 2), "#F0C808", "Average"
-    return round(rating, 2), "#CC0000", "❄️ Weakness"
+    # 🚀 ARCHITECT SECRET: Damping Factor (Bayesian Average Style)
+    # Wir ziehen das Rating zur 5.5 hin, wenn wenig Spiele vorliegen.
+    # Erst ab ca. 15-20 Spielen "entfaltet" sich das wahre Rating.
+    credibility_weight = min(1.0, total_matches / 15) 
+    
+    # Skalierung: 0.5 WinRate (50%) soll 5.5 ergeben.
+    # Wir nutzen einen Multiplikator von 9.0, um die Range zu spreizen.
+    sensitivity = 9.0 
+    calculated_rating = 5.5 + (raw_win_rate - 0.5) * sensitivity
+    
+    # Anwendung der Credibility (Damping)
+    # Rating nähert sich 5.5 an, wenn total_matches klein ist
+    final_rating = (calculated_rating * credibility_weight) + (5.5 * (1 - credibility_weight))
+    
+    # Hard Caps
+    final_rating = max(1.0, min(10.0, final_rating))
+    
+    # Specialist-Cluster Definition
+    if final_rating >= 8.2: 
+        desc, color = "🔥 SPECIALIST", "#FF00FF"
+    elif final_rating >= 6.8: 
+        desc, color = "📈 Strong", "#3366FF"
+    elif final_rating >= 5.0: 
+        desc, color = "Solid", "#00B25B"
+    elif final_rating >= 3.5: 
+        desc, color = "Average", "#F0C808"
+    else: 
+        desc, color = "❄️ Weakness", "#CC0000"
+
+    return round(final_rating, 2), color, desc
 
 # =================================================================
 # MIGRATION RUNNER
