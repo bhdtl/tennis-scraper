@@ -549,6 +549,9 @@ class MomentumV2Engine:
             
             score_str = str(m.get('score', '')).lower().replace(":", "-").strip()
             
+            # 🚀 ARCHITECT FIX: Tiebreak-Punkte (z.B. 6.4-7.7) aus dem String filtern, bevor wir die Games auslesen!
+            score_str = re.sub(r'\.\d+', '', score_str)
+            
             # 🚀 ARCHITECT FIX: Hybrid Schema Logic (Legacy vs API-Tennis)
             if "ret" in score_str or "w.o" in score_str:
                 actual_perf = 0.6 if won else 0.4
@@ -606,7 +609,7 @@ class MomentumV2Engine:
                             game_diff = player_games_won - opp_games_won
                             if game_diff >= 4: actual_perf = 0.75      
                             elif game_diff >= 1: actual_perf = 0.65    
-                            else: actual_perf = 0.55                  
+                            else: actual_perf = 0.55                 
                     else:
                         if player_sets_won == 1: 
                             game_diff = opp_games_won - player_games_won
@@ -1299,6 +1302,10 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
             
         if hours_since_last < 72 and last_match.get('score'):
             score_str = str(last_match['score']).lower().replace(":", "-")
+            
+            # 🚀 SOTA FIX: Tiebreak-Punkte entfernen, sonst explodieren die "Total Games" in der Fatigue-Berechnung
+            score_str = re.sub(r'\.\d+', '', score_str)
+            
             if 'ret' in score_str or 'wo' in score_str: 
                 fatigue_score *= 0.5
             else:
@@ -1330,7 +1337,9 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
                 if (now_ts - mt) < (7 * 24 * 3600):
                     matches_in_week += 1
                     if m.get('score'): 
-                        sets_in_week += len(re.findall(r'\b\d+\s*-\s*\d+\b', str(m['score']).replace(":", "-")))
+                        # 🚀 SOTA FIX: Tiebreak-Säuberung auch für die Wochen-Ansicht
+                        clean_score = re.sub(r'\.\d+', '', str(m['score']).lower().replace(":", "-"))
+                        sets_in_week += len(re.findall(r'\b\d+\s*-\s*\d+\b', clean_score))
             except: 
                 pass
                 
@@ -1849,6 +1858,9 @@ class LiveSkillEngine:
         if not new_skills: return {}
 
         score_lower = str(score).lower().replace(":", "-").strip()
+        
+        # 🚀 SOTA FIX: Tiebreaks säubern, damit Game-Differenzen und Sweeps korrekt berechnet werden
+        score_lower = re.sub(r'\.\d+', '', score_lower)
 
         is_clean_sweep = False
         is_grind_match = False
@@ -2219,7 +2231,7 @@ async def run_pipeline():
                         except: pass
 
                 else:
-                    log(f"   🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
+                    log(f"  🧠 Fresh AI & Markov Chain Sim: {full_n1} vs {full_n2} | T: {matched_tour_name}")
                     
                     p1_api_name_live = str(m.get('p1_raw', ''))
                     p2_api_name_live = str(m.get('p2_raw', ''))
