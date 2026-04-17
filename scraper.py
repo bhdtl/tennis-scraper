@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.4 - FINAL NAME PARSER POLISH)...")
+log("🔌 Initialisiere Neural Scout (V205.5 - PINNACLE ANCHOR & G-ELO EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1170,7 +1170,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     matched_pm = pm
                     break
 
-                # 🚀 SOTA ARCHITECT FIX: Bulletproof Name-Parsing Fallback, ohne sich auf DB-Reihenfolge zu verlassen
                 if (is_same_player(pm['player1_name'], p1_api) and is_same_player(pm['player2_name'], p2_api)) or \
                    (is_same_player(pm['player1_name'], p2_api) and is_same_player(pm['player2_name'], p1_api)):
                     matched_pm = pm
@@ -1180,7 +1179,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 api_winner = fix.get("event_winner")
                 winner = None
                 
-                # 🚀 SOTA ARCHITECT FIX: Sieger über Name-Parsing identifizieren, nicht über "First/Second Player" Annahmen
                 if api_winner == "First Player":
                     winner = matched_pm['player1_name'] if is_same_player(matched_pm['player1_name'], p1_api) else matched_pm['player2_name']
                 elif api_winner == "Second Player":
@@ -1218,7 +1216,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                     p1_id = next((p['id'] for p in players if is_same_player(p1_name, p.get('last_name', ''))), None)
                     p2_id = next((p['id'] for p in players if is_same_player(p2_name, p.get('last_name', ''))), None)
                     
-                    # SOTA: Independent Skill Updates (Supports Shadow Tracking)
                     db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
                     if db_player_ids:
                         try:
@@ -1250,7 +1247,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                         
                         p_hist = await fetch_player_history_extended(p_name_hook, limit=200)
                         
-                        # 🚀 SOTA ARCHITECT FIX: Die API ID für Surface-Stats ausschließlich durch reines Name-Parsing finden!
                         p_key = None
                         if is_same_player(p_name_hook, p1_api):
                             p_key = fix.get('first_player_key')
@@ -1303,7 +1299,6 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
         if hours_since_last < 72 and last_match.get('score'):
             score_str = str(last_match['score']).lower().replace(":", "-")
             
-            # 🚀 SOTA FIX: Tiebreak-Punkte entfernen, sonst explodieren die "Total Games" in der Fatigue-Berechnung
             score_str = re.sub(r'\.\d+', '', score_str)
             
             if 'ret' in score_str or 'wo' in score_str: 
@@ -1337,7 +1332,6 @@ async def get_advanced_load_analysis(matches: List[Dict]) -> str:
                 if (now_ts - mt) < (7 * 24 * 3600):
                     matches_in_week += 1
                     if m.get('score'): 
-                        # 🚀 SOTA FIX: Tiebreak-Säuberung auch für die Wochen-Ansicht
                         clean_score = re.sub(r'\.\d+', '', str(m['score']).lower().replace(":", "-"))
                         sets_in_week += len(re.findall(r'\b\d+\s*-\s*\d+\b', clean_score))
             except: 
@@ -1382,6 +1376,66 @@ def fetch_all_rows(table_name: str) -> List[Dict]:
             break
     return data
 
+# 🚀 SOTA ARCHITECT: True Surface-Specific G-Elo Engine
+def initialize_g_elo_system(historical_matches: List[Dict], tournaments: List[Dict]):
+    log("🧠 Initialisiere True Surface-Specific G-Elo System...")
+    global ELO_CACHE
+    ELO_CACHE = {"ATP": {}, "WTA": {}}
+    
+    valid_matches = [m for m in historical_matches if m.get('actual_winner_name') and m.get('score')]
+    valid_matches.sort(key=lambda x: str(x.get('created_at', '')))
+    
+    for m in valid_matches:
+        tour_raw = str(m.get('tournament', '')).lower()
+        surf = "Hard"
+        if "clay" in tour_raw or "roland garros" in tour_raw: surf = "Clay"
+        elif "grass" in tour_raw or "wimbledon" in tour_raw: surf = "Grass"
+        else:
+            for db_key, db_surf in GLOBAL_SURFACE_MAP.items():
+                if db_key in tour_raw or tour_raw in db_key:
+                    if len(db_key) > 3:
+                        if "clay" in db_surf.lower(): surf = "Clay"
+                        elif "grass" in db_surf.lower(): surf = "Grass"
+                        break
+        
+        tour = "WTA" if "wta" in tour_raw else "ATP"
+        
+        p1 = get_last_name(m.get('player1_name', ''))
+        p2 = get_last_name(m.get('player2_name', ''))
+        winner = get_last_name(m.get('actual_winner_name', ''))
+        
+        if not p1 or not p2 or not winner: continue
+        
+        p1_won = (p1 == winner)
+        
+        score_str = re.sub(r'\.\d+', '', str(m['score']).lower().replace(":", "-"))
+        sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str)
+        g1, g2 = 0, 0
+        for s in sets:
+            try:
+                g1 += int(s[0])
+                g2 += int(s[1])
+            except: pass
+        game_diff = abs(g1 - g2)
+        
+        K = 25
+        margin_multiplier = math.log(game_diff + 1.5) if game_diff else 1.0
+        
+        if p1 not in ELO_CACHE[tour]: ELO_CACHE[tour][p1] = {'Hard': 1500.0, 'Clay': 1500.0, 'Grass': 1500.0}
+        if p2 not in ELO_CACHE[tour]: ELO_CACHE[tour][p2] = {'Hard': 1500.0, 'Clay': 1500.0, 'Grass': 1500.0}
+        
+        elo1 = ELO_CACHE[tour][p1][surf]
+        elo2 = ELO_CACHE[tour][p2][surf]
+        
+        exp1 = 1 / (1 + math.pow(10, (elo2 - elo1) / 400))
+        
+        shift = K * margin_multiplier * ((1 if p1_won else 0) - exp1)
+        
+        ELO_CACHE[tour][p1][surf] += shift
+        ELO_CACHE[tour][p2][surf] -= shift
+    
+    log(f"✅ G-Elo System kalibriert: ATP ({len(ELO_CACHE['ATP'])} Spieler), WTA ({len(ELO_CACHE['WTA'])} Spieler)")
+
 async def get_db_data():
     try:
         weights_res = supabase.table("ai_system_weights").select("*").execute()
@@ -1412,6 +1466,10 @@ async def get_db_data():
                         part = part.strip().lower()
                         if part and len(part) > 2: 
                             GLOBAL_SURFACE_MAP[part] = t_surf
+                            
+        # 🚀 SOTA: Load Historical matches to build True G-Elo
+        historical_odds = fetch_all_rows("market_odds")
+        initialize_g_elo_system(historical_odds, tournaments)
                             
         clean_skills = {}
         if skills:
@@ -1470,7 +1528,7 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True}
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2):
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2, pinnacle_prob_a=None):
     n1 = get_last_name(p1_name)
     n2 = get_last_name(p2_name)
     tour = "ATP"
@@ -1504,13 +1562,19 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_
     mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
     prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
     
+    # 🚀 SOTA: The Pinnacle Anchor
     prob_market = 0.5
-    if market_odds1 > 1 and market_odds2 > 1:
+    if pinnacle_prob_a is not None:
+        prob_market = pinnacle_prob_a
+        model_trust_factor = 0.25 # Trust Pinnacle massive, only slight adjustments based on G-Elo
+    elif market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         prob_market = inv1 / (inv1 + inv2)
+        model_trust_factor = 0.35 
+    else:
+        model_trust_factor = 0.5
         
-    model_trust_factor = 0.35 
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
     return final_prob
 
@@ -1693,19 +1757,22 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     
     {convictionDirective}
     
+    *** TACTICAL PLAYSTYLE MATCHUP (CRITICAL) ***
+    Explicitly analyze how {p1['last_name']}'s style ({p1.get('play_style', 'Unknown')}) matches up against {p2['last_name']}'s style ({p2.get('play_style', 'Unknown')}). Does the Grinder break down the Aggressive Baseliner? Does the Counterpuncher neutralize the Big Server on this specific {surface}? Base this strictly on their granular skills and scouting reports.
+
     *** CRITICAL DIRECTIVES (MUST OBEY) ***
     1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages (%), numerical ratings (e.g., 8/10), or skill points in 'prediction_text' and 'key_factor'.
     2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics". Explain how the specific "Court Notes" (bounce height, court speed) amplify a player's strengths or expose their weaknesses.
     3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses' and the H2H stats.
-    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions. If a player is a heavy favorite due to the OVR rating, emphasize their superior "baseline quality" or "fundamental consistency".
+    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions. Emphasize the playstyle clash (e.g., Counterpuncher vs Aggressive Baseliner).
     5. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
     
     OUTPUT JSON:
     {{
         "winner_prediction": "{predictedMCWinner}",
-        "key_factor": "One sharp tactical sentence focusing on the primary technical mismatch (NO NUMBERS).",
-        "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.",
-        "tactical_bullets": ["Tactic 1 based on report", "Tactic 2 based on report", "Tactic 3 based on report"]
+        "key_factor": "One sharp tactical sentence focusing on the primary playstyle mismatch (NO NUMBERS).",
+        "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, the clash of their specific playstyles, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.",
+        "tactical_bullets": ["Tactic 1 based on playstyle/report", "Tactic 2 based on surface physics", "Tactic 3 based on specific weakness"]
     }}
     """
     
@@ -1920,7 +1987,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.4 (FINAL NAME PARSER POLISH) Starting...")
+    log(f"🚀 Neural Scout V205.5 (PINNACLE ANCHOR & G-ELO) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2136,6 +2203,14 @@ async def run_pipeline():
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
             
+            # 🚀 SOTA: Extract Pinnacle Anchor
+            pinnacle_prob_a = None
+            pncl_data = m['bookmaker_odds'].get("Pncl") or m['bookmaker_odds'].get("Pinnacle")
+            if pncl_data and pncl_data.get("odds1") > 1 and pncl_data.get("odds2") > 1:
+                inv1 = 1 / pncl_data["odds1"]
+                inv2 = 1 / pncl_data["odds2"]
+                pinnacle_prob_a = inv1 / (inv1 + inv2)
+            
             if is_signal_locked:
                 update_data = {
                     "odds1": m['odds1'], 
@@ -2327,7 +2402,8 @@ async def run_pipeline():
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
                     )
                     
-                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'])
+                    # 🚀 SOTA: Pass the Pinnacle Anchor into the physics engine
+                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'], pinnacle_prob_a)
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
