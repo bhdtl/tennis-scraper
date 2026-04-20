@@ -38,6 +38,9 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("NeuralScout_Architect")
 
+def log(msg: str):
+    logger.info(msg)
+
 log("🔌 Initialisiere Neural Scout (V205.7 - TRUE Z-SCORE & EMPIRICAL O/U EDITION)...")
 
 # Secrets Load
