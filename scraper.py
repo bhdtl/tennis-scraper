@@ -38,10 +38,7 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("NeuralScout_Architect")
 
-def log(msg: str):
-    logger.info(msg)
-
-log("🔌 Initialisiere Neural Scout (V205.5 - PINNACLE ANCHOR & G-ELO EDITION)...")
+log("🔌 Initialisiere Neural Scout (V205.7 - TRUE Z-SCORE & EMPIRICAL O/U EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -66,6 +63,10 @@ METADATA_CACHE: Dict[str, Any] = {}
 WEATHER_CACHE: Dict[str, Any] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 TML_MATCH_CACHE: List[Dict] = [] 
+
+# 🚀 SOTA: TRUE POPULATION STATISTICS (Z-SCORE BASELINES EXTRACTED FROM DB)
+SKILL_MEANS = {'serve': 77.6, 'forehand': 78.7, 'backhand': 76.4, 'volley': 72.4, 'speed': 79.4, 'stamina': 77.4, 'power': 75.5, 'mental': 76.8, 'overall_rating': 76.6}
+SKILL_STDS = {'serve': 8.3, 'forehand': 7.2, 'backhand': 8.1, 'volley': 8.8, 'speed': 6.8, 'stamina': 6.8, 'power': 8.8, 'mental': 7.0, 'overall_rating': 6.6}
 
 # SELF LEARNING STATE MEMORY
 DYNAMIC_WEIGHTS = {
@@ -548,37 +549,30 @@ class MomentumV2Engine:
             actual_perf = 0.5 
             
             score_str = str(m.get('score', '')).lower().replace(":", "-").strip()
-            
-            # 🚀 ARCHITECT FIX: Tiebreak-Punkte (z.B. 6.4-7.7) aus dem String filtern, bevor wir die Games auslesen!
             score_str = re.sub(r'\.\d+', '', score_str)
             
-            # 🚀 ARCHITECT FIX: Hybrid Schema Logic (Legacy vs API-Tennis)
             if "ret" in score_str or "w.o" in score_str:
                 actual_perf = 0.6 if won else 0.4
             else:
-                # Extrahiert alle Nummernpaare sicher, egal wie viele Leerzeichen/Zeichen drumherum sind
                 sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str)
                 
                 if not sets:
                     actual_perf = 0.75 if won else 0.25
                 elif len(sets) == 1 and (int(sets[0][0]) + int(sets[0][1]) <= 5):
-                    # PATH A: The API-Tennis Set-Only Format (e.g. "2-0", "1-2")
                     l, r = int(sets[0][0]), int(sets[0][1])
                     p_sets = l if is_p1 else r
                     o_sets = r if is_p1 else l
                     
                     if p_sets >= o_sets + 2 or (p_sets == 2 and o_sets == 0):
-                        actual_perf = 0.85  # Absolute Dominance
+                        actual_perf = 0.85  
                     elif p_sets > o_sets:
-                        actual_perf = 0.65  # Grind/Resilience Win
+                        actual_perf = 0.65  
                     elif o_sets >= p_sets + 2 or (o_sets == 2 and p_sets == 0):
-                        actual_perf = 0.15  # Outclassed
+                        actual_perf = 0.15  
                     elif o_sets > p_sets:
-                        actual_perf = 0.35  # Competitive Loss
+                        actual_perf = 0.35  
                     else:
-                        actual_perf = 0.75 if won else 0.25 # Fallback
-                
-                # PATH B: The Legacy DB Format (e.g. "6-4 6-2", "3-6 7-6 6-2")
+                        actual_perf = 0.75 if won else 0.25
                 else:
                     player_sets_won = 0
                     opp_sets_won = 0
@@ -625,13 +619,11 @@ class MomentumV2Engine:
 
             match_edge = actual_perf - expected_perf 
             
-            # Win/Loss Bias (Psychological Momentum)
             if won:
                 match_edge += 0.40  
             else:
                 match_edge -= 0.20
             
-            # Time Decay: Aktuellste Matches zählen bis zu 100%, ältuälteste ~30%
             time_weight = 0.3 + (0.7 * (idx / max(1, len(chrono_matches) - 1)))
             
             cumulative_edge += (match_edge * time_weight)
@@ -639,7 +631,6 @@ class MomentumV2Engine:
             
             history_log.append("W" if won else "L")
 
-        # Streak Multiplier
         streak_bonus = 0.0
         if len(history_log) >= 3:
             recent_3 = history_log[-3:]
@@ -655,7 +646,6 @@ class MomentumV2Engine:
         final_rating = base_rating + (avg_edge * 10.0) + streak_bonus
         final_rating = max(1.0, min(10.0, final_rating))
         
-        # Color & Text Generation
         desc = "Average"
         color_hex = "#F0C808" 
         
@@ -749,26 +739,21 @@ class SurfaceIntelligence:
 
     @staticmethod
     def extract_api_surface_stats(api_stats: List[Dict], surface_key: str) -> tuple:
-        """🚀 SOTA FIX: Tiefen-Crawler für API-Tennis JSON-Strukturen, filtert Doubles heraus."""
         if not api_stats or not isinstance(api_stats, list):
             return 0, 0
             
         total_wins = 0
         total_losses = 0
         
-        # Mapping API-Tennis Surface Bezeichnungen zu unserem Key
         search_keys = [f"{surface_key}_won", f"surface_{surface_key}_won", f"matches_won_{surface_key}", f"wins_{surface_key}"]
         loss_keys = [f"{surface_key}_lost", f"surface_{surface_key}_lost", f"matches_lost_{surface_key}", f"losses_{surface_key}"]
         
-        # Extrahiert Stats aus allen verfügbaren Saisons der API
         for season in api_stats:
             if isinstance(season, dict):
                 
-                # 🚀 SOTA FIX: Wir ignorieren Doppel-Spiele strikt, damit das Profil pur bleibt!
                 if str(season.get("type", "")).lower() == "doubles":
                     continue
 
-                # Rekursive Suche für tiefe JSON Bäume
                 def search_dict(d: dict):
                     nonlocal total_wins, total_losses
                     for k, v in d.items():
@@ -812,7 +797,6 @@ class SurfaceIntelligence:
             api_won, api_lost = SurfaceIntelligence.extract_api_surface_stats(api_stats, surf)
             api_total = api_won + api_lost
             
-            # 🚀 ARCHITECT FIX: Pure Win-Rate Logic (Removing Volume Bias)
             n_surf = n_surf_db
             wins = wins_db
             
@@ -822,18 +806,16 @@ class SurfaceIntelligence:
 
             if n_surf == 0:
                 profile[surf] = {
-                    "rating": 5.0,  # Neutraler Startwert für neue Spieler
+                    "rating": 5.0,  
                     "color": "#808080",
                     "matches_tracked": 0,
                     "text": "No Data"
                 }
                 continue
                 
-            # Berechnung auf einer reinen 1-10 Skala basierend auf Win-Rate
             win_rate = wins / n_surf
             final_rating = max(1.0, min(10.0, win_rate * 10.0))
             
-            # Dynamische Beschreibung basierend auf Performance-Clustern
             if final_rating >= 8.5: 
                 desc = "🔥 SPECIALIST"
                 color_hex = "#FF00FF" 
@@ -870,11 +852,23 @@ class MarkovChainEngine:
                        bsi: float, styleA: str, styleB: str, 
                        iterations: int = 2500) -> Dict[str, Any]:
         
+        # 🚀 SOTA ARCHITECT: Z-Score Normalization (Severini's Mandate)
+        # We no longer assume 50 is average. We use the True Population Distribution!
+        def get_z_score(val, mean, std):
+            return (val - mean) / std if std else 0
+
         def get_serve_prob(serve_skill, power_skill):
-            return 0.50 + (((serve_skill * 0.7) + (power_skill * 0.3)) / 100.0) * 0.25
+            z_serve = get_z_score(serve_skill, SKILL_MEANS['serve'], SKILL_STDS['serve'])
+            z_power = get_z_score(power_skill, SKILL_MEANS['power'], SKILL_STDS['power'])
+            # The actual ATP tour average hold percentage is ~64%, not 50%
+            prob = 0.64 + (z_serve * 0.04) + (z_power * 0.02)
+            return max(0.40, min(0.95, prob))
             
         def get_return_def(speed_skill, backhand_skill, forehand_skill):
-            return (((speed_skill * 0.4) + (backhand_skill * 0.3) + (forehand_skill * 0.3)) / 100.0)
+            z_speed = get_z_score(speed_skill, SKILL_MEANS['speed'], SKILL_STDS['speed'])
+            z_bh = get_z_score(backhand_skill, SKILL_MEANS['backhand'], SKILL_STDS['backhand'])
+            z_fh = get_z_score(forehand_skill, SKILL_MEANS['forehand'], SKILL_STDS['forehand'])
+            return (z_speed * 0.02) + (z_bh * 0.015) + (z_fh * 0.015)
 
         base_serve_win_A = get_serve_prob(s1.get('serve', 50), s1.get('power', 50))
         base_serve_win_B = get_serve_prob(s2.get('serve', 50), s2.get('power', 50))
@@ -882,8 +876,8 @@ class MarkovChainEngine:
         return_def_A = get_return_def(s1.get('speed', 50), s1.get('backhand', 50), s1.get('forehand', 50))
         return_def_B = get_return_def(s2.get('speed', 50), s2.get('backhand', 50), s2.get('forehand', 50))
 
-        p_A_wins_on_serve = base_serve_win_A - (return_def_B * 0.12)
-        p_B_wins_on_serve = base_serve_win_B - (return_def_A * 0.12)
+        p_A_wins_on_serve = base_serve_win_A - return_def_B
+        p_B_wins_on_serve = base_serve_win_B - return_def_A
 
         overall_A = s1.get('overall_rating', 50)
         overall_B = s2.get('overall_rating', 50)
@@ -904,10 +898,10 @@ class MarkovChainEngine:
             bsi_modifier_B *= (2.5 if bsi < 6.0 else 1.5)
 
         if ("counter puncher" in safe_style_A or "grinder" in safe_style_A) and bsi < 6.0:
-            return_def_A *= 1.20
+            return_def_A += 0.02
             p_B_wins_on_serve -= 0.03
         if ("counter puncher" in safe_style_B or "grinder" in safe_style_B) and bsi < 6.0:
-            return_def_B *= 1.20
+            return_def_B += 0.02
             p_A_wins_on_serve -= 0.03
 
         p_A_wins_on_serve += bsi_modifier_A
@@ -1270,6 +1264,38 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
 
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
+def get_total_games(score_str: str) -> int:
+    """🚀 SOTA: Extrahiert die Gesamtanzahl an Games sicher aus historischen Strings."""
+    if not isinstance(score_str, str): return 0
+    clean_score = re.sub(r'\.\d+', '', score_str.lower().replace(":", "-").strip())
+    if "ret" in clean_score or "w.o" in clean_score: return 0
+    sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', clean_score)
+    try:
+        return sum(int(s[0]) + int(s[1]) for s in sets)
+    except:
+        return 0
+
+def calculate_empirical_ou(history1: List[Dict], history2: List[Dict]) -> Dict[str, float]:
+    """🚀 SOTA: Liest die letzten 15 Matches der Spieler und ermittelt die empirische O/U Quote."""
+    games_list = []
+    for h in history1[:15] + history2[:15]:
+        score_str = str(h.get('score', ''))
+        if score_str and len(score_str) > 2:
+            tg = get_total_games(score_str)
+            if tg > 12: # Ignoriert Abbrüche im ersten Satz
+                games_list.append(tg)
+    
+    if not games_list:
+        return {"over_20_5": 0.5, "over_21_5": 0.5, "over_22_5": 0.5, "over_23_5": 0.5}
+        
+    total = len(games_list)
+    return {
+        "over_20_5": sum(1 for x in games_list if x > 20.5) / total,
+        "over_21_5": sum(1 for x in games_list if x > 21.5) / total,
+        "over_22_5": sum(1 for x in games_list if x > 22.5) / total,
+        "over_23_5": sum(1 for x in games_list if x > 23.5) / total
+    }
+
 async def get_advanced_load_analysis(matches: List[Dict]) -> str:
     try:
         recent_matches = matches[:5]
@@ -1467,7 +1493,6 @@ async def get_db_data():
                         if part and len(part) > 2: 
                             GLOBAL_SURFACE_MAP[part] = t_surf
                             
-        # 🚀 SOTA: Load Historical matches to build True G-Elo
         historical_odds = fetch_all_rows("market_odds")
         initialize_g_elo_system(historical_odds, tournaments)
                             
@@ -1496,7 +1521,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE
+# 8. MATH CORE (🚀 SOTA: KELLY CRITERION INJECTED)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -1507,14 +1532,21 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
 
 def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0: 
-        return {"type": "NONE", "edge_percent": 0.0, "is_value": False}
+        return {"type": "NONE", "edge_percent": 0.0, "is_value": False, "kelly_stake": 0.0}
         
     market_odds = min(market_odds, 100.0)
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
     
-    if edge_percent <= 0.5: 
-        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False}
+    # 🚀 SOTA: With the Z-Score fix, a 1.5% edge is a true edge, not a hallucination.
+    if edge_percent <= 1.5: 
+        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+
+    # 🚀 SOTA: Fractional Kelly Criterion Calculation
+    b = market_odds - 1
+    kelly_fraction = edge / b
+    fractional_kelly = (kelly_fraction / 4) * 100 
+    optimal_stake = max(0.1, min(5.0, round(fractional_kelly, 2)))
 
     label = "VALUE"
     if edge_percent >= 15.0: 
@@ -1526,7 +1558,7 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     else: 
         label = "👀 WATCH"
 
-    return {"type": label, "edge_percent": edge_percent, "is_value": True}
+    return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2, pinnacle_prob_a=None):
     n1 = get_last_name(p1_name)
@@ -1562,11 +1594,10 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_
     mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
     prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
     
-    # 🚀 SOTA: The Pinnacle Anchor
     prob_market = 0.5
     if pinnacle_prob_a is not None:
         prob_market = pinnacle_prob_a
-        model_trust_factor = 0.25 # Trust Pinnacle massive, only slight adjustments based on G-Elo
+        model_trust_factor = 0.25 
     elif market_odds1 > 1 and market_odds2 > 1:
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
@@ -1797,7 +1828,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
         return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
 
 # =================================================================
-# 10. QUANTUM GAMES SIMULATOR (OVER/UNDER)
+# 10. QUANTUM GAMES SIMULATOR (OVER/UNDER) 
 # =================================================================
 class QuantumGamesSimulator:
     @staticmethod
@@ -1847,7 +1878,7 @@ class QuantumGamesSimulator:
                     return (2, 13)
 
     @staticmethod
-    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, actual_ou_line: float = None, iterations: int = 1000) -> Dict[str, Any]:
+    def run_simulation(p1_skills: Dict, p2_skills: Dict, bsi: float, surface: str, actual_ou_line: float = None, iterations: int = 1000, empirical_ou: Dict[str, float] = None) -> Dict[str, Any]:
         p1_hold_prob = QuantumGamesSimulator.derive_hold_probability(p1_skills, p2_skills, bsi, surface)
         p2_hold_prob = QuantumGamesSimulator.derive_hold_probability(p2_skills, p1_skills, bsi, surface)
         
@@ -1872,21 +1903,44 @@ class QuantumGamesSimulator:
         
         median = total_games_log[len(total_games_log)//2]
         
+        # 🚀 SOTA: Dynamic Derivative Exploit mit Empirical Blend
         probs = {}
+        derivative_edge = None
+
+        if empirical_ou is None:
+            empirical_ou = {"over_20_5": 0.5, "over_21_5": 0.5, "over_22_5": 0.5, "over_23_5": 0.5}
+
         if actual_ou_line:
-            probs[f"over_{actual_ou_line}"] = sum(1 for x in total_games_log if x > actual_ou_line) / iterations
+            mc_prob = sum(1 for x in total_games_log if x > actual_ou_line) / iterations
+            
+            # Blending mit historischen Daten (Wong-Methode)
+            emp_val = 0.5
+            if actual_ou_line <= 21.0: emp_val = empirical_ou.get("over_20_5", 0.5)
+            elif actual_ou_line <= 22.0: emp_val = empirical_ou.get("over_21_5", 0.5)
+            elif actual_ou_line <= 23.0: emp_val = empirical_ou.get("over_22_5", 0.5)
+            else: emp_val = empirical_ou.get("over_23_5", 0.5)
+            
+            blended_prob = (mc_prob * 0.65) + (emp_val * 0.35)
+            probs[f"over_{actual_ou_line}"] = blended_prob
+            
+            if blended_prob > 0.60:
+                derivative_edge = f"🔥 MASSIVE OVER EDGE: Model & History project {round(sum(total_games_log) / len(total_games_log), 1)} games against bookmaker line {actual_ou_line}."
+            elif blended_prob < 0.40:
+                derivative_edge = f"🔥 MASSIVE UNDER EDGE: Model & History project {round(sum(total_games_log) / len(total_games_log), 1)} games against bookmaker line {actual_ou_line}."
+                
         else:
             probs = {
-                "over_20_5": sum(1 for x in total_games_log if x > 20.5) / iterations,
-                "over_21_5": sum(1 for x in total_games_log if x > 21.5) / iterations,
-                "over_22_5": sum(1 for x in total_games_log if x > 22.5) / iterations,
-                "over_23_5": sum(1 for x in total_games_log if x > 23.5) / iterations
+                "over_20_5": (sum(1 for x in total_games_log if x > 20.5) / iterations) * 0.65 + (empirical_ou.get("over_20_5", 0.5) * 0.35),
+                "over_21_5": (sum(1 for x in total_games_log if x > 21.5) / iterations) * 0.65 + (empirical_ou.get("over_21_5", 0.5) * 0.35),
+                "over_22_5": (sum(1 for x in total_games_log if x > 22.5) / iterations) * 0.65 + (empirical_ou.get("over_22_5", 0.5) * 0.35),
+                "over_23_5": (sum(1 for x in total_games_log if x > 23.5) / iterations) * 0.65 + (empirical_ou.get("over_23_5", 0.5) * 0.35)
             }
             
         return {
             "predicted_line": round(sum(total_games_log) / len(total_games_log), 1),
             "median_games": median,
             "probabilities": probs,
+            "derivative_edge": derivative_edge,
             "sim_details": {
                 "p1_est_hold_pct": round(p1_hold_prob * 100, 1), 
                 "p2_est_hold_pct": round(p2_hold_prob * 100, 1)
@@ -1926,7 +1980,6 @@ class LiveSkillEngine:
 
         score_lower = str(score).lower().replace(":", "-").strip()
         
-        # 🚀 SOTA FIX: Tiebreaks säubern, damit Game-Differenzen und Sweeps korrekt berechnet werden
         score_lower = re.sub(r'\.\d+', '', score_lower)
 
         is_clean_sweep = False
@@ -1987,7 +2040,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.5 (PINNACLE ANCHOR & G-ELO) Starting...")
+    log(f"🚀 Neural Scout V205.7 (TRUE Z-SCORE & EMPIRICAL O/U EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2203,7 +2256,6 @@ async def run_pipeline():
             hist_is_value, hist_pick_player = False, None
             is_signal_locked = has_active_signal(existing_match.get('ai_analysis_text', '')) if existing_match else False
             
-            # 🚀 SOTA: Extract Pinnacle Anchor
             pinnacle_prob_a = None
             pncl_data = m['bookmaker_odds'].get("Pncl") or m['bookmaker_odds'].get("Pinnacle")
             if pncl_data and pncl_data.get("odds1") > 1 and pncl_data.get("odds2") > 1:
@@ -2276,11 +2328,11 @@ async def run_pipeline():
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}% | Stake: {val_p1['kelly_stake']}u]"
                         hist_is_value = True
                         hist_pick_player = full_n1
                     elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}% | Stake: {val_p2['kelly_stake']}u]"
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
@@ -2355,7 +2407,10 @@ async def run_pipeline():
                     except Exception as update_err:
                         log(f"⚠️ Failed to update live player ratings: {update_err}")
 
-                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'))
+                    # 🚀 SOTA: Calculate Empirical O/U from past 15 matches
+                    empirical_ou = calculate_empirical_ou(p1_history, p2_history)
+
+                    sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'), empirical_ou=empirical_ou)
                     
                     styleA = p1_obj.get('play_style', '')
                     styleB = p2_obj.get('play_style', '')
@@ -2402,7 +2457,6 @@ async def run_pipeline():
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
                     )
                     
-                    # 🚀 SOTA: Pass the Pinnacle Anchor into the physics engine
                     prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'], pinnacle_prob_a)
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
@@ -2426,15 +2480,17 @@ async def run_pipeline():
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
-                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p1['type']}: {full_n1} @ {m['odds1']} | Fair: {fair1} | Edge: {val_p1['edge_percent']}% | Stake: {val_p1['kelly_stake']}u]"
                         hist_is_value = True
                         hist_pick_player = full_n1
                     elif val_p2["is_value"]: 
-                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}%]"
+                        value_tag = f"\n\n[{val_p2['type']}: {full_n2} @ {m['odds2']} | Fair: {fair2} | Edge: {val_p2['edge_percent']}% | Stake: {val_p2['kelly_stake']}u]"
                         hist_is_value = True
                         hist_pick_player = full_n2
 
-                    ai_text_final = f"{ai['ai_text']} {value_tag}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
+                    # Inject the derivative edge into the final text if present
+                    derivative_note = f"\n[{sim_result['derivative_edge']}]" if sim_result.get('derivative_edge') else ""
+                    ai_text_final = f"{ai['ai_text']} {value_tag}{derivative_note}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
 
                     data = {
                         "player1_name": full_n1, 
