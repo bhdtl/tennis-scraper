@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.7 - TRUE Z-SCORE & EMPIRICAL O/U EDITION)...")
+log("🔌 Initialisiere Neural Scout (V205.8 - VARIANCE PENALTY & RISK MANAGEMENT EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -855,15 +855,12 @@ class MarkovChainEngine:
                        bsi: float, styleA: str, styleB: str, 
                        iterations: int = 2500) -> Dict[str, Any]:
         
-        # 🚀 SOTA ARCHITECT: Z-Score Normalization (Severini's Mandate)
-        # We no longer assume 50 is average. We use the True Population Distribution!
         def get_z_score(val, mean, std):
             return (val - mean) / std if std else 0
 
         def get_serve_prob(serve_skill, power_skill):
             z_serve = get_z_score(serve_skill, SKILL_MEANS['serve'], SKILL_STDS['serve'])
             z_power = get_z_score(power_skill, SKILL_MEANS['power'], SKILL_STDS['power'])
-            # The actual ATP tour average hold percentage is ~64%, not 50%
             prob = 0.64 + (z_serve * 0.04) + (z_power * 0.02)
             return max(0.40, min(0.95, prob))
             
@@ -1268,7 +1265,6 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
 def get_total_games(score_str: str) -> int:
-    """🚀 SOTA: Extrahiert die Gesamtanzahl an Games sicher aus historischen Strings."""
     if not isinstance(score_str, str): return 0
     clean_score = re.sub(r'\.\d+', '', score_str.lower().replace(":", "-").strip())
     if "ret" in clean_score or "w.o" in clean_score: return 0
@@ -1279,13 +1275,12 @@ def get_total_games(score_str: str) -> int:
         return 0
 
 def calculate_empirical_ou(history1: List[Dict], history2: List[Dict]) -> Dict[str, float]:
-    """🚀 SOTA: Liest die letzten 15 Matches der Spieler und ermittelt die empirische O/U Quote."""
     games_list = []
     for h in history1[:15] + history2[:15]:
         score_str = str(h.get('score', ''))
         if score_str and len(score_str) > 2:
             tg = get_total_games(score_str)
-            if tg > 12: # Ignoriert Abbrüche im ersten Satz
+            if tg > 12: 
                 games_list.append(tg)
     
     if not games_list:
@@ -1405,7 +1400,6 @@ def fetch_all_rows(table_name: str) -> List[Dict]:
             break
     return data
 
-# 🚀 SOTA ARCHITECT: True Surface-Specific G-Elo Engine
 def initialize_g_elo_system(historical_matches: List[Dict], tournaments: List[Dict]):
     log("🧠 Initialisiere True Surface-Specific G-Elo System...")
     global ELO_CACHE
@@ -1524,7 +1518,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE (🚀 SOTA: KELLY CRITERION INJECTED)
+# 8. MATH CORE (🚀 SOTA: KELLY CRITERION & VARIANCE PENALTY INJECTED)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -1541,15 +1535,26 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
     
-    # 🚀 SOTA: With the Z-Score fix, a 1.5% edge is a true edge, not a hallucination.
+    # 🚀 SOTA: With the Z-Score fix, a 1.5% edge is a true edge.
     if edge_percent <= 1.5: 
         return {"type": "NONE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
-    # 🚀 SOTA: Fractional Kelly Criterion Calculation
+    # 🚀 SOTA: Risk-Adjusted Fractional Kelly Criterion
     b = market_odds - 1
     kelly_fraction = edge / b
-    fractional_kelly = (kelly_fraction / 4) * 100 
-    optimal_stake = max(0.1, min(5.0, round(fractional_kelly, 2)))
+    base_stake = (kelly_fraction / 4) * 100 
+    
+    # VARIANCE PENALTY: High odds mean massive variance. We protect the bankroll.
+    if market_odds >= 5.0:
+        optimal_stake = min(0.5, base_stake * 0.3)
+    elif market_odds >= 3.0:
+        optimal_stake = min(1.5, base_stake * 0.4)
+    elif market_odds >= 2.0:
+        optimal_stake = min(2.5, base_stake * 0.6)
+    else:
+        optimal_stake = min(5.0, base_stake)
+
+    optimal_stake = max(0.1, round(optimal_stake, 1))
 
     label = "VALUE"
     if edge_percent >= 15.0: 
@@ -1906,7 +1911,6 @@ class QuantumGamesSimulator:
         
         median = total_games_log[len(total_games_log)//2]
         
-        # 🚀 SOTA: Dynamic Derivative Exploit mit Empirical Blend
         probs = {}
         derivative_edge = None
 
@@ -1916,7 +1920,6 @@ class QuantumGamesSimulator:
         if actual_ou_line:
             mc_prob = sum(1 for x in total_games_log if x > actual_ou_line) / iterations
             
-            # Blending mit historischen Daten (Wong-Methode)
             emp_val = 0.5
             if actual_ou_line <= 21.0: emp_val = empirical_ou.get("over_20_5", 0.5)
             elif actual_ou_line <= 22.0: emp_val = empirical_ou.get("over_21_5", 0.5)
@@ -2043,7 +2046,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.7 (TRUE Z-SCORE & EMPIRICAL O/U EDITION) Starting...")
+    log(f"🚀 Neural Scout V205.8 (VARIANCE PENALTY & RISK MANAGEMENT) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2410,7 +2413,6 @@ async def run_pipeline():
                     except Exception as update_err:
                         log(f"⚠️ Failed to update live player ratings: {update_err}")
 
-                    # 🚀 SOTA: Calculate Empirical O/U from past 15 matches
                     empirical_ou = calculate_empirical_ou(p1_history, p2_history)
 
                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'), empirical_ou=empirical_ou)
@@ -2491,7 +2493,6 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
 
-                    # Inject the derivative edge into the final text if present
                     derivative_note = f"\n[{sim_result['derivative_edge']}]" if sim_result.get('derivative_edge') else ""
                     ai_text_final = f"{ai['ai_text']} {value_tag}{derivative_note}\n[🎲 SIM: {sim_result['predicted_line']} Games]"
 
