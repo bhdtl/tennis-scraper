@@ -1535,7 +1535,7 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
     
-    # 🚀 SOTA: With the Z-Score fix, a 1.5% edge is a true edge.
+    # 🚀 SOTA: Absolute Minimum Edge (Noise Filter)
     if edge_percent <= 1.5: 
         return {"type": "NONE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
@@ -1554,8 +1554,15 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     else:
         optimal_stake = min(5.0, base_stake)
 
-    optimal_stake = max(0.1, round(optimal_stake, 1))
+    optimal_stake = round(optimal_stake, 1)
 
+    # 🛑 THE "HIGH CONVICTION" FILTER (Der neue Schutzwall)
+    # Wenn die Mathematik sagt, wir sollten weniger als 1.0 Unit setzen, 
+    # ist das Risiko-Ertrags-Verhältnis zu schlecht. Wir ignorieren den Pick komplett.
+    if optimal_stake < 1.0:
+        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": optimal_stake}
+
+    # Label Assignment für echte, profitable Picks
     label = "VALUE"
     if edge_percent >= 15.0: 
         label = "🔥 HIGH VALUE" 
@@ -1563,8 +1570,6 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
         label = "✨ GOOD VALUE" 
     elif edge_percent >= 2.0: 
         label = "📈 THIN VALUE" 
-    else: 
-        label = "👀 WATCH"
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
