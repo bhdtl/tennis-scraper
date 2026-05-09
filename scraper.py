@@ -1531,54 +1531,43 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
         return {"type": "NONE", "edge_percent": 0.0, "is_value": False, "kelly_stake": 0.0}
         
     market_odds = min(market_odds, 100.0)
-    edge = (fair_prob * market_odds) - 1
-    edge_percent = round(edge * 100, 1)
+    actual_edge_decimal = (fair_prob * market_odds) - 1.0
+    edge_percent = round(actual_edge_decimal * 100, 1)
     
-    # 🚀 SOTA DYNAMIC NOISE FILTER (Stoppt den -14.0u Core-Friedhof)
-    # Buchmacher sind am schärfsten zwischen 1.50 und 2.20. Hier fordern wir einen höheren mathematischen Edge.
-    if market_odds < 1.50:
-        min_edge = 1.5
-    elif market_odds <= 2.20:
-        min_edge = 3.5  # <--- CRITICAL FIX: Killt "Coin-Flip" Noise
-    elif market_odds <= 3.50:
-        min_edge = 5.0
-    else:
-        min_edge = 7.0
-
-    if edge_percent < min_edge:
-        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-
-    # 🚀 SOTA: Risk-Adjusted Fractional Kelly Criterion
-    b = market_odds - 1
-    kelly_fraction = edge / b
-    base_stake = (kelly_fraction / 4) * 100 
+    # 🚀 ELITE ARCHITECT LAYER: Dynamic Edge Thresholds & Risk Management
     
-    # VARIANCE PENALTY: Smooth capping
-    if market_odds >= 5.0:
-        optimal_stake = min(0.5, base_stake * 0.25)
-    elif market_odds >= 3.0:
-        optimal_stake = min(1.0, base_stake * 0.4)
-    elif market_odds >= 2.0:
-        optimal_stake = min(2.0, base_stake * 0.6)
-    else:
-        optimal_stake = min(5.0, base_stake)
-
-    optimal_stake = round(optimal_stake, 1)
-
-    # 🛑 SOTA STAKE FLOOR
-    # Verhindert, dass massive Underdog-Edges durch die Variance-Penalty weggeworfen werden.
-    # Wenn ein Pick den strengen Filter oben bestanden hat, verdient er mindestens 1.0u!
-    if 0 < optimal_stake < 1.0:
-        optimal_stake = 1.0
-
-    if optimal_stake == 0.0:
-        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-
-    # Label Assignment
+    # 1. Absolutes Verbot von "Thin Margin" Picks (Rauschen eliminieren)
+    if edge_percent < 4.0:
+        return {"type": "NOISE (THIN MARGIN)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+        
+    # 2. Die Todeszone filtern (Core Odds: 1.50 - 1.99)
+    if 1.50 <= market_odds <= 1.99:
+        # Hier sind Buchmacher extrem scharf. Wir fordern massiven Edge für ein Play.
+        if edge_percent < 8.0:
+            return {"type": "NOISE (CORE NOISE)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+            
+    # 3. Stake Calculation & Validation
+    optimal_stake = 0.0
     label = "VALUE"
-    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" 
-    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" 
-    elif edge_percent >= 4.0: label = "📈 SOLID VALUE" 
+    
+    if 2.00 <= market_odds <= 2.99:
+        # Die Goldmine: Underdog Asymmetry Exploitation
+        # Aggressiverer Multiplier
+        optimal_stake = min(5.0, round(edge_percent * 0.8, 1))
+        optimal_stake = max(2.0, optimal_stake) # Mindestens 2.0u
+        label = "🔥 UNDERDOG ALPHA"
+        
+    else:
+        # Default High Conviction Scaling (Für Favorites < 1.50 & Longshots)
+        optimal_stake = round(edge_percent * 0.5, 1)
+        
+        # Keine 1.0u Wetten mehr zulassen. Entweder Conviction (>=2.0u) oder Pass.
+        if optimal_stake >= 2.0:
+            optimal_stake = min(5.0, optimal_stake)
+            if edge_percent >= 15.0: label = "🔥 MAX BOMB" 
+            elif edge_percent >= 8.0: label = "✨ HIGH CONVICTION" 
+        else:
+            return {"type": "NOISE (LOW CONVICTION)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
