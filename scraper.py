@@ -245,7 +245,6 @@ def normalize_db_name(name: str) -> str:
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
-# 🚀 SOTA ARCHITECT: The Ultimate Name-Parsing Gatekeeper
 def is_same_player(target_name: str, db_name: str) -> bool:
     t_norm = normalize_db_name(target_name)
     d_norm = normalize_db_name(db_name)
@@ -1518,7 +1517,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE (🚀 SOTA: KELLY CRITERION & VARIANCE PENALTY INJECTED)
+# 8. MATH CORE (🚀 SOTA: DYNAMIC NOISE FILTER & STAKE FLOOR)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -1535,41 +1534,51 @@ def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, A
     edge = (fair_prob * market_odds) - 1
     edge_percent = round(edge * 100, 1)
     
-    # 🚀 SOTA: Absolute Minimum Edge (Noise Filter)
-    if edge_percent <= 1.5: 
-        return {"type": "NONE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+    # 🚀 SOTA DYNAMIC NOISE FILTER (Stoppt den -14.0u Core-Friedhof)
+    # Buchmacher sind am schärfsten zwischen 1.50 und 2.20. Hier fordern wir einen höheren mathematischen Edge.
+    if market_odds < 1.50:
+        min_edge = 1.5
+    elif market_odds <= 2.20:
+        min_edge = 3.5  # <--- CRITICAL FIX: Killt "Coin-Flip" Noise
+    elif market_odds <= 3.50:
+        min_edge = 5.0
+    else:
+        min_edge = 7.0
+
+    if edge_percent < min_edge:
+        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
     # 🚀 SOTA: Risk-Adjusted Fractional Kelly Criterion
     b = market_odds - 1
     kelly_fraction = edge / b
     base_stake = (kelly_fraction / 4) * 100 
     
-    # VARIANCE PENALTY: High odds mean massive variance. We protect the bankroll.
+    # VARIANCE PENALTY: Smooth capping
     if market_odds >= 5.0:
-        optimal_stake = min(0.5, base_stake * 0.3)
+        optimal_stake = min(0.5, base_stake * 0.25)
     elif market_odds >= 3.0:
-        optimal_stake = min(1.5, base_stake * 0.4)
+        optimal_stake = min(1.0, base_stake * 0.4)
     elif market_odds >= 2.0:
-        optimal_stake = min(2.5, base_stake * 0.6)
+        optimal_stake = min(2.0, base_stake * 0.6)
     else:
         optimal_stake = min(5.0, base_stake)
 
     optimal_stake = round(optimal_stake, 1)
 
-    # 🛑 THE "HIGH CONVICTION" FILTER (Der neue Schutzwall)
-    # Wenn die Mathematik sagt, wir sollten weniger als 1.0 Unit setzen, 
-    # ist das Risiko-Ertrags-Verhältnis zu schlecht. Wir ignorieren den Pick komplett.
-    if optimal_stake < 1.0:
-        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": optimal_stake}
+    # 🛑 SOTA STAKE FLOOR
+    # Verhindert, dass massive Underdog-Edges durch die Variance-Penalty weggeworfen werden.
+    # Wenn ein Pick den strengen Filter oben bestanden hat, verdient er mindestens 1.0u!
+    if 0 < optimal_stake < 1.0:
+        optimal_stake = 1.0
 
-    # Label Assignment für echte, profitable Picks
+    if optimal_stake == 0.0:
+        return {"type": "NOISE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+
+    # Label Assignment
     label = "VALUE"
-    if edge_percent >= 15.0: 
-        label = "🔥 HIGH VALUE" 
-    elif edge_percent >= 8.0: 
-        label = "✨ GOOD VALUE" 
-    elif edge_percent >= 2.0: 
-        label = "📈 THIN VALUE" 
+    if edge_percent >= 15.0: label = "🔥 HIGH VALUE" 
+    elif edge_percent >= 8.0: label = "✨ GOOD VALUE" 
+    elif edge_percent >= 4.0: label = "📈 SOLID VALUE" 
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
@@ -1587,39 +1596,44 @@ def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_
     
     elo_diff_model = elo1 - elo2
     
+    # 🚀 SOTA: Dynamic Trust Factor
+    prob_market = 0.5
+    model_trust_factor = 0.30
+
     if market_odds1 > 0 and market_odds2 > 0:
         inv1 = 1/market_odds1
         inv2 = 1/market_odds2
         implied_p1 = inv1 / (inv1 + inv2)
-        if 0.01 < implied_p1 < 0.99:
-            try: 
-                elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
-            except: 
-                elo_diff_market = elo_diff_model
-        else: 
-            elo_diff_market = elo_diff_model 
+        prob_market = implied_p1
+        
+        try: 
+            elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
+        except: 
+            elo_diff_market = elo_diff_model
+            
         elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
+        
+        # We trust the sharp market heavily in the "Core" range (45% - 60% win prob)
+        if 0.45 <= implied_p1 <= 0.60:
+            model_trust_factor = 0.15
+        # We trust our model more on massive favorites or underdogs (Public Bias zones)
+        elif implied_p1 < 0.35 or implied_p1 > 0.65:
+            model_trust_factor = 0.45
+            
     else: 
         elo_diff_final = elo_diff_model
+        model_trust_factor = 0.50
         
-    prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
-    
-    mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
-    prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
-    
-    prob_market = 0.5
     if pinnacle_prob_a is not None:
         prob_market = pinnacle_prob_a
-        model_trust_factor = 0.25 
-    elif market_odds1 > 1 and market_odds2 > 1:
-        inv1 = 1/market_odds1
-        inv2 = 1/market_odds2
-        prob_market = inv1 / (inv1 + inv2)
-        model_trust_factor = 0.35 
-    else:
-        model_trust_factor = 0.5
+        model_trust_factor *= 0.8 # Pinnacle is sharper, reduce our model trust slightly
         
+    prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
+    mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
+    
+    prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
     final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
+    
     return final_prob
 
 def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
@@ -1729,6 +1743,7 @@ def format_skills(s: Dict) -> str:
         return "No granular skill data."
     return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
 
+# 🚀 SOTA PROMPT ENGINEERING (Stop Hallucinations on Core Odds)
 async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
@@ -1757,66 +1772,57 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
 
     convictionDirective = ""
-    if finalProb_val >= 65.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL) \nThe mathematical model gives {predictedMCWinner} a massive {finalProb_val:.1f}% probability of winning because of a clear baseline talent mismatch. You MUST write this analysis with HIGH CONVICTION. Do not write \"If he can...\". State confidently that {predictedMCWinner}'s overall quality and baseline strengths will overwhelm {predictedMCLoser}. Explain exactly why {predictedMCLoser}'s game will break down. NO HEDGING."
-    elif finalProb_val >= 58.0:
-        convictionDirective = f" CONVICTION DIRECTIVE \nThe mathematical model gives {predictedMCWinner} a clear edge ({finalProb_val:.1f}%). Write confidently about why {predictedMCWinner} is the favorite to win, focusing on the tactical mismatch. Avoid 50/50 language."
+    if finalProb_val >= 70.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL)\nThe math gives {predictedMCWinner} a massive {finalProb_val:.1f}% win probability. Be HIGHLY ASSERTIVE. Explain exactly how {predictedMCWinner}'s strengths will physically break down {predictedMCLoser}. No hedging."
+    elif 55.0 <= finalProb_val <= 60.0:
+        convictionDirective = f"*** CONVICTION DIRECTIVE (COIN FLIP WARNING)\nThis is a highly volatile match ({finalProb_val:.1f}%). Focus HEAVILY on current Fatigue, recent H2H, and fine margins. Acknowledge the risk. DO NOT overstate small skill advantages."
     else:
-        convictionDirective = f" CONVICTION DIRECTIVE ***\nThe mathematical model sees this as a tight battle ({finalProb_val:.1f}% for {predictedMCWinner}). Write an analysis highlighting the fine margins that will decide this match."
+        convictionDirective = f"*** CONVICTION DIRECTIVE\nSolid edge ({finalProb_val:.1f}%). Detail the tactical mismatch confidently."
 
     prompt = f"""
     You are an elite Senior Tennis Analyst (Style: Gil Gross). 
     Your analysis must be grounded EXCLUSIVELY in the provided technical data and scouting reports.
     
-    *** SYSTEM SELF-REFLECTION (CRITICAL) ***
-    Our internal neural network has an active prediction accuracy of {sys_acc}%. 
-    If this accuracy is below 65%, you MUST be more conservative in your tone and acknowledge potential variance. If it is above 70%, be highly assertive about the data trends.
+    *** SYSTEM SELF-REFLECTION ***
+    Our neural network accuracy is {sys_acc}%. 
     
     *** DATA GROUNDING (SOURCE OF TRUTH) ***
     Head-to-Head (H2H): {h2h_record}
 
     Player A ({p1['last_name']}):
     - Style: {p1.get('play_style', 'Unknown')}
-    - Form / Momentum: {form1_data['text']}
-    - Surface Rating ({current_surf_key}): {p1_s_rating}/10
-    - Granular Skills: {format_skills(s1)}
-    - Scouting Report: {scoutA}
+    - Form: {form1_data['text']}
+    - Surface Rating: {p1_s_rating}/10
+    - Skills: {format_skills(s1)}
+    - Scout: {scoutA}
     - Fatigue: {fatigueA}
     
     Player B ({p2['last_name']}):
     - Style: {p2.get('play_style', 'Unknown')}
-    - Form / Momentum: {form2_data['text']}
-    - Surface Rating ({current_surf_key}): {p2_s_rating}/10
-    - Granular Skills: {format_skills(s2)}
-    - Scouting Report: {scoutB}
+    - Form: {form2_data['text']}
+    - Surface Rating: {p2_s_rating}/10
+    - Skills: {format_skills(s2)}
+    - Scout: {scoutB}
     - Fatigue: {fatigueB}
     
-    Match Conditions:
-    - Surface: {surface} (BSI: {bsi})
-    - Court Notes: {validCourtNotes}
-    - {weather_str}
+    Match Conditions: {surface} (BSI: {bsi}) | {weather_str} | Notes: {validCourtNotes}
 
-    *** INTERNAL MATCHUP DATA (FOR LOGIC ONLY, DO NOT OUTPUT THESE NUMBERS) ***
-    Winner: {predictedMCWinner} (Internal Win Probability: {finalProb})
+    Winner: {predictedMCWinner} (Model Prob: {finalProb})
     
     {convictionDirective}
     
-    *** TACTICAL PLAYSTYLE MATCHUP (CRITICAL) ***
-    Explicitly analyze how {p1['last_name']}'s style ({p1.get('play_style', 'Unknown')}) matches up against {p2['last_name']}'s style ({p2.get('play_style', 'Unknown')}). Does the Grinder break down the Aggressive Baseliner? Does the Counterpuncher neutralize the Big Server on this specific {surface}? Base this strictly on their granular skills and scouting reports.
-
-    *** CRITICAL DIRECTIVES (MUST OBEY) ***
-    1. NO NUMBERS IN TEXT: Strictly forbidden to use percentages (%), numerical ratings (e.g., 8/10), or skill points in 'prediction_text' and 'key_factor'.
-    2. TACTICAL PROSA: Use Gil Gross style "Matchup Physics". Explain how the specific "Court Notes" (bounce height, court speed) amplify a player's strengths or expose their weaknesses.
-    3. FACTUAL INTEGRITY: If the Scouting Report says a player has poor movement, NEVER describe them as "athletic". Ground your analysis in the provided 'Weaknesses' and the H2H stats.
-    4. PATTERN ANALYSIS: Explain HOW {predictedMCWinner}'s specific skills interact with {predictedMCLoser}'s specific weaknesses under these exact court conditions. Emphasize the playstyle clash (e.g., Counterpuncher vs Aggressive Baseliner).
-    5. DO NOT EXPLAIN CALCULATIONS: Output strictly the JSON. No introductory chatter.
+    *** CRITICAL DIRECTIVES ***
+    1. NO NUMBERS OR PERCENTAGES IN TEXT.
+    2. TACTICAL PROSA: Explain HOW the court speed (BSI) and weather affect their specific styles.
+    3. FACTUAL INTEGRITY: Base everything on the provided 'Weakness' and 'Fatigue'.
+    4. ONLY RETURN JSON.
     
     OUTPUT JSON:
     {{
         "winner_prediction": "{predictedMCWinner}",
-        "key_factor": "One sharp tactical sentence focusing on the primary playstyle mismatch (NO NUMBERS).",
-        "prediction_text": "Deep Gil Gross style analysis (~200 words). Focus on tactical matchup physics, the clash of their specific playstyles, court conditions, and how the scouting report details manifest on court. STRICTLY NO NUMBERS OR PERCENTAGES.",
-        "tactical_bullets": ["Tactic 1 based on playstyle/report", "Tactic 2 based on surface physics", "Tactic 3 based on specific weakness"]
+        "key_factor": "One sharp tactical sentence focusing on the primary mismatch.",
+        "prediction_text": "Deep Gil Gross style analysis (~150 words). Tactical physics, playstyle clash, and fatigue impact.",
+        "tactical_bullets": ["Tactic 1 (playstyle)", "Tactic 2 (surface)", "Tactic 3 (weakness)"]
     }}
     """
     
