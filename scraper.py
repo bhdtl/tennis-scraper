@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.8 - VARIANCE PENALTY & RISK MANAGEMENT EDITION)...")
+log("🔌 Initialisiere Neural Scout (V205.9 - FRACTIONAL KELLY & BUCHDAHL EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1526,48 +1526,73 @@ def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
-def calculate_value_metrics(fair_prob: float, market_odds: float) -> Dict[str, Any]:
-    if market_odds <= 1.01 or fair_prob <= 0: 
+def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str = "") -> Dict[str, Any]:
+    if market_odds <= 1.01 or fair_prob <= 0 or fair_prob >= 1: 
         return {"type": "NONE", "edge_percent": 0.0, "is_value": False, "kelly_stake": 0.0}
         
     market_odds = min(market_odds, 100.0)
     actual_edge_decimal = (fair_prob * market_odds) - 1.0
     edge_percent = round(actual_edge_decimal * 100, 1)
     
-    # 🚀 ELITE ARCHITECT LAYER: Dynamic Edge Thresholds & Risk Management
+    # 🚀 BUCHDAHL / WONG MARKET EFFICIENCY LAYER
+    tour_lower = tour_name.lower()
+    is_major = any(x in tour_lower for x in ['grand slam', 'wimbledon', 'roland garros', 'us open', 'australian open', 'masters', '1000'])
+    is_challenger_itf = any(x in tour_lower for x in ['challenger', 'itf', 'w15', 'w25', 'w35', 'w50', 'w75', 'w100', 'm15', 'm25'])
     
-    # 1. Absolutes Verbot von "Thin Margin" Picks (Rauschen eliminieren)
     if edge_percent < 4.0:
         return {"type": "NOISE (THIN MARGIN)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
         
-    # 2. Die Todeszone filtern (Core Odds: 1.50 - 1.99)
     if 1.50 <= market_odds <= 1.99:
-        # Hier sind Buchmacher extrem scharf. Wir fordern massiven Edge für ein Play.
         if edge_percent < 8.0:
             return {"type": "NOISE (CORE NOISE)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
             
-    # 3. Stake Calculation & Validation
-    optimal_stake = 0.0
+    # Sharp Market Penalty: Extreme edges in Grand Slams are usually model illusions. Cap them.
+    if is_major and actual_edge_decimal > 0.12:
+        actual_edge_decimal = 0.12
+        edge_percent = 12.0
+
+    # 🚀 SOTA: FRACTIONAL KELLY CRITERION (Bankroll Protection)
+    # f* = (bp - q) / b  =>  Edge / (Odds - 1)
+    b = market_odds - 1.0
+    full_kelly = actual_edge_decimal / b
+    
+    # We use a 30% Fractional Kelly (Standard Sharp Betting approach to manage ruin)
+    kelly_multiplier = 0.30 
+    
+    # Variance Penalty for extreme longshots (Buchdahl's Longshot Bias mitigation)
+    if market_odds >= 3.0:
+        kelly_multiplier = 0.25
+    if market_odds >= 6.0:
+        kelly_multiplier = 0.15
+    if market_odds >= 10.0:
+        kelly_multiplier = 0.05
+        
+    raw_stake = (full_kelly * 100) * kelly_multiplier
+    optimal_stake = round(raw_stake, 1)
+    
+    # Ceilings
+    optimal_stake = min(5.0, optimal_stake)
+    
+    # Floors based on odds (Because Kelly naturally lowers stakes for longshots, we adjust floors)
     label = "VALUE"
     
-    if 2.00 <= market_odds <= 2.99:
-        # Die Goldmine: Underdog Asymmetry Exploitation
-        # Aggressiverer Multiplier
-        optimal_stake = min(5.0, round(edge_percent * 0.8, 1))
-        optimal_stake = max(2.0, optimal_stake) # Mindestens 2.0u
-        label = "🔥 UNDERDOG ALPHA"
-        
-    else:
-        # Default High Conviction Scaling (Für Favorites < 1.50 & Longshots)
-        optimal_stake = round(edge_percent * 0.5, 1)
-        
-        # Keine 1.0u Wetten mehr zulassen. Entweder Conviction (>=2.0u) oder Pass.
-        if optimal_stake >= 2.0:
-            optimal_stake = min(5.0, optimal_stake)
-            if edge_percent >= 15.0: label = "🔥 MAX BOMB" 
-            elif edge_percent >= 8.0: label = "✨ HIGH CONVICTION" 
+    if market_odds >= 3.00:
+        if optimal_stake >= 1.0:
+            label = "✨ HIGH VARIANCE ALPHA"
         else:
-            return {"type": "NOISE (LOW CONVICTION)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+            return {"type": "NOISE (LONGSHOT <1u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+    elif 2.00 <= market_odds <= 2.99:
+        if optimal_stake >= 1.5:
+            optimal_stake = max(2.0, optimal_stake) # Boost slightly if it passes threshold
+            label = "🔥 UNDERDOG ALPHA"
+        else:
+            return {"type": "NOISE (UNDERDOG <1.5u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+    else: # Favorites < 2.00
+        if optimal_stake >= 2.0:
+            if optimal_stake >= 3.5: label = "🔥 MAX BOMB" 
+            else: label = "✨ HIGH CONVICTION" 
+        else:
+            return {"type": "NOISE (FAV <2u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
@@ -2046,7 +2071,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.8 (VARIANCE PENALTY & RISK MANAGEMENT) Starting...")
+    log(f"🚀 Neural Scout V205.9 (FRACTIONAL KELLY & BUCHDAHL EDITION) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2329,8 +2354,8 @@ async def run_pipeline():
                     fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
                     fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
                     
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name)
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name)
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
@@ -2480,8 +2505,8 @@ async def run_pipeline():
                     sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
                     sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
 
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'])
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'])
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name)
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name)
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
