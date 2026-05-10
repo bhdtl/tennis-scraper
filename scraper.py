@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.9 - FRACTIONAL KELLY & BUCHDAHL EDITION)...")
+log("🔌 Initialisiere Neural Scout (V205.10 - SHARP BANKROLL & BUCHDAHL PROTOCOL)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1537,7 +1537,6 @@ def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str
     # 🚀 BUCHDAHL / WONG MARKET EFFICIENCY LAYER
     tour_lower = tour_name.lower()
     is_major = any(x in tour_lower for x in ['grand slam', 'wimbledon', 'roland garros', 'us open', 'australian open', 'masters', '1000'])
-    is_challenger_itf = any(x in tour_lower for x in ['challenger', 'itf', 'w15', 'w25', 'w35', 'w50', 'w75', 'w100', 'm15', 'm25'])
     
     if edge_percent < 4.0:
         return {"type": "NOISE (THIN MARGIN)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
@@ -1546,53 +1545,61 @@ def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str
         if edge_percent < 8.0:
             return {"type": "NOISE (CORE NOISE)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
             
-    # Sharp Market Penalty: Extreme edges in Grand Slams are usually model illusions. Cap them.
-    if is_major and actual_edge_decimal > 0.12:
-        actual_edge_decimal = 0.12
-        edge_percent = 12.0
+    # Sharp Market Penalty: Extreme edges are usually model illusions. 
+    # Egal was das Modell sagt, für Kelly nutzen wir maximal 15% Edge (Ruin Protection).
+    capped_edge_for_kelly = min(actual_edge_decimal, 0.15)
+    
+    if is_major:
+        capped_edge_for_kelly = min(capped_edge_for_kelly, 0.10) # Masters/Slams sind fast perfekt effizient
 
     # 🚀 SOTA: FRACTIONAL KELLY CRITERION (Bankroll Protection)
-    # f* = (bp - q) / b  =>  Edge / (Odds - 1)
+    # f* = Edge / (Odds - 1)
     b = market_odds - 1.0
-    full_kelly = actual_edge_decimal / b
+    full_kelly = capped_edge_for_kelly / b
     
-    # We use a 30% Fractional Kelly (Standard Sharp Betting approach to manage ruin)
-    kelly_multiplier = 0.30 
+    # We use a 25% Fractional Kelly (Standard Sharp Betting approach to manage ruin)
+    kelly_multiplier = 0.25 
     
     # Variance Penalty for extreme longshots (Buchdahl's Longshot Bias mitigation)
     if market_odds >= 3.0:
-        kelly_multiplier = 0.25
-    if market_odds >= 6.0:
         kelly_multiplier = 0.15
-    if market_odds >= 10.0:
+    if market_odds >= 5.0:
         kelly_multiplier = 0.05
         
     raw_stake = (full_kelly * 100) * kelly_multiplier
     optimal_stake = round(raw_stake, 1)
     
-    # Ceilings
-    optimal_stake = min(5.0, optimal_stake)
+    # Absolute Hard Caps by Odds Tier (The Ultimate Ruin Protection)
+    if market_odds >= 3.5:
+        optimal_stake = min(1.0, optimal_stake)
+    elif market_odds >= 2.5:
+        optimal_stake = min(2.0, optimal_stake)
+    elif market_odds >= 2.0:
+        optimal_stake = min(3.0, optimal_stake)
+    else:
+        optimal_stake = min(5.0, optimal_stake)
     
     # Floors based on odds (Because Kelly naturally lowers stakes for longshots, we adjust floors)
     label = "VALUE"
     
     if market_odds >= 3.00:
-        if optimal_stake >= 1.0:
+        if optimal_stake >= 0.5:
             label = "✨ HIGH VARIANCE ALPHA"
         else:
-            return {"type": "NOISE (LONGSHOT <1u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+            return {"type": "NOISE (LONGSHOT <0.5u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
     elif 2.00 <= market_odds <= 2.99:
-        if optimal_stake >= 1.5:
-            optimal_stake = max(2.0, optimal_stake) # Boost slightly if it passes threshold
+        if optimal_stake >= 1.0:
             label = "🔥 UNDERDOG ALPHA"
         else:
-            return {"type": "NOISE (UNDERDOG <1.5u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+            return {"type": "NOISE (UNDERDOG <1.0u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
     else: # Favorites < 2.00
         if optimal_stake >= 2.0:
-            if optimal_stake >= 3.5: label = "🔥 MAX BOMB" 
+            if optimal_stake >= 4.0: label = "🔥 MAX BOMB" 
             else: label = "✨ HIGH CONVICTION" 
+        elif optimal_stake >= 1.0:
+            label = "🛡️ CORE VALUE"
         else:
-            return {"type": "NOISE (FAV <2u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+            return {"type": "NOISE (FAV <1.0u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
@@ -2071,7 +2078,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.9 (FRACTIONAL KELLY & BUCHDAHL EDITION) Starting...")
+    log(f"🚀 Neural Scout V205.10 (SHARP BANKROLL & BUCHDAHL PROTOCOL) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
