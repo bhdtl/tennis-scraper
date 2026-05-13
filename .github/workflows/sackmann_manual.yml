@@ -1,0 +1,28 @@
+name: 🌊 Run Sackmann Quant Engine (Manual)
+
+on:
+  workflow_dispatch: # Erlaubt das manuelle Starten über einen Button
+
+jobs:
+  build-data-lake:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install httpx supabase
+
+    - name: Run Sackmann Engine
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # oder SUPABASE_KEY, je nachdem wie dein Secret heißt
+      run: python sackmann_engine.py
