@@ -24,25 +24,25 @@ logging.basicConfig(
     datefmt='%H:%M:%S'
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger("Sackmann_Engine")
+logger = logging.getLogger("Sackmann_DataLake")
 
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Quant Engine (Sackmann Integration V1.3 - LOGGING FIX)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Raw Extraction V2.0 - FULL DATA)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    log("❌ CRITICAL: Supabase Secrets fehlen! Bitte exportiere SUPABASE_URL und SUPABASE_SERVICE_ROLE_KEY.")
+    log("❌ CRITICAL: Supabase Secrets fehlen!")
     sys.exit(1)
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =================================================================
-# 2. HELPER FUNCTIONS (The Normalizers)
+# 2. HELPER FUNCTIONS
 # =================================================================
 def normalize_name(name: str) -> str:
     if not name: return ""
@@ -68,6 +68,14 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
             log(f"❌ Netzwerkfehler beim Laden der CSV: {e}")
     return []
 
+def to_int(val: Any) -> Optional[int]:
+    try: return int(float(val))
+    except: return None
+
+def to_float(val: Any) -> Optional[float]:
+    try: return float(val)
+    except: return None
+
 # =================================================================
 # 3. PHASE 1: THE PLAYER MAPPER
 # =================================================================
@@ -77,7 +85,7 @@ async def sync_player_ids():
     players_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
     sackmann_players = await fetch_csv_from_github(players_url)
     if not sackmann_players:
-        log("❌ Konnte Sackmann Player File nicht laden. Überspringe Phase 1.")
+        log("❌ Konnte Sackmann Player File nicht laden.")
         return
 
     db_players = []
@@ -127,199 +135,133 @@ async def sync_player_ids():
         log("✅ Keine neuen Spieler-Matches gefunden.")
 
 # =================================================================
-# 4. PHASE 2: HISTORICAL DATA LAKE BUILDER
+# 4. PHASE 2: THE OMNI-DATA INGESTION (All fields!)
 # =================================================================
-async def build_historical_lake() -> List[Dict]:
-    log("🌊 PHASE 2: Baue historischen Data Lake auf (ATP & Challenger ab 2015)...")
+async def build_historical_lake():
+    log("🌊 PHASE 2: Extrahiere ALLE Rohdaten aus GitHub in Supabase...")
     base_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/"
+    
+    # Wir laden die volle moderne Ära. 
     years = [str(y) for y in range(2015, 2027)]
+    total_inserted = 0
     
-    all_matches = []
-    
-    # 🚀 VORBEREITUNG: Falls Reste in der Tabelle sind, ignorieren wir sie oder schreiben einfach neu
     for y in years:
-        log(f"📡 Lade Match-Daten für {y}...")
+        log(f"📡 Verarbeite Jahr {y}...")
         t_url = f"{base_url}atp_matches_{y}.csv"
         c_url = f"{base_url}atp_matches_qual_chall_{y}.csv"
+        f_url = f"{base_url}atp_matches_futures_{y}.csv"
         
         t_rows = await fetch_csv_from_github(t_url)
         c_rows = await fetch_csv_from_github(c_url)
+        f_rows = await fetch_csv_from_github(f_url) # Auch Futures laden!
         
-        year_total = t_rows + c_rows
+        year_total = t_rows + c_rows + f_rows
         if not year_total: continue
-        
-        all_matches.extend(year_total)
         
         db_inserts = []
         for m in year_total:
             try:
-                if not m.get('winner_id') or not m.get('loser_id'): continue
+                # Essential IDs (Ohne geht nix)
+                w_id = to_int(m.get('winner_id'))
+                l_id = to_int(m.get('loser_id'))
+                m_num = to_int(m.get('match_num'))
+                t_id = m.get('tourney_id')
                 
-                raw_date = m.get('tourney_date', '20150101')
+                if not w_id or not l_id or not t_id or m_num is None: continue
+                
+                raw_date = m.get('tourney_date', '')
                 if len(raw_date) == 8:
                     fmt_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
                 else:
                     fmt_date = "2015-01-01"
                 
                 db_inserts.append({
-                    "tourney_id": m.get('tourney_id', 'unknown'),
-                    "tourney_name": m.get('tourney_name', 'unknown'),
-                    "surface": m.get('surface', 'Hard'),
+                    # Tournament Info
+                    "tourney_id": t_id,
+                    "tourney_name": m.get('tourney_name'),
+                    "surface": m.get('surface'),
+                    "draw_size": to_int(m.get('draw_size')),
+                    "tourney_level": m.get('tourney_level'),
                     "match_date": fmt_date,
-                    "match_num": int(m.get('match_num', 0)),
-                    "winner_sackmann_id": int(m.get('winner_id')),
-                    "loser_sackmann_id": int(m.get('loser_id')),
-                    "score": m.get('score', ''),
-                    "minutes": int(m.get('minutes') or 0),
-                    "w_svpt": int(m.get('w_svpt') or 0),
-                    "w_1stWon": int(m.get('w_1stWon') or 0),
-                    "w_2ndWon": int(m.get('w_2ndWon') or 0),
-                    "w_bpSaved": int(m.get('w_bpSaved') or 0),
-                    "w_bpFaced": int(m.get('w_bpFaced') or 0),
-                    "l_svpt": int(m.get('l_svpt') or 0),
-                    "l_1stWon": int(m.get('l_1stWon') or 0),
-                    "l_2ndWon": int(m.get('l_2ndWon') or 0),
-                    "l_bpSaved": int(m.get('l_bpSaved') or 0),
-                    "l_bpFaced": int(m.get('l_bpFaced') or 0)
+                    "match_num": m_num,
+                    
+                    # Winner Info
+                    "winner_sackmann_id": w_id,
+                    "winner_seed": m.get('winner_seed'),
+                    "winner_entry": m.get('winner_entry'),
+                    "winner_name": m.get('winner_name'),
+                    "winner_hand": m.get('winner_hand'),
+                    "winner_ht": to_int(m.get('winner_ht')),
+                    "winner_ioc": m.get('winner_ioc'),
+                    "winner_age": to_float(m.get('winner_age')),
+                    "winner_rank": to_int(m.get('winner_rank')),
+                    "winner_rank_points": to_int(m.get('winner_rank_points')),
+                    
+                    # Loser Info
+                    "loser_sackmann_id": l_id,
+                    "loser_seed": m.get('loser_seed'),
+                    "loser_entry": m.get('loser_entry'),
+                    "loser_name": m.get('loser_name'),
+                    "loser_hand": m.get('loser_hand'),
+                    "loser_ht": to_int(m.get('loser_ht')),
+                    "loser_ioc": m.get('loser_ioc'),
+                    "loser_age": to_float(m.get('loser_age')),
+                    "loser_rank": to_int(m.get('loser_rank')),
+                    "loser_rank_points": to_int(m.get('loser_rank_points')),
+                    
+                    # Match Stats
+                    "score": m.get('score'),
+                    "best_of": to_int(m.get('best_of')),
+                    "round": m.get('round'),
+                    "minutes": to_int(m.get('minutes')),
+                    
+                    # Winner In-Match Stats
+                    "w_ace": to_int(m.get('w_ace')),
+                    "w_df": to_int(m.get('w_df')),
+                    "w_svpt": to_int(m.get('w_svpt')),
+                    "w_1stIn": to_int(m.get('w_1stIn')),
+                    "w_1stWon": to_int(m.get('w_1stWon')),
+                    "w_2ndWon": to_int(m.get('w_2ndWon')),
+                    "w_SvGms": to_int(m.get('w_SvGms')),
+                    "w_bpSaved": to_int(m.get('w_bpSaved')),
+                    "w_bpFaced": to_int(m.get('w_bpFaced')),
+                    
+                    # Loser In-Match Stats
+                    "l_ace": to_int(m.get('l_ace')),
+                    "l_df": to_int(m.get('l_df')),
+                    "l_svpt": to_int(m.get('l_svpt')),
+                    "l_1stIn": to_int(m.get('l_1stIn')),
+                    "l_1stWon": to_int(m.get('l_1stWon')),
+                    "l_2ndWon": to_int(m.get('l_2ndWon')),
+                    "l_SvGms": to_int(m.get('l_SvGms')),
+                    "l_bpSaved": to_int(m.get('l_bpSaved')),
+                    "l_bpFaced": to_int(m.get('l_bpFaced'))
                 })
-            except: continue
+            except Exception as loop_e:
+                continue
 
-        # 🚀 FIX: Echter Insert-Block mit Error-Logging, damit wir sehen, was Supabase stört
-        log(f"💾 Sende {len(db_inserts)} Matches aus {y} an Supabase...")
-        for i in range(0, len(db_inserts), 500):
+        log(f"💾 Pushe {len(db_inserts)} Matches aus {y} in Supabase Data Lake...")
+        # Chunking to avoid timeout
+        chunk_size = 500
+        for i in range(0, len(db_inserts), chunk_size):
             try:
-                # Wir nutzen insert (ohne on_conflict). Falls es knallt, sehen wir es!
-                supabase.table("historical_matches").insert(db_inserts[i:i+500]).execute()
+                # Wir nutzen insert (ohne on_conflict). Duplikate werden vom DB Unique Constraint abgewehrt.
+                supabase.table("historical_matches").insert(db_inserts[i:i+chunk_size]).execute()
             except Exception as e:
-                error_msg = str(e)
-                if "duplicate key value" not in error_msg: # Duplikate sind uns egal, echte Fehler wollen wir sehen
-                    log(f"⚠️ DB Insert Error in Jahr {y}: {error_msg}")
+                if "duplicate key value" not in str(e): 
+                    log(f"⚠️ Insert Error bei Chunk {i}: {str(e)}")
+                    
+        total_inserted += len(db_inserts)
             
-    log(f"✅ Data Lake stabilisiert. {len(all_matches)} historische Matches im Speicher.")
-    return all_matches
-
-# =================================================================
-# 5. PHASE 3: THE ALCHEMIST (Sharp Metrics Generation)
-# =================================================================
-def calculate_and_push_sharp_metrics(matches: List[Dict]):
-    log("🧮 PHASE 3: Berechne mathematische Spieler-Skills (Hold%, Break%, Fatigue)...")
-    
-    player_data = {}
-    def init_stats(sid: int):
-        if sid not in player_data:
-            player_data[sid] = {
-                "s_played": {"Hard": 0, "Clay": 0, "Grass": 0},
-                "s_won": {"Hard": 0, "Clay": 0, "Grass": 0},
-                "r_played": {"Hard": 0, "Clay": 0, "Grass": 0},
-                "r_won": {"Hard": 0, "Clay": 0, "Grass": 0},
-                "bp_faced": 0, "bp_saved": 0,
-                "bp_opps": 0, "bp_conv": 0,
-                "recent_min": 0, "total_matches": 0
-            }
-
-    now_ts = datetime.now().timestamp()
-
-    for row in matches:
-        try:
-            w_id = int(row.get('winner_id'))
-            l_id = int(row.get('loser_id'))
-            surf = row.get('surface', 'Hard')
-            if surf not in ['Hard', 'Clay', 'Grass']: surf = 'Hard'
-            
-            init_stats(w_id); init_stats(l_id)
-            
-            w_svpt = int(row.get('w_svpt') or 0)
-            w_won = int(row.get('w_1stWon') or 0) + int(row.get('w_2ndWon') or 0)
-            w_bpS = int(row.get('w_bpSaved') or 0)
-            w_bpF = int(row.get('w_bpFaced') or 0)
-            
-            l_svpt = int(row.get('l_svpt') or 0)
-            l_won = int(row.get('l_1stWon') or 0) + int(row.get('l_2ndWon') or 0)
-            l_bpS = int(row.get('l_bpSaved') or 0)
-            l_bpF = int(row.get('l_bpFaced') or 0)
-            
-            if w_svpt == 0 or l_svpt == 0: continue
-            
-            player_data[w_id]["s_played"][surf] += w_svpt
-            player_data[w_id]["s_won"][surf] += w_won
-            player_data[w_id]["r_played"][surf] += l_svpt
-            player_data[w_id]["r_won"][surf] += (l_svpt - l_won)
-            player_data[w_id]["bp_faced"] += w_bpF
-            player_data[w_id]["bp_saved"] += w_bpS
-            player_data[w_id]["bp_opps"] += l_bpF
-            player_data[w_id]["bp_conv"] += (l_bpF - l_bpS)
-            player_data[w_id]["total_matches"] += 1
-            
-            player_data[l_id]["s_played"][surf] += l_svpt
-            player_data[l_id]["s_won"][surf] += l_won
-            player_data[l_id]["r_played"][surf] += w_svpt
-            player_data[l_id]["r_won"][surf] += (w_svpt - w_won)
-            player_data[l_id]["bp_faced"] += l_bpF
-            player_data[l_id]["bp_saved"] += l_bpS
-            player_data[l_id]["bp_opps"] += w_bpF
-            player_data[l_id]["bp_conv"] += (w_bpF - w_bpS)
-            player_data[l_id]["total_matches"] += 1
-            
-            raw_date = row.get('tourney_date', '20150101')
-            m_ts = datetime.strptime(raw_date, "%Y%m%d").timestamp()
-            if (now_ts - m_ts) <= (14 * 24 * 3600):
-                player_data[w_id]["recent_min"] += int(row.get('minutes') or 0)
-                player_data[l_id]["recent_min"] += int(row.get('minutes') or 0)
-                
-        except: continue
-
-    db_players = []
-    off = 0; lim = 1000
-    while True:
-        r = supabase.table("players").select("id, sackmann_id").not_.is_("sackmann_id", "null").range(off, off + lim - 1).execute()
-        c = r.data or []
-        db_players.extend(c)
-        if len(c) < lim: break
-        off += lim
-
-    updates = []
-    for p in db_players:
-        sid = p.get('sackmann_id')
-        if sid in player_data:
-            d = player_data[sid]
-            metrics = {
-                "total_matches_analyzed": d["total_matches"],
-                "clutch": {
-                    "bp_saved_pct": round(d["bp_saved"]/d["bp_faced"]*100, 1) if d["bp_faced"] > 5 else None,
-                    "bp_conv_pct": round(d["bp_conv"]/d["bp_opps"]*100, 1) if d["bp_opps"] > 5 else None
-                },
-                "fatigue": {"recent_14d_minutes": d["recent_min"]}
-            }
-            for s in ["hard", "clay", "grass"]:
-                s_cap = s.capitalize()
-                sp = d["s_played"][s_cap]; sw = d["s_won"][s_cap]
-                rp = d["r_played"][s_cap]; rw = d["r_won"][s_cap]
-                metrics[f"serve_{s}"] = round(sw/sp*100, 1) if sp > 20 else None
-                metrics[f"return_{s}"] = round(rw/rp*100, 1) if rp > 20 else None
-            
-            updates.append({
-                "player_id": p['id'],
-                "sackmann_metrics": metrics,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
-
-    for u_data in updates:
-        try: 
-            supabase.table("player_skills").update({
-                "sackmann_metrics": u_data["sackmann_metrics"],
-                "updated_at": u_data["updated_at"]
-            }).eq("player_id", u_data["player_id"]).execute()
-        except: pass
-
-    log("🏁 ENGINE CYCLE FINISHED. Deine Datenbasis ist jetzt Weltklasse.")
+    log(f"✅ DATA LAKE GEBAUT: Insgesamt {total_inserted} Matchesrohdaten verarbeitet.")
 
 # =================================================================
 # EXECUTION
 # =================================================================
 async def main():
     await sync_player_ids()
-    matches = await build_historical_lake()
-    calculate_and_push_sharp_metrics(matches)
+    await build_historical_lake()
+    log("🏁 SACKMANN ENGINE FINISHED. Dein Data Lake ist bereit für die Matrix.")
 
 if __name__ == "__main__":
     asyncio.run(main())
