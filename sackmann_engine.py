@@ -29,7 +29,7 @@ logger = logging.getLogger("Sackmann_Engine")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Quant Engine (Sackmann Integration V1.1 - 1:1 Full Code)...")
+log("⚡ Initialisiere Elite Quant Engine (Sackmann Integration V1.2 - UPDATE FIX)...")
 
 # Secrets Load (Stelle sicher, dass diese in deiner Umgebung gesetzt sind)
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -125,11 +125,14 @@ async def sync_player_ids():
                 "sackmann_id": int(best_match_id)
             })
 
-    # Push Updates
+    # 🚀 FIX: Update statt Upsert, um Not-Null Constraints zu respektieren
     if updates:
-        log(f"💾 Speichere {len(updates)} neu gematchte IDs...")
-        for i in range(0, len(updates), 100):
-            supabase.table("players").upsert(updates[i:i+100]).execute()
+        log(f"💾 Speichere {len(updates)} neu gematchte IDs (Sequential Update)...")
+        for u_data in updates:
+            try:
+                supabase.table("players").update({"sackmann_id": u_data["sackmann_id"]}).eq("id", u_data["id"]).execute()
+            except Exception as e:
+                log(f"⚠️ Update Error bei Spieler {u_data['id']}: {e}")
     else:
         log("✅ Keine neuen Spieler-Matches gefunden.")
 
@@ -188,7 +191,7 @@ async def build_historical_lake() -> List[Dict]:
                 })
             except: continue
 
-        # Chunks in DB pushen
+        # Chunks in DB pushen (Hier ist upsert korrekt, da wir ALLE Felder in der neuen Tabelle befüllen)
         for i in range(0, len(db_inserts), 500):
             try:
                 supabase.table("historical_matches").upsert(db_inserts[i:i+500], on_conflict="tourney_id,match_num").execute()
@@ -311,9 +314,16 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
             })
 
     log(f"🚀 Injeziere {len(updates)} Quant-Profile in player_skills...")
-    for i in range(0, len(updates), 100):
-        try: supabase.table("player_skills").upsert(updates[i:i+100]).execute()
-        except Exception as e: log(f"⚠️ Push Error: {e}")
+    
+    # 🚀 FIX: Auch hier .update() statt .upsert() nutzen, um Not-Nulls zu respektieren
+    for u_data in updates:
+        try: 
+            supabase.table("player_skills").update({
+                "sackmann_metrics": u_data["sackmann_metrics"],
+                "updated_at": u_data["updated_at"]
+            }).eq("player_id", u_data["player_id"]).execute()
+        except Exception as e: 
+            log(f"⚠️ Push Error bei Player {u_data['player_id']}: {e}")
 
     log("🏁 ENGINE CYCLE FINISHED. Deine Datenbasis ist jetzt Weltklasse.")
 
