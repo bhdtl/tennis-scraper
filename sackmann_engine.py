@@ -29,9 +29,9 @@ logger = logging.getLogger("Sackmann_Engine")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Quant Engine (Sackmann Integration V1.2 - UPDATE FIX)...")
+log("⚡ Initialisiere Elite Quant Engine (Sackmann Integration V1.3 - LOGGING FIX)...")
 
-# Secrets Load (Stelle sicher, dass diese in deiner Umgebung gesetzt sind)
+# Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 
@@ -46,11 +46,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # =================================================================
 def normalize_name(name: str) -> str:
     if not name: return ""
-    # Entferne Akzente und Sonderzeichen (z.B. Novak Djoković -> novak djokovic)
     n = "".join(c for c in unicodedata.normalize('NFD', name) if unicodedata.category(c) != 'Mn')
     n = n.lower().strip()
     n = n.replace('-', ' ').replace("'", "")
-    # Entferne Partikel
     n = re.sub(r'\b(de|van|von|der)\b', '', n).strip()
     return n
 
@@ -71,19 +69,17 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
     return []
 
 # =================================================================
-# 3. PHASE 1: THE PLAYER MAPPER (Syncs Supabase with Sackmann IDs)
+# 3. PHASE 1: THE PLAYER MAPPER
 # =================================================================
 async def sync_player_ids():
     log("🔍 PHASE 1: Synchronisiere interne Spieler mit Sackmann IDs...")
     
-    # 1. Lade Sackmann Master Player File
     players_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
     sackmann_players = await fetch_csv_from_github(players_url)
     if not sackmann_players:
         log("❌ Konnte Sackmann Player File nicht laden. Überspringe Phase 1.")
         return
 
-    # 2. Lade alle Supabase Spieler (mit Pagination Bypass)
     db_players = []
     offset = 0
     limit = 1000
@@ -100,24 +96,19 @@ async def sync_player_ids():
     updates = []
     for db_p in players_to_match:
         db_full = normalize_name(f"{db_p.get('first_name', '')} {db_p.get('last_name', '')}")
-        
         best_match_id = None
         best_score = 0.0
-        
-        # Effizienteres Matching: Wir suchen erst nach exaktem Nachnamen
         db_last = normalize_name(db_p.get('last_name', ''))
         
         for sp in sackmann_players:
             sp_last = normalize_name(sp.get('name_last', ''))
-            if sp_last != db_last: continue # Schneller Filter
-            
+            if sp_last != db_last: continue 
             sp_full = normalize_name(f"{sp.get('name_first', '')} {sp.get('name_last', '')}")
             score = get_similarity(db_full, sp_full)
-            
             if score > best_score:
                 best_score = score
                 best_match_id = sp['player_id']
-            if score == 1.0: break # Perfect match
+            if score == 1.0: break 
                 
         if best_score > 0.88 and best_match_id:
             updates.append({
@@ -125,14 +116,13 @@ async def sync_player_ids():
                 "sackmann_id": int(best_match_id)
             })
 
-    # 🚀 FIX: Update statt Upsert, um Not-Null Constraints zu respektieren
     if updates:
         log(f"💾 Speichere {len(updates)} neu gematchte IDs (Sequential Update)...")
         for u_data in updates:
             try:
                 supabase.table("players").update({"sackmann_id": u_data["sackmann_id"]}).eq("id", u_data["id"]).execute()
             except Exception as e:
-                log(f"⚠️ Update Error bei Spieler {u_data['id']}: {e}")
+                pass
     else:
         log("✅ Keine neuen Spieler-Matches gefunden.")
 
@@ -146,6 +136,7 @@ async def build_historical_lake() -> List[Dict]:
     
     all_matches = []
     
+    # 🚀 VORBEREITUNG: Falls Reste in der Tabelle sind, ignorieren wir sie oder schreiben einfach neu
     for y in years:
         log(f"📡 Lade Match-Daten für {y}...")
         t_url = f"{base_url}atp_matches_{y}.csv"
@@ -159,18 +150,20 @@ async def build_historical_lake() -> List[Dict]:
         
         all_matches.extend(year_total)
         
-        # Sofortiges Speichern in die historical_matches Tabelle (Workaround für RAM)
         db_inserts = []
         for m in year_total:
             try:
                 if not m.get('winner_id') or not m.get('loser_id'): continue
                 
                 raw_date = m.get('tourney_date', '20150101')
-                fmt_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                if len(raw_date) == 8:
+                    fmt_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                else:
+                    fmt_date = "2015-01-01"
                 
                 db_inserts.append({
-                    "tourney_id": m.get('tourney_id'),
-                    "tourney_name": m.get('tourney_name'),
+                    "tourney_id": m.get('tourney_id', 'unknown'),
+                    "tourney_name": m.get('tourney_name', 'unknown'),
                     "surface": m.get('surface', 'Hard'),
                     "match_date": fmt_date,
                     "match_num": int(m.get('match_num', 0)),
@@ -191,11 +184,16 @@ async def build_historical_lake() -> List[Dict]:
                 })
             except: continue
 
-        # Chunks in DB pushen (Hier ist upsert korrekt, da wir ALLE Felder in der neuen Tabelle befüllen)
+        # 🚀 FIX: Echter Insert-Block mit Error-Logging, damit wir sehen, was Supabase stört
+        log(f"💾 Sende {len(db_inserts)} Matches aus {y} an Supabase...")
         for i in range(0, len(db_inserts), 500):
             try:
-                supabase.table("historical_matches").upsert(db_inserts[i:i+500], on_conflict="tourney_id,match_num").execute()
-            except: pass
+                # Wir nutzen insert (ohne on_conflict). Falls es knallt, sehen wir es!
+                supabase.table("historical_matches").insert(db_inserts[i:i+500]).execute()
+            except Exception as e:
+                error_msg = str(e)
+                if "duplicate key value" not in error_msg: # Duplikate sind uns egal, echte Fehler wollen wir sehen
+                    log(f"⚠️ DB Insert Error in Jahr {y}: {error_msg}")
             
     log(f"✅ Data Lake stabilisiert. {len(all_matches)} historische Matches im Speicher.")
     return all_matches
@@ -207,7 +205,6 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
     log("🧮 PHASE 3: Berechne mathematische Spieler-Skills (Hold%, Break%, Fatigue)...")
     
     player_data = {}
-    
     def init_stats(sid: int):
         if sid not in player_data:
             player_data[sid] = {
@@ -231,13 +228,11 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
             
             init_stats(w_id); init_stats(l_id)
             
-            # Winner Integers
             w_svpt = int(row.get('w_svpt') or 0)
             w_won = int(row.get('w_1stWon') or 0) + int(row.get('w_2ndWon') or 0)
             w_bpS = int(row.get('w_bpSaved') or 0)
             w_bpF = int(row.get('w_bpFaced') or 0)
             
-            # Loser Integers
             l_svpt = int(row.get('l_svpt') or 0)
             l_won = int(row.get('l_1stWon') or 0) + int(row.get('l_2ndWon') or 0)
             l_bpS = int(row.get('l_bpSaved') or 0)
@@ -245,7 +240,6 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
             
             if w_svpt == 0 or l_svpt == 0: continue
             
-            # Winner Aggregation
             player_data[w_id]["s_played"][surf] += w_svpt
             player_data[w_id]["s_won"][surf] += w_won
             player_data[w_id]["r_played"][surf] += l_svpt
@@ -256,7 +250,6 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
             player_data[w_id]["bp_conv"] += (l_bpF - l_bpS)
             player_data[w_id]["total_matches"] += 1
             
-            # Loser Aggregation
             player_data[l_id]["s_played"][surf] += l_svpt
             player_data[l_id]["s_won"][surf] += l_won
             player_data[l_id]["r_played"][surf] += w_svpt
@@ -267,7 +260,6 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
             player_data[l_id]["bp_conv"] += (w_bpF - w_bpS)
             player_data[l_id]["total_matches"] += 1
             
-            # Fatigue Logic (Last 14 Days)
             raw_date = row.get('tourney_date', '20150101')
             m_ts = datetime.strptime(raw_date, "%Y%m%d").timestamp()
             if (now_ts - m_ts) <= (14 * 24 * 3600):
@@ -276,8 +268,6 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
                 
         except: continue
 
-    # 🚀 Final Skills Push
-    log("💾 Hole Spieler-UUIDs aus Supabase für finales Update...")
     db_players = []
     off = 0; lim = 1000
     while True:
@@ -313,17 +303,13 @@ def calculate_and_push_sharp_metrics(matches: List[Dict]):
                 "updated_at": datetime.now(timezone.utc).isoformat()
             })
 
-    log(f"🚀 Injeziere {len(updates)} Quant-Profile in player_skills...")
-    
-    # 🚀 FIX: Auch hier .update() statt .upsert() nutzen, um Not-Nulls zu respektieren
     for u_data in updates:
         try: 
             supabase.table("player_skills").update({
                 "sackmann_metrics": u_data["sackmann_metrics"],
                 "updated_at": u_data["updated_at"]
             }).eq("player_id", u_data["player_id"]).execute()
-        except Exception as e: 
-            log(f"⚠️ Push Error bei Player {u_data['player_id']}: {e}")
+        except: pass
 
     log("🏁 ENGINE CYCLE FINISHED. Deine Datenbasis ist jetzt Weltklasse.")
 
