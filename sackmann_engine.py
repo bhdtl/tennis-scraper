@@ -29,7 +29,7 @@ logger = logging.getLogger("Sackmann_DataLake")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Data Lake Engine (Raw Extraction V2.0 - FULL DATA)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Raw Extraction V2.1 - POSTGRES CASE FIX)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -153,7 +153,7 @@ async def build_historical_lake():
         
         t_rows = await fetch_csv_from_github(t_url)
         c_rows = await fetch_csv_from_github(c_url)
-        f_rows = await fetch_csv_from_github(f_url) # Auch Futures laden!
+        f_rows = await fetch_csv_from_github(f_url) 
         
         year_total = t_rows + c_rows + f_rows
         if not year_total: continue
@@ -161,7 +161,6 @@ async def build_historical_lake():
         db_inserts = []
         for m in year_total:
             try:
-                # Essential IDs (Ohne geht nix)
                 w_id = to_int(m.get('winner_id'))
                 l_id = to_int(m.get('loser_id'))
                 m_num = to_int(m.get('match_num'))
@@ -176,7 +175,6 @@ async def build_historical_lake():
                     fmt_date = "2015-01-01"
                 
                 db_inserts.append({
-                    # Tournament Info
                     "tourney_id": t_id,
                     "tourney_name": m.get('tourney_name'),
                     "surface": m.get('surface'),
@@ -185,7 +183,6 @@ async def build_historical_lake():
                     "match_date": fmt_date,
                     "match_num": m_num,
                     
-                    # Winner Info
                     "winner_sackmann_id": w_id,
                     "winner_seed": m.get('winner_seed'),
                     "winner_entry": m.get('winner_entry'),
@@ -197,7 +194,6 @@ async def build_historical_lake():
                     "winner_rank": to_int(m.get('winner_rank')),
                     "winner_rank_points": to_int(m.get('winner_rank_points')),
                     
-                    # Loser Info
                     "loser_sackmann_id": l_id,
                     "loser_seed": m.get('loser_seed'),
                     "loser_entry": m.get('loser_entry'),
@@ -209,43 +205,39 @@ async def build_historical_lake():
                     "loser_rank": to_int(m.get('loser_rank')),
                     "loser_rank_points": to_int(m.get('loser_rank_points')),
                     
-                    # Match Stats
                     "score": m.get('score'),
                     "best_of": to_int(m.get('best_of')),
                     "round": m.get('round'),
                     "minutes": to_int(m.get('minutes')),
                     
-                    # Winner In-Match Stats
+                    # 🚀 THE FIX: Alle Spalten-Keys strikt in Kleinbuchstaben, passend zu PostgreSQL!
                     "w_ace": to_int(m.get('w_ace')),
                     "w_df": to_int(m.get('w_df')),
                     "w_svpt": to_int(m.get('w_svpt')),
-                    "w_1stIn": to_int(m.get('w_1stIn')),
-                    "w_1stWon": to_int(m.get('w_1stWon')),
-                    "w_2ndWon": to_int(m.get('w_2ndWon')),
-                    "w_SvGms": to_int(m.get('w_SvGms')),
-                    "w_bpSaved": to_int(m.get('w_bpSaved')),
-                    "w_bpFaced": to_int(m.get('w_bpFaced')),
+                    "w_1stin": to_int(m.get('w_1stIn')),     # Vorher: w_1stIn
+                    "w_1stwon": to_int(m.get('w_1stWon')),   # Vorher: w_1stWon
+                    "w_2ndwon": to_int(m.get('w_2ndWon')),   # Vorher: w_2ndWon
+                    "w_svgms": to_int(m.get('w_SvGms')),     # Vorher: w_SvGms
+                    "w_bpsaved": to_int(m.get('w_bpSaved')), # Vorher: w_bpSaved
+                    "w_bpfaced": to_int(m.get('w_bpFaced')), # Vorher: w_bpFaced
                     
-                    # Loser In-Match Stats
                     "l_ace": to_int(m.get('l_ace')),
                     "l_df": to_int(m.get('l_df')),
                     "l_svpt": to_int(m.get('l_svpt')),
-                    "l_1stIn": to_int(m.get('l_1stIn')),
-                    "l_1stWon": to_int(m.get('l_1stWon')),
-                    "l_2ndWon": to_int(m.get('l_2ndWon')),
-                    "l_SvGms": to_int(m.get('l_SvGms')),
-                    "l_bpSaved": to_int(m.get('l_bpSaved')),
-                    "l_bpFaced": to_int(m.get('l_bpFaced'))
+                    "l_1stin": to_int(m.get('l_1stIn')),     # Vorher: l_1stIn
+                    "l_1stwon": to_int(m.get('l_1stWon')),   # Vorher: l_1stWon
+                    "l_2ndwon": to_int(m.get('l_2ndWon')),   # Vorher: l_2ndWon
+                    "l_svgms": to_int(m.get('l_SvGms')),     # Vorher: l_SvGms
+                    "l_bpsaved": to_int(m.get('l_bpSaved')), # Vorher: l_bpSaved
+                    "l_bpfaced": to_int(m.get('l_bpFaced'))  # Vorher: l_bpFaced
                 })
             except Exception as loop_e:
                 continue
 
         log(f"💾 Pushe {len(db_inserts)} Matches aus {y} in Supabase Data Lake...")
-        # Chunking to avoid timeout
         chunk_size = 500
         for i in range(0, len(db_inserts), chunk_size):
             try:
-                # Wir nutzen insert (ohne on_conflict). Duplikate werden vom DB Unique Constraint abgewehrt.
                 supabase.table("historical_matches").insert(db_inserts[i:i+chunk_size]).execute()
             except Exception as e:
                 if "duplicate key value" not in str(e): 
