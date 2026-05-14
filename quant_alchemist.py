@@ -6,7 +6,7 @@ import math
 import logging
 import sys
 from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from supabase import create_client, Client
 
@@ -91,7 +91,7 @@ class AlchemistEngine:
             self.players[p_id] = {
                 "elo": {"overall": 1500.0, "hard": 1500.0, "clay": 1500.0, "grass": 1500.0},
                 "matches_played": {"overall": 0, "hard": 0, "clay": 0, "grass": 0},
-                "raw_stats": [] # 🚀 SOTA: Speichert Matches als Zeitreihe
+                "raw_stats": [] 
             }
 
     def process_match(self, row: Dict):
