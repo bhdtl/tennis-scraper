@@ -147,6 +147,29 @@ class TennisDataAPI:
         return {}
 
 # =================================================================
+# 1.5 TENNIS-MY-LIFE (TML) INGESTION ENGINE
+# =================================================================
+async def fetch_tml_database():
+    log("📡 Verbinde mit TennisMyLife API (Downloading ATP Data Lake)...")
+    loaded_matches = 0
+    async with httpx.AsyncClient() as client:
+        try:
+            tml_api_url = "https://stats.tennismylife.org/api/data-files"
+            res = await client.get(tml_api_url, timeout=15.0)
+            if res.status_code == 200:
+                files = res.json().get('files', [])
+                for f in files:
+                    if f['name'] in ['2025.csv', '2026.csv', 'ongoing_tourneys.csv']:
+                        csv_res = await client.get(f['url'], timeout=30.0)
+                        reader = csv.DictReader(io.StringIO(csv_res.text))
+                        for row in reader:
+                            TML_MATCH_CACHE.append(row)
+                            loaded_matches += 1
+                log(f"✅ TML Data Lake aktiv: {loaded_matches} historische/live ATP-Matches geladen.")
+        except Exception as e:
+            log(f"⚠️ TML API Error (Nutze lokale/Fallback-Daten): {e}")
+
+# =================================================================
 # 2. HELPER FUNCTIONS
 # =================================================================
 def to_float(val: Any, default: float = 0.0) -> float:
@@ -658,9 +681,6 @@ class SurfaceIntelligence:
 
     @staticmethod
     def compute_player_surface_profile(elo_metrics: Dict, sackmann_metrics: Dict) -> Dict[str, Any]:
-        """
-        🚀 SOTA: Speichert die UI-Daten (Farben, Text, Win-Rate) direkt basierend auf den harten Data Lake Elo-Metriken!
-        """
         profile = {}
         
         def get_rating_info(elo_val: float):
@@ -674,13 +694,12 @@ class SurfaceIntelligence:
             elo_val = elo_metrics.get(surf, 1500)
             rating, text, color = get_rating_info(elo_val)
 
-            # Expected Win Rate against a generic 1500 Elo average player
             expected_win_pct = round((1 / (1 + math.pow(10, (1500 - elo_val)/400))) * 100, 1)
 
             profile[surf] = {
                 "rating": rating,
                 "color": color,
-                "matches_tracked": elo_metrics.get("matches_tracked", 0),
+                "matches_tracked": elo_metrics.get(f"matches_{surf}", 0),
                 "text": text,
                 "win_rate": f"{expected_win_pct}% (True Elo)"
             }
@@ -976,12 +995,15 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
 # 7. DATA FETCHING & ORACLE (API INTEGRATED + DATA LAKE)
 # =================================================================
 async def fetch_player_history_extended(player_last_name: str, limit: int = 20) -> List[Dict]:
+    """
+    🚀 SOTA: Kombiniert Live-Scanner Matches UND den historischen Data Lake für perfekte Form- und Surface-Analysen.
+    """
     try:
-        # Live Scanner
+        # 1. Hole Live Scanner Matches (mit Quoten)
         res_live = supabase.table("market_odds").select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text").or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(limit).execute()
         live = res_live.data or []
 
-        # Data Lake
+        # 2. Hole Data Lake Matches (Quant-Historie)
         res_hist = supabase.table("historical_matches").select("winner_name, loser_name, match_date, score, tourney_name, surface").or_(f"winner_name.ilike.%{player_last_name}%,loser_name.ilike.%{player_last_name}%").order("match_date", desc=True).limit(limit).execute()
         hist = res_hist.data or []
 
@@ -1310,7 +1332,6 @@ async def get_db_data():
                     continue
                 pid = entry.get('player_id')
                 if pid:
-                    # 🚀 SOTA INJECTION: Wir übergeben dem Backend jetzt die neuen Advanced Stats!
                     clean_skills[pid] = {
                         'serve': to_float(entry.get('serve')), 
                         'power': to_float(entry.get('power')),
@@ -1322,7 +1343,6 @@ async def get_db_data():
                         'mental': to_float(entry.get('mental')),
                         'overall_rating': to_float(entry.get('overall_rating', 50)),
                         'elo_metrics': entry.get('elo_metrics', {}),
-                        'sackmann_metrics': entry.get('sackmann_metrics', {}),
                         'advanced_stats': entry.get('advanced_stats', {})
                     }
                     
@@ -1560,7 +1580,7 @@ def format_skills(s: Dict) -> str:
         return "No granular skill data."
     return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
 
-# 🚀 SOTA PROMPT ENGINEERING (GIL GROSS CHAIN OF THOUGHT)
+# 🚀 SOTA PROMPT ENGINEERING (THE ULTIMATE GIL GROSS ENGINE)
 async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
@@ -1576,20 +1596,26 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     
     elo_A = s1.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
     elo_B = s2.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
-
-    # 🚀 DATA LAKE INJECTION: Wir greifen auf die harten Stats (Letzte 30 Tage) zu, falls vorhanden, sonst All-Time.
-    adv_stats_A = s1.get('advanced_stats', {}).get('1m', {}).get(current_surf_key) or s1.get('advanced_stats', {}).get('all', {}).get(current_surf_key, {})
-    adv_stats_B = s2.get('advanced_stats', {}).get('1m', {}).get(current_surf_key) or s2.get('advanced_stats', {}).get('all', {}).get(current_surf_key, {})
     
-    def format_deep_stats(stats):
-        if not stats or not stats.get('matches_with_stats'): return "No deep stats available."
-        return f"Aces/M: {stats.get('aces_per_match')}, 1st Srv Win: {stats.get('first_win_pct')}%, Return Pts Won: {stats.get('ret_win_pct')}%, BP Saved: {stats.get('bp_saved_pct')}%"
+    # 🚀 NEU: EXTRACT GRANULAR RECENT SURFACE STATS
+    def extract_stats_str(skills_obj, surf_val):
+        adv = skills_obj.get('advanced_stats')
+        if not adv or not isinstance(adv, dict): return "No recent granular stats."
+        
+        # Versuche zuerst Last 7, dann 1 Month, dann YTD, dann All Time
+        for t_bucket in ['l7', '1m', 'ytd', 'all']:
+            bucket_data = adv.get(t_bucket)
+            if bucket_data and isinstance(bucket_data, dict):
+                s_data = bucket_data.get(surf_val)
+                if s_data and isinstance(s_data, dict):
+                    return f"[{t_bucket.upper()}] 1st Serve Win: {s_data.get('first_win_pct')}%, Return Pts Won: {s_data.get('ret_win_pct')}%, BP Saved: {s_data.get('bp_saved_pct')}%, BP Conv: {s_data.get('bp_conv_pct')}%"
+        return "No recent granular stats."
 
-    deep_A = format_deep_stats(adv_stats_A)
-    deep_B = format_deep_stats(adv_stats_B)
-    
-    scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available."
-    scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available."
+    recent_stats_A = extract_stats_str(s1, current_surf_key)
+    recent_stats_B = extract_stats_str(s2, current_surf_key)
+
+    scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available for Player A."
+    scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available for Player B."
     
     validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
     
@@ -1604,57 +1630,57 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
 
     convictionDirective = ""
     if finalProb_val >= 70.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL)\nThe math gives {predictedMCWinner} a massive {finalProb_val:.1f}% win probability. Be HIGHLY ASSERTIVE. Explain exactly how {predictedMCWinner}'s strengths will physically break down {predictedMCLoser}."
+        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL)\nThe math gives {predictedMCWinner} a massive {finalProb_val:.1f}% win probability. Be HIGHLY ASSERTIVE. Explain exactly how {predictedMCWinner}'s strengths will physically break down {predictedMCLoser}. No hedging."
     elif 55.0 <= finalProb_val <= 60.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (COIN FLIP WARNING)\nThis is a highly volatile match ({finalProb_val:.1f}%). Focus HEAVILY on current Fatigue, recent H2H, and fine margins. Acknowledge the risk."
+        convictionDirective = f"*** CONVICTION DIRECTIVE (COIN FLIP WARNING)\nThis is a highly volatile match ({finalProb_val:.1f}%). Focus HEAVILY on current Fatigue, recent H2H, and fine margins. Acknowledge the risk. DO NOT overstate small skill advantages."
     else:
         convictionDirective = f"*** CONVICTION DIRECTIVE\nSolid edge ({finalProb_val:.1f}%). Detail the tactical mismatch confidently."
 
     prompt = f"""
-    You are an elite Senior Tennis Analyst (Style: Gil Gross). 
-    Your task is to provide a masterclass tactical breakdown of an upcoming tennis match.
-    DO NOT just summarize the data. Reason through the matchup dynamically. Think about HOW Player A's style interacts with Player B's style on this specific surface.
+    You are Gil Gross, the ultimate elite tennis tactical analyst. 
+    Your goal is to break down this matchup dynamically and mathematically. 
+    Analyze how Player A's specific playstyle and strengths interact with Player B's weaknesses on this specific surface.
+    
+    *** SYSTEM SELF-REFLECTION ***
+    Our neural network accuracy is {sys_acc}%. 
     
     *** DATA GROUNDING (SOURCE OF TRUTH) ***
     Head-to-Head (H2H): {h2h_record}
-    Match Conditions: {surface} (BSI Court Speed Index: {bsi}) | {weather_str} | Court Notes: {validCourtNotes}
+    Match Conditions: {surface} (BSI: {bsi}) | {weather_str} | Notes: {validCourtNotes}
 
     Player A ({p1['last_name']}):
     - Style: {p1.get('play_style', 'Unknown')}
-    - Form/Momentum: {form1_data['text']}
-    - True {current_surf_key} Elo: {elo_A}
-    - Recent Stats on {current_surf_key}: {deep_A}
+    - True Surface Elo: {elo_A}
+    - Recent Surface Stats: {recent_stats_A}
+    - Form: {form1_data['text']}
+    - Fatigue: {fatigueA}
     - Scout: {scoutA}
-    - Physical Load: {fatigueA}
     
     Player B ({p2['last_name']}):
     - Style: {p2.get('play_style', 'Unknown')}
-    - Form/Momentum: {form2_data['text']}
-    - True {current_surf_key} Elo: {elo_B}
-    - Recent Stats on {current_surf_key}: {deep_B}
+    - True Surface Elo: {elo_B}
+    - Recent Surface Stats: {recent_stats_B}
+    - Form: {form2_data['text']}
+    - Fatigue: {fatigueB}
     - Scout: {scoutB}
-    - Physical Load: {fatigueB}
 
-    Winner Prediction by Neural Network: {predictedMCWinner} (Confidence: {finalProb})
+    Winner: {predictedMCWinner} (Model Prob: {finalProb})
     
     {convictionDirective}
     
-    *** CHAIN OF THOUGHT DIRECTIVES ***
-    Step 1 (Serve/Return Dynamic): Who wins the free points? Look at the '1st Srv Win' vs 'Return Pts Won' stats. How does BSI affect this?
-    Step 2 (Baseline & Style): Does Player A's weapon neutralize Player B's weakness? (e.g. Heavy topspin vs flat hitter).
-    Step 3 (Intangibles): How does the physical load (Fatigue) or clutch data (BP Saved) tilt the match?
+    *** CRITICAL DIRECTIVES ***
+    1. NO NUMBERS OR PERCENTAGES IN TEXT. Do not recite the stats, USE THEM to reason.
+    2. TACTICAL PROSA: Explain HOW the court speed (BSI), weather, and the specific playstyle clash (e.g., Aggressive Baseliner vs Counter Puncher) dictate the match.
+    3. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats' (Serve Win % vs Return Win %).
+    4. Write a 200-250 word tactical breakdown. Make it sound like a sharp, professional podcast analysis.
+    5. ONLY RETURN JSON.
     
-    *** CRITICAL RULES ***
-    1. NO NUMBERS OR PERCENTAGES IN THE TEXT (keep it prose).
-    2. BE TACTICAL: Explain the *physics* of the matchup (e.g., "His kick serve will jump out of the strike zone on this high-bouncing clay...").
-    3. ONLY RETURN VALID JSON.
-    
-    OUTPUT JSON FORMAT:
+    OUTPUT JSON:
     {{
         "winner_prediction": "{predictedMCWinner}",
-        "key_factor": "One sharp tactical sentence focusing on the primary mismatch.",
-        "prediction_text": "Deep Gil Gross style analysis (~150 words). Follow the Chain of Thought.",
-        "tactical_bullets": ["Tactic 1 (playstyle)", "Tactic 2 (surface)", "Tactic 3 (weakness)"]
+        "key_factor": "One sharp tactical sentence focusing on the primary mismatch (e.g. Serve vs Return on this specific surface).",
+        "prediction_text": "Deep Gil Gross style analysis (200-250 words). Tactical physics, playstyle clash, and fatigue/stats impact.",
+        "tactical_bullets": ["Tactic 1 (playstyle)", "Tactic 2 (surface/stats)", "Tactic 3 (weakness/fatigue)"]
     }}
     """
     
@@ -2096,7 +2122,7 @@ async def run_pipeline():
                                 'surface_ratings': p2_surface_profile
                             }).eq('id', target_p2_id).execute()
                     except Exception as update_err:
-                        pass
+                        log(f"⚠️ Failed to update live player ratings: {update_err}")
 
                     empirical_ou = calculate_empirical_ou(p1_history, p2_history)
 
@@ -2138,7 +2164,6 @@ async def run_pipeline():
 
                     sim_result["h2h"] = h2h_record
 
-                    # 🚀 SOTA: Gil Gross Reasoning Engine Call
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
