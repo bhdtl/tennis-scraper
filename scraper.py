@@ -41,7 +41,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V205.10 - SHARP BANKROLL & BUCHDAHL PROTOCOL)...")
+log("🔌 Initialisiere Neural Scout (V206.00 - SHARP ELO METRICS & BUCHDAHL PROTOCOL)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -59,7 +59,6 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MODEL_NAME = 'meta-llama/llama-3.3-70b-instruct'
 
 # Global Caches & Dynamic Memory
-ELO_CACHE: Dict[str, Dict[str, Dict[str, float]]] = {"ATP": {}, "WTA": {}}
 TOURNAMENT_LOC_CACHE: Dict[str, Any] = {}
 SURFACE_STATS_CACHE: Dict[str, float] = {} 
 METADATA_CACHE: Dict[str, Any] = {} 
@@ -1399,65 +1398,6 @@ def fetch_all_rows(table_name: str) -> List[Dict]:
             break
     return data
 
-def initialize_g_elo_system(historical_matches: List[Dict], tournaments: List[Dict]):
-    log("🧠 Initialisiere True Surface-Specific G-Elo System...")
-    global ELO_CACHE
-    ELO_CACHE = {"ATP": {}, "WTA": {}}
-    
-    valid_matches = [m for m in historical_matches if m.get('actual_winner_name') and m.get('score')]
-    valid_matches.sort(key=lambda x: str(x.get('created_at', '')))
-    
-    for m in valid_matches:
-        tour_raw = str(m.get('tournament', '')).lower()
-        surf = "Hard"
-        if "clay" in tour_raw or "roland garros" in tour_raw: surf = "Clay"
-        elif "grass" in tour_raw or "wimbledon" in tour_raw: surf = "Grass"
-        else:
-            for db_key, db_surf in GLOBAL_SURFACE_MAP.items():
-                if db_key in tour_raw or tour_raw in db_key:
-                    if len(db_key) > 3:
-                        if "clay" in db_surf.lower(): surf = "Clay"
-                        elif "grass" in db_surf.lower(): surf = "Grass"
-                        break
-        
-        tour = "WTA" if "wta" in tour_raw else "ATP"
-        
-        p1 = get_last_name(m.get('player1_name', ''))
-        p2 = get_last_name(m.get('player2_name', ''))
-        winner = get_last_name(m.get('actual_winner_name', ''))
-        
-        if not p1 or not p2 or not winner: continue
-        
-        p1_won = (p1 == winner)
-        
-        score_str = re.sub(r'\.\d+', '', str(m['score']).lower().replace(":", "-"))
-        sets = re.findall(r'\b(\d+)\s*-\s*(\d+)\b', score_str)
-        g1, g2 = 0, 0
-        for s in sets:
-            try:
-                g1 += int(s[0])
-                g2 += int(s[1])
-            except: pass
-        game_diff = abs(g1 - g2)
-        
-        K = 25
-        margin_multiplier = math.log(game_diff + 1.5) if game_diff else 1.0
-        
-        if p1 not in ELO_CACHE[tour]: ELO_CACHE[tour][p1] = {'Hard': 1500.0, 'Clay': 1500.0, 'Grass': 1500.0}
-        if p2 not in ELO_CACHE[tour]: ELO_CACHE[tour][p2] = {'Hard': 1500.0, 'Clay': 1500.0, 'Grass': 1500.0}
-        
-        elo1 = ELO_CACHE[tour][p1][surf]
-        elo2 = ELO_CACHE[tour][p2][surf]
-        
-        exp1 = 1 / (1 + math.pow(10, (elo2 - elo1) / 400))
-        
-        shift = K * margin_multiplier * ((1 if p1_won else 0) - exp1)
-        
-        ELO_CACHE[tour][p1][surf] += shift
-        ELO_CACHE[tour][p2][surf] -= shift
-    
-    log(f"✅ G-Elo System kalibriert: ATP ({len(ELO_CACHE['ATP'])} Spieler), WTA ({len(ELO_CACHE['WTA'])} Spieler)")
-
 async def get_db_data():
     try:
         weights_res = supabase.table("ai_system_weights").select("*").execute()
@@ -1489,9 +1429,6 @@ async def get_db_data():
                         if part and len(part) > 2: 
                             GLOBAL_SURFACE_MAP[part] = t_surf
                             
-        historical_odds = fetch_all_rows("market_odds")
-        initialize_g_elo_system(historical_odds, tournaments)
-                            
         clean_skills = {}
         if skills:
             for entry in skills:
@@ -1508,7 +1445,8 @@ async def get_db_data():
                         'speed': to_float(entry.get('speed')), 
                         'stamina': to_float(entry.get('stamina')),
                         'mental': to_float(entry.get('mental')),
-                        'overall_rating': to_float(entry.get('overall_rating', 50))
+                        'overall_rating': to_float(entry.get('overall_rating', 50)),
+                        'elo_metrics': entry.get('elo_metrics', {}) # 🚀 SOTA: Exaktes Elo aus Data Lake einlesen
                     }
                     
         return players or [], clean_skills, reports or [], tournaments or []
@@ -1517,7 +1455,7 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE (🚀 SOTA: DYNAMIC NOISE FILTER & STAKE FLOOR)
+# 8. MATH CORE (🚀 SOTA: DYNAMIC NOISE FILTER & ELO LOGIC)
 # =================================================================
 def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
     return 1 / (1 + math.exp(-sensitivity * diff))
@@ -1604,16 +1542,10 @@ def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
 def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2, pinnacle_prob_a=None):
-    n1 = get_last_name(p1_name)
-    n2 = get_last_name(p2_name)
-    tour = "ATP"
-    
-    p1_stats = ELO_CACHE.get(tour, {}).get(n1, {})
-    p2_stats = ELO_CACHE.get(tour, {}).get(n2, {})
-    
-    elo_surf = 'Clay' if 'clay' in surface.lower() else ('Grass' if 'grass' in surface.lower() else 'Hard')
-    elo1 = p1_stats.get(elo_surf, 1500)
-    elo2 = p2_stats.get(elo_surf, 1500)
+    # 🚀 SOTA: Wir lesen das Elo direkt aus den übergebenen Skills aus (die aus dem Data Lake stammen)
+    elo_surf = 'clay' if 'clay' in surface.lower() else ('grass' if 'grass' in surface.lower() else 'hard')
+    elo1 = s1.get('elo_metrics', {}).get(elo_surf, 1500)
+    elo2 = s2.get('elo_metrics', {}).get(elo_surf, 1500)
     
     elo_diff_model = elo1 - elo2
     
@@ -1778,6 +1710,10 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
     p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
     
+    # 🚀 SOTA: Echte Elos aus dem Data Lake
+    elo_A = s1.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
+    elo_B = s2.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
+    
     scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available for Player A."
     scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available for Player B."
     
@@ -1812,6 +1748,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
 
     Player A ({p1['last_name']}):
     - Style: {p1.get('play_style', 'Unknown')}
+    - True Surface Elo: {elo_A}
     - Form: {form1_data['text']}
     - Surface Rating: {p1_s_rating}/10
     - Skills: {format_skills(s1)}
@@ -1820,6 +1757,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     
     Player B ({p2['last_name']}):
     - Style: {p2.get('play_style', 'Unknown')}
+    - True Surface Elo: {elo_B}
     - Form: {form2_data['text']}
     - Surface Rating: {p2_s_rating}/10
     - Skills: {format_skills(s2)}
@@ -1835,7 +1773,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     *** CRITICAL DIRECTIVES ***
     1. NO NUMBERS OR PERCENTAGES IN TEXT.
     2. TACTICAL PROSA: Explain HOW the court speed (BSI) and weather affect their specific styles.
-    3. FACTUAL INTEGRITY: Base everything on the provided 'Weakness' and 'Fatigue'.
+    3. FACTUAL INTEGRITY: Base everything on the provided 'Weakness', 'True Surface Elo', and 'Fatigue'.
     4. ONLY RETURN JSON.
     
     OUTPUT JSON:
@@ -2078,7 +2016,7 @@ class LiveSkillEngine:
 # PIPELINE EXECUTION (SOTA API EDITION)
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V205.10 (SHARP BANKROLL & BUCHDAHL PROTOCOL) Starting...")
+    log(f"🚀 Neural Scout V206.00 (SHARP ELO METRICS & BUCHDAHL PROTOCOL) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
