@@ -5,7 +5,7 @@ import os
 import math
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any
 
 from supabase import create_client, Client
@@ -29,6 +29,17 @@ def to_int(val: Any) -> int:
     try: return int(float(val))
     except: return 0
 
+def parse_date(date_str: str) -> datetime:
+    if not date_str: return datetime(2015, 1, 1, tzinfo=timezone.utc)
+    if "T" in date_str:
+        try: return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        except: pass
+    date_str = str(date_str).replace("-", "")
+    if len(date_str) >= 8:
+        try: return datetime.strptime(date_str[:8], "%Y%m%d").replace(tzinfo=timezone.utc)
+        except: pass
+    return datetime(2015, 1, 1, tzinfo=timezone.utc)
+
 # --- ELO MATH ---
 def calculate_k_factor(matches_played: int) -> float:
     return 250.0 / ((matches_played + 5.0) ** 0.4)
@@ -38,6 +49,37 @@ def calc_expected_score(rating_a: float, rating_b: float) -> float:
 
 def update_elo(old_rating: float, k_factor: float, actual_score: float, expected_score: float) -> float:
     return old_rating + k_factor * (actual_score - expected_score)
+
+def aggregate_stats(matches_list: List[Dict]) -> Optional[Dict]:
+    count = len(matches_list)
+    if count == 0: return None
+    
+    aces = sum(m['aces'] for m in matches_list)
+    dfs = sum(m['dfs'] for m in matches_list)
+    svpt = sum(m['svpt'] for m in matches_list)
+    first_in = sum(m['1stin'] for m in matches_list)
+    first_won = sum(m['1stwon'] for m in matches_list)
+    second_won = sum(m['2ndwon'] for m in matches_list)
+    bpsaved = sum(m['bpsaved'] for m in matches_list)
+    bpfaced = sum(m['bpfaced'] for m in matches_list)
+    ret_pts = sum(m['ret_pts'] for m in matches_list)
+    ret_won = sum(m['ret_won'] for m in matches_list)
+    bp_opps = sum(m['bp_opps'] for m in matches_list)
+    bp_conv = sum(m['bp_conv'] for m in matches_list)
+    
+    if svpt == 0: return None
+    
+    return {
+        "matches_with_stats": count,
+        "aces_per_match": round(aces / count, 1),
+        "df_per_match": round(dfs / count, 1),
+        "first_in_pct": round((first_in / svpt) * 100, 1),
+        "first_win_pct": round((first_won / first_in) * 100, 1) if first_in > 0 else 0,
+        "second_win_pct": round((second_won / (svpt - first_in)) * 100, 1) if (svpt - first_in) > 0 else 0,
+        "bp_saved_pct": round((bpsaved / bpfaced) * 100, 1) if bpfaced > 0 else 0,
+        "ret_win_pct": round((ret_won / ret_pts) * 100, 1) if ret_pts > 0 else 0,
+        "bp_conv_pct": round((bp_conv / bp_opps) * 100, 1) if bp_opps > 0 else 0
+    }
 
 # --- THE AGGREGATOR ---
 class AlchemistEngine:
@@ -49,12 +91,7 @@ class AlchemistEngine:
             self.players[p_id] = {
                 "elo": {"overall": 1500.0, "hard": 1500.0, "clay": 1500.0, "grass": 1500.0},
                 "matches_played": {"overall": 0, "hard": 0, "clay": 0, "grass": 0},
-                "stats": {
-                    "hard": {"matches":0,"aces":0,"dfs":0,"svpt":0,"1stin":0,"1stwon":0,"2ndwon":0,"bpsaved":0,"bpfaced":0,"ret_pts":0,"ret_won":0,"bp_opps":0,"bp_conv":0},
-                    "clay": {"matches":0,"aces":0,"dfs":0,"svpt":0,"1stin":0,"1stwon":0,"2ndwon":0,"bpsaved":0,"bpfaced":0,"ret_pts":0,"ret_won":0,"bp_opps":0,"bp_conv":0},
-                    "grass": {"matches":0,"aces":0,"dfs":0,"svpt":0,"1stin":0,"1stwon":0,"2ndwon":0,"bpsaved":0,"bpfaced":0,"ret_pts":0,"ret_won":0,"bp_opps":0,"bp_conv":0},
-                    "overall": {"matches":0,"aces":0,"dfs":0,"svpt":0,"1stin":0,"1stwon":0,"2ndwon":0,"bpsaved":0,"bpfaced":0,"ret_pts":0,"ret_won":0,"bp_opps":0,"bp_conv":0}
-                }
+                "raw_stats": [] # 🚀 SOTA: Speichert Matches als Zeitreihe
             }
 
     def process_match(self, row: Dict):
@@ -67,6 +104,7 @@ class AlchemistEngine:
 
         raw_surf = str(row.get('surface', 'hard')).lower()
         surf = raw_surf if raw_surf in ['hard', 'clay', 'grass'] else 'hard'
+        m_date = parse_date(row.get('match_date'))
 
         # 1. ELO CALCULATION
         kw_overall = calculate_k_factor(self.players[w_id]["matches_played"]["overall"])
@@ -87,35 +125,41 @@ class AlchemistEngine:
         self.players[w_id]["matches_played"][surf] += 1
         self.players[l_id]["matches_played"][surf] += 1
 
-        # 2. STATS AGGREGATION
-        def add_stats(p_id, s_type, prefix, opp_prefix):
-            if to_int(row.get(f'{prefix}svpt')) == 0: return # Skip if no detailed stats
-            for target_surf in [surf, "overall"]:
-                s = self.players[p_id]["stats"][target_surf]
-                s["matches"] += 1
-                s["aces"] += to_int(row.get(f'{prefix}ace'))
-                s["dfs"] += to_int(row.get(f'{prefix}df'))
-                s["svpt"] += to_int(row.get(f'{prefix}svpt'))
-                s["1stin"] += to_int(row.get(f'{prefix}1stin'))
-                s["1stwon"] += to_int(row.get(f'{prefix}1stwon'))
-                s["2ndwon"] += to_int(row.get(f'{prefix}2ndwon'))
-                s["bpsaved"] += to_int(row.get(f'{prefix}bpsaved'))
-                s["bpfaced"] += to_int(row.get(f'{prefix}bpfaced'))
+        # 2. TIME-SERIES STATS COLLECTION
+        def extract_stats(p_id, prefix, opp_prefix):
+            svpt = to_int(row.get(f'{prefix}svpt'))
+            if svpt == 0: return # Skip missing stats
+            
+            opp_svpt = to_int(row.get(f'{opp_prefix}svpt'))
+            opp_1stwon = to_int(row.get(f'{opp_prefix}1stwon'))
+            opp_2ndwon = to_int(row.get(f'{opp_prefix}2ndwon'))
+            
+            self.players[p_id]["raw_stats"].append({
+                "date": m_date,
+                "surface": surf,
+                "aces": to_int(row.get(f'{prefix}ace')),
+                "dfs": to_int(row.get(f'{prefix}df')),
+                "svpt": svpt,
+                "1stin": to_int(row.get(f'{prefix}1stin')),
+                "1stwon": to_int(row.get(f'{prefix}1stwon')),
+                "2ndwon": to_int(row.get(f'{prefix}2ndwon')),
+                "bpsaved": to_int(row.get(f'{prefix}bpsaved')),
+                "bpfaced": to_int(row.get(f'{prefix}bpfaced')),
+                "ret_pts": opp_svpt,
+                "ret_won": (opp_svpt - opp_1stwon - opp_2ndwon),
+                "bp_opps": to_int(row.get(f'{opp_prefix}bpfaced')),
+                "bp_conv": (to_int(row.get(f'{opp_prefix}bpfaced')) - to_int(row.get(f'{opp_prefix}bpsaved')))
+            })
 
-                opp_svpt = to_int(row.get(f'{opp_prefix}svpt'))
-                opp_1stwon = to_int(row.get(f'{opp_prefix}1stwon'))
-                opp_2ndwon = to_int(row.get(f'{opp_prefix}2ndwon'))
-                s["ret_pts"] += opp_svpt
-                s["ret_won"] += (opp_svpt - opp_1stwon - opp_2ndwon)
-
-                s["bp_opps"] += to_int(row.get(f'{opp_prefix}bpfaced'))
-                s["bp_conv"] += (to_int(row.get(f'{opp_prefix}bpfaced')) - to_int(row.get(f'{opp_prefix}bpsaved')))
-
-        add_stats(w_id, surf, "w_", "l_")
-        add_stats(l_id, surf, "l_", "w_")
+        extract_stats(w_id, "w_", "l_")
+        extract_stats(l_id, "l_", "w_")
 
     def compile_final_profiles(self) -> Dict[int, Dict]:
         final_data = {}
+        now = datetime.now(timezone.utc)
+        current_year = now.year
+        thirty_days_ago = now - timedelta(days=30)
+        
         for p_id, data in self.players.items():
             elo_metrics = {
                 "overall": round(data["elo"]["overall"], 1),
@@ -128,42 +172,43 @@ class AlchemistEngine:
                 "matches_grass": data["matches_played"]["grass"]
             }
 
-            adv_stats = {}
-            for s_key in ["hard", "clay", "grass", "overall"]:
-                s = data["stats"][s_key]
-                m_count = s["matches"]
-                svpt = s["svpt"]
-                if m_count == 0 or svpt == 0:
-                    adv_stats[s_key] = None
-                    continue
+            # 🚀 TIME SERIES BUCKETING
+            sorted_stats = sorted(data["raw_stats"], key=lambda x: x['date'], reverse=True)
+            adv_stats = {"all": {}, "ytd": {}, "1m": {}, "l7": {}}
+            
+            for surf_key in ["overall", "hard", "clay", "grass"]:
+                s_matches = sorted_stats if surf_key == "overall" else [m for m in sorted_stats if m['surface'] == surf_key]
+                
+                # ALL
+                adv_stats["all"][surf_key] = aggregate_stats(s_matches)
+                # YTD
+                ytd_matches = [m for m in s_matches if m['date'].year == current_year]
+                adv_stats["ytd"][surf_key] = aggregate_stats(ytd_matches)
+                # 1M
+                m1_matches = [m for m in s_matches if m['date'] >= thirty_days_ago]
+                adv_stats["1m"][surf_key] = aggregate_stats(m1_matches)
+                # L7 (Die letzten 7 dieses Belags)
+                l7_matches = s_matches[:7]
+                adv_stats["l7"][surf_key] = aggregate_stats(l7_matches)
 
-                adv_stats[s_key] = {
-                    "matches_with_stats": m_count,
-                    "aces_per_match": round(s["aces"] / m_count, 1),
-                    "df_per_match": round(s["dfs"] / m_count, 1),
-                    "first_in_pct": round((s["1stin"] / svpt) * 100, 1),
-                    "first_win_pct": round((s["1stwon"] / s["1stin"]) * 100, 1) if s["1stin"] > 0 else 0,
-                    "second_win_pct": round((s["2ndwon"] / (svpt - s["1stin"])) * 100, 1) if (svpt - s["1stin"]) > 0 else 0,
-                    "bp_saved_pct": round((s["bpsaved"] / s["bpfaced"]) * 100, 1) if s["bpfaced"] > 0 else 0,
-                    "ret_win_pct": round((s["ret_won"] / s["ret_pts"]) * 100, 1) if s["ret_pts"] > 0 else 0,
-                    "bp_conv_pct": round((s["bp_conv"] / s["bp_opps"]) * 100, 1) if s["bp_opps"] > 0 else 0
-                }
-
-            # UI Surface Ratings (Pre-Calculated for Frontend)
-            def get_rating_info(elo_val):
-                if elo_val >= 1850: return 9.5, "🔥 SPECIALIST", "#FF00FF"
-                elif elo_val >= 1700: return 8.0, "📈 Strong", "#3366FF"
-                elif elo_val >= 1550: return 6.5, "Solid", "#00B25B"
-                elif elo_val >= 1400: return 5.0, "Average", "#F0C808"
-                else: return 3.5, "❄️ Weakness", "#CC0000"
-
+            # UI Surface Ratings (SOTA Lineare Interpolation)
             surface_ui = {}
             for surf in ['hard', 'clay', 'grass']:
                 e_val = elo_metrics[surf]
-                rating, text, color = get_rating_info(e_val)
+                
+                # Knallharte Interpolation: 1400 -> 1.0, 2100 -> 10.0
+                rating = ((e_val - 1400) / 700.0) * 9.0 + 1.0
+                rating = max(1.0, min(10.0, rating))
+                
+                if rating >= 8.5: text, color = "🔥 ELITE", "#FF00FF"
+                elif rating >= 7.0: text, color = "📈 STRONG", "#3366FF"
+                elif rating >= 5.5: text, color = "✅ SOLID", "#00B25B"
+                elif rating >= 4.0: text, color = "⚠️ VULNERABLE", "#F0C808"
+                else: text, color = "❄️ WEAKNESS", "#CC0000"
+
                 win_pct = round((1 / (1 + math.pow(10, (1500 - e_val)/400))) * 100, 1)
                 surface_ui[surf] = {
-                    "rating": rating,
+                    "rating": round(rating, 1),
                     "color": color,
                     "matches_tracked": elo_metrics[f"matches_{surf}"],
                     "text": text,
@@ -184,13 +229,13 @@ async def main():
     matches = []
     offset = 0
     while True:
-        res = supabase.table("historical_matches").select("winner_sackmann_id,loser_sackmann_id,surface,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced").order("match_date", desc=False).range(offset, offset + 999).execute()
+        res = supabase.table("historical_matches").select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced").order("match_date", desc=False).range(offset, offset + 999).execute()
         chunk = res.data or []
         matches.extend(chunk)
         if len(chunk) < 1000: break
         offset += 1000
     
-    log("🧮 Simuliere Elo & Aggregiere Advanced Stats...")
+    log("🧮 Simuliere Elo & Aggregiere Time-Series Advanced Stats...")
     engine = AlchemistEngine()
     for m in matches: engine.process_match(m)
     compiled_data = engine.compile_final_profiles()
