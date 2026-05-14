@@ -30,7 +30,7 @@ logger = logging.getLogger("UI_Sync_Engine")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Mass UI-Sync Engine (Backfill Protocol V1.0)...")
+log("⚡ Initialisiere Mass UI-Sync Engine (Backfill Protocol V1.1 - NULL FIX)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -255,6 +255,10 @@ class SurfaceIntelligence:
             elif elo_val >= 1400: return 5.0, "Average", "#F0C808"
             else: return 3.5, "❄️ Weakness", "#CC0000"
 
+        # 🚀 SOTA FIX: Fallback, falls das Dict nicht die Keys besitzt
+        if not isinstance(elo_metrics, dict): elo_metrics = {}
+        if not isinstance(sackmann_metrics, dict): sackmann_metrics = {}
+
         for surf in ['hard', 'clay', 'grass']:
             elo_val = elo_metrics.get(surf, 1500)
             rating, text, color = get_rating_info(elo_val)
@@ -382,8 +386,6 @@ async def run_sync():
     
     updated_count = 0
     
-    # Da 2000+ API calls an die History DB dauern können,
-    # verarbeiten wir sie in kleinen Chunks, um Timeout zu verhindern.
     chunk_size = 50
     for i in range(0, len(players), chunk_size):
         chunk = players[i:i+chunk_size]
@@ -396,11 +398,12 @@ async def run_sync():
             
             if not last_name: continue
             
-            # 1. Berechne neues Surface Rating (aus Elo)
             p_skills = skills_map.get(pid, {})
-            elo_metrics = p_skills.get('elo_metrics', {})
-            sackmann_metrics = p_skills.get('sackmann_metrics', {})
+            # 🚀 SOTA FIX: Sichere Fallbacks
+            elo_metrics = p_skills.get('elo_metrics') or {}
+            sackmann_metrics = p_skills.get('sackmann_metrics') or {}
             
+            # 1. Berechne neues Surface Rating (aus Elo)
             new_surface_profile = SurfaceIntelligence.compute_player_surface_profile(elo_metrics, sackmann_metrics)
             
             # 2. Berechne neues Form Rating (Historie)
