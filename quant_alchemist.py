@@ -296,7 +296,7 @@ class AlchemistEngine:
 
 
 async def main():
-    log("🌊 Lade 135.000+ Matches aus dem Data Lake...")
+    log("🌊 Lade 250.000+ Matches (ATP & WTA) aus dem Data Lake...")
     matches = []
     offset = 0
     while True:
@@ -314,7 +314,7 @@ async def main():
     db_players = []
     offset = 0
     while True:
-        res = supabase.table("players").select("id, sackmann_id, first_name, last_name").not_.is_("sackmann_id", "null").range(offset, offset + 999).execute()
+        res = supabase.table("players").select("id, sackmann_id, first_name, last_name, tour").not_.is_("sackmann_id", "null").range(offset, offset + 999).execute()
         chunk = res.data or []
         db_players.extend(chunk)
         if len(chunk) < 1000: break
@@ -326,27 +326,48 @@ async def main():
         if sid:
             full_name = f"{p.get('first_name','')} {p.get('last_name','')}".strip().lower()
             last_name = str(p.get('last_name','')).strip().lower()
+            tour_prefix = str(p.get('tour', '')).lower().strip()
+            
+            # 🚀 SOTA FIX: Cross-Tour Collision Protection für Nachnamen
+            # Wir speichern den Namen + Tour ab, damit ein ATP "Gauff" nicht mit WTA "Gauff" kollidiert.
+            name_to_id[f"{tour_prefix}_{full_name}"] = sid
+            name_to_id[f"{tour_prefix}_{last_name}"] = sid
+            
+            # Fallback für volle Namen ohne Tour-Präfix
             name_to_id[full_name] = sid
-            name_to_id[last_name] = sid
 
     log("🌊 Injeziere Live-Scanner Matches (Games-to-Minutes)...")
     fourteen_days_ago = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
     # Hole auch den score aus der Live-Tabelle!
-    res_live = supabase.table("market_odds").select("player1_name, player2_name, match_time, created_at, score").gte("created_at", fourteen_days_ago).execute()
+    res_live = supabase.table("market_odds").select("player1_name, player2_name, match_time, created_at, score, tournament").gte("created_at", fourteen_days_ago).execute()
     
     for lm in (res_live.data or []):
         date_str = lm.get('match_time') or lm.get('created_at')
         m_date = parse_date(date_str)
         
-        # Berechne Minuten aus dem Score (Live Matches haben oft keine Punkte-Details, aber Sätze/Spiele)
+        # Berechne Minuten aus dem Score
         score_str = str(lm.get('score', ''))
         total_games = get_total_games(score_str)
-        # Ca. 4.5 Minuten pro gespieltem Game
         calc_minutes = int(total_games * 4.5) if total_games > 0 else 100
+        
+        # Bestimme die Tour anhand des Turniers, falls möglich, oder versuche ATP/WTA Fallbacks
+        tour_hint = "wta" if "WTA" in str(lm.get('tournament', '')).upper() else "atp"
         
         for p_col in ['player1_name', 'player2_name']:
             p_name = str(lm.get(p_col, '')).strip().lower()
-            sid = name_to_id.get(p_name)
+            
+            # Priorität 1: Exakter Name + Tour
+            sid = name_to_id.get(f"{tour_hint}_{p_name}")
+            
+            # Priorität 2: Voller Name
+            if not sid: sid = name_to_id.get(p_name)
+            
+            # Priorität 3: Nachname + Tour
+            if not sid:
+                last = p_name.split()[-1] if p_name.split() else ''
+                sid = name_to_id.get(f"{tour_hint}_{last}")
+                
+            # Priorität 4: Nur Nachname
             if not sid:
                 last = p_name.split()[-1] if p_name.split() else ''
                 sid = name_to_id.get(last)
