@@ -40,7 +40,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V209.00 - ULTIMATE GIL GROSS REASONING ENGINE - QUANT EDITION)...")
+log("🔌 Initialisiere Neural Scout (V210.00 - ULTIMATE DURABILITY & FATIGUE QUANT ENGINE)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -510,9 +510,6 @@ def is_suspicious_movement(old_o1: float, new_o1: float, old_o2: float, new_o2: 
 class MomentumV2Engine:  
     @staticmethod
     def calculate_rating(matches: List[Dict], player_name: str, max_matches: int = 15) -> Dict[str, Any]:
-        """
-        🚀 SOTA: Berechnet die Form basierend auf Live-Matches UND dem historischen Data Lake.
-        """
         if not matches: 
             return {"score": 6.5, "text": "Neutral (No Data)", "history_summary": "", "color_hex": "#808080"}
 
@@ -667,7 +664,7 @@ class MomentumV2Engine:
         }
 
 # =================================================================
-# 4. SURFACE INTELLIGENCE ENGINE (🚀 TRUE ELO UI SYNC)
+# 4. SURFACE INTELLIGENCE ENGINE
 # =================================================================
 class SurfaceIntelligence:
     @staticmethod
@@ -682,7 +679,6 @@ class SurfaceIntelligence:
     @staticmethod
     def compute_player_surface_profile(elo_metrics: Dict, sackmann_metrics: Dict) -> Dict[str, Any]:
         profile = {}
-        
         def get_rating_info(elo_val: float):
             if elo_val >= 1850: return 9.5, "🔥 SPECIALIST", "#FF00FF"
             elif elo_val >= 1700: return 8.0, "📈 Strong", "#3366FF"
@@ -693,7 +689,6 @@ class SurfaceIntelligence:
         for surf in ['hard', 'clay', 'grass']:
             elo_val = elo_metrics.get(surf, 1500)
             rating, text, color = get_rating_info(elo_val)
-
             expected_win_pct = round((1 / (1 + math.pow(10, (1500 - elo_val)/400))) * 100, 1)
 
             profile[surf] = {
@@ -708,12 +703,13 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. SOTA MARKOV CHAIN ENGINE
+# 5. SOTA MARKOV CHAIN ENGINE (WITH DURABILITY/FATIGUE PENALTY)
 # =================================================================
 class MarkovChainEngine:
     @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
                        bsi: float, styleA: str, styleB: str, 
+                       sackmannA: Dict, sackmannB: Dict,
                        iterations: int = 2500) -> Dict[str, Any]:
         
         def get_z_score(val, mean, std):
@@ -739,6 +735,23 @@ class MarkovChainEngine:
 
         p_A_wins_on_serve = base_serve_win_A - return_def_B
         p_B_wins_on_serve = base_serve_win_B - return_def_A
+
+        # 🚀 SOTA FIX: THE DURABILITY & FATIGUE PENALTY
+        # Wir berechnen die physische Erschöpfung (Drop-Off in Win%) basierend auf Acute Load und Durability Index
+        acuteA = sackmannA.get('fatigue', {}).get('acute_72h_minutes', 0)
+        durA = sackmannA.get('fatigue', {}).get('durability_index', 70)
+        fatigue_penalty_A = max(0, (acuteA - 150) / 100) * ((100 - durA) / 100) * 0.012
+
+        acuteB = sackmannB.get('fatigue', {}).get('acute_72h_minutes', 0)
+        durB = sackmannB.get('fatigue', {}).get('durability_index', 70)
+        fatigue_penalty_B = max(0, (acuteB - 150) / 100) * ((100 - durB) / 100) * 0.012
+
+        # Abzug auf den eigenen Aufschlag, Boost auf den gegnerischen Aufschlag (schlechterer Return)
+        p_A_wins_on_serve -= fatigue_penalty_A
+        p_B_wins_on_serve += (fatigue_penalty_A * 0.5)
+
+        p_B_wins_on_serve -= fatigue_penalty_B
+        p_A_wins_on_serve += (fatigue_penalty_B * 0.5)
 
         overall_A = s1.get('overall_rating', 50)
         overall_B = s2.get('overall_rating', 50)
@@ -995,15 +1008,10 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
 # 7. DATA FETCHING & ORACLE (API INTEGRATED + DATA LAKE)
 # =================================================================
 async def fetch_player_history_extended(player_last_name: str, limit: int = 20) -> List[Dict]:
-    """
-    🚀 SOTA: Kombiniert Live-Scanner Matches UND den historischen Data Lake für perfekte Form- und Surface-Analysen.
-    """
     try:
-        # 1. Hole Live Scanner Matches (mit Quoten)
         res_live = supabase.table("market_odds").select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament, ai_analysis_text").or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(limit).execute()
         live = res_live.data or []
 
-        # 2. Hole Data Lake Matches (Quant-Historie)
         res_hist = supabase.table("historical_matches").select("winner_name, loser_name, match_date, score, tourney_name, surface").or_(f"winner_name.ilike.%{player_last_name}%,loser_name.ilike.%{player_last_name}%").order("match_date", desc=True).limit(limit).execute()
         hist = res_hist.data or []
 
@@ -1343,7 +1351,8 @@ async def get_db_data():
                         'mental': to_float(entry.get('mental')),
                         'overall_rating': to_float(entry.get('overall_rating', 50)),
                         'elo_metrics': entry.get('elo_metrics', {}),
-                        'advanced_stats': entry.get('advanced_stats', {})
+                        'advanced_stats': entry.get('advanced_stats', {}),
+                        'sackmann_metrics': entry.get('sackmann_metrics', {})
                     }
                     
         return players or [], clean_skills, reports or [], tournaments or []
@@ -1581,7 +1590,7 @@ def format_skills(s: Dict) -> str:
     return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
 
 # 🚀 SOTA PROMPT ENGINEERING (THE ULTIMATE GIL GROSS ENGINE)
-async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record):
+async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record, sackmann1, sackmann2):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
     fatigueB = await get_advanced_load_analysis(await fetch_player_history_extended(p2['last_name'], 10))
     
@@ -1597,12 +1606,9 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     elo_A = s1.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
     elo_B = s2.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
     
-    # 🚀 NEU: EXTRACT GRANULAR RECENT SURFACE STATS
     def extract_stats_str(skills_obj, surf_val):
         adv = skills_obj.get('advanced_stats')
         if not adv or not isinstance(adv, dict): return "No recent granular stats."
-        
-        # Versuche zuerst Last 7, dann 1 Month, dann YTD, dann All Time
         for t_bucket in ['l7', '1m', 'ytd', 'all']:
             bucket_data = adv.get(t_bucket)
             if bucket_data and isinstance(bucket_data, dict):
@@ -1617,6 +1623,15 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available for Player A."
     scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available for Player B."
     
+    # 🚀 SOTA: Injiziere Acute Load & Durability Index ins Gehirn
+    acute1 = sackmann1.get('fatigue', {}).get('acute_72h_minutes', 0)
+    dur1 = sackmann1.get('fatigue', {}).get('durability_index', 70)
+    fatigue_str_A = f"{fatigueA} | Acute 72h Load: {acute1} mins | Durability Index: {dur1}/100"
+
+    acute2 = sackmann2.get('fatigue', {}).get('acute_72h_minutes', 0)
+    dur2 = sackmann2.get('fatigue', {}).get('durability_index', 70)
+    fatigue_str_B = f"{fatigueB} | Acute 72h Load: {acute2} mins | Durability Index: {dur2}/100"
+
     validCourtNotes = notes if notes else "No specific court physics or bounce data provided."
     
     aWins = mc_results['probA'] > mc_results['probB']
@@ -1636,7 +1651,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     else:
         convictionDirective = f"*** CONVICTION DIRECTIVE\nSolid edge ({finalProb_val:.1f}%). Detail the tactical mismatch confidently."
 
-    # 🚀 SOTA PROMPT FIX: Wir zwingen die KI, die Zahlen als Beweismittel zu nutzen!
     prompt = f"""
     You are Gil Gross, the ultimate elite tennis tactical analyst. 
     Your goal is to break down this matchup dynamically and mathematically. 
@@ -1654,7 +1668,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - True Surface Elo: {elo_A}
     - Recent Surface Stats: {recent_stats_A}
     - Form: {form1_data['text']}
-    - Fatigue: {fatigueA}
+    - Fatigue Profile: {fatigue_str_A}
     - Scout: {scoutA}
     
     Player B ({p2['last_name']}):
@@ -1662,7 +1676,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - True Surface Elo: {elo_B}
     - Recent Surface Stats: {recent_stats_B}
     - Form: {form2_data['text']}
-    - Fatigue: {fatigueB}
+    - Fatigue Profile: {fatigue_str_B}
     - Scout: {scoutB}
 
     Winner: {predictedMCWinner} (Model Prob: {finalProb})
@@ -1671,10 +1685,11 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     
     *** CRITICAL DIRECTIVES ***
     1. CITE THE ELO & STATS: You MUST seamlessly weave the 'True Surface Elo' and at least 1-2 specific 'Recent Surface Stats' (like Serve Win % or BP Conv) into your prose to prove your mathematical edge. DO NOT just list them, use them to justify the tactical breakdown.
-    2. TACTICAL PROSA: Explain HOW the court speed (BSI), weather, and the specific playstyle clash (e.g., Aggressive Baseliner vs Counter Puncher) dictate the match.
-    3. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats'.
-    4. Write a 200-250 word tactical breakdown. Make it sound like a sharp, professional podcast analysis.
-    5. ONLY RETURN JSON.
+    2. THE FATIGUE FACTOR: Evaluate the 'Acute 72h Load' against the 'Durability Index'. A low Durability Index combined with high Acute Load means a guaranteed physical drop-off. Explain how this affects their specific playstyle (e.g. lost depth on the backhand).
+    3. TACTICAL PROSA: Explain HOW the court speed (BSI), weather, and the specific playstyle clash dictate the match.
+    4. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats'.
+    5. Write a 200-250 word tactical breakdown. Make it sound like a sharp, professional podcast analysis.
+    6. ONLY RETURN JSON.
     
     OUTPUT JSON:
     {{
@@ -1799,7 +1814,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION 
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V209.00 (ULTIMATE GIL GROSS REASONING ENGINE) Starting...")
+    log(f"🚀 Neural Scout V210.00 (ULTIMATE DURABILITY ENGINE) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2127,6 +2142,9 @@ async def run_pipeline():
 
                     empirical_ou = calculate_empirical_ou(p1_history, p2_history)
 
+                    sackmannA = s1.get('sackmann_metrics', {})
+                    sackmannB = s2.get('sackmann_metrics', {})
+
                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'), empirical_ou=empirical_ou)
                     
                     styleA = p1_obj.get('play_style', '')
@@ -2136,6 +2154,7 @@ async def run_pipeline():
                         s1=s1, s2=s2,
                         formA=p1_form_v2['score'], formB=p2_form_v2['score'],
                         bsi=bsi, styleA=styleA, styleB=styleB,
+                        sackmannA=sackmannA, sackmannB=sackmannB,
                         iterations=2500
                     )
                     
@@ -2167,7 +2186,7 @@ async def run_pipeline():
 
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
-                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record
+                        p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record, sackmannA, sackmannB
                     )
                     
                     prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'], pinnacle_prob_a)
