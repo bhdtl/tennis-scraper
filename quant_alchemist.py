@@ -50,30 +50,30 @@ def calc_expected_score(rating_a: float, rating_b: float) -> float:
 def update_elo(old_rating: float, k_factor: float, actual_score: float, expected_score: float) -> float:
     return old_rating + k_factor * (actual_score - expected_score)
 
+# 🚀 SOTA FIX: Zählt nur Matches, die auch echte Stats haben (verhindert Dilution durch Live-Matches)
 def aggregate_stats(matches_list: List[Dict]) -> Optional[Dict]:
-    count = len(matches_list)
+    valid_matches = [m for m in matches_list if m.get('svpt', 0) > 0]
+    count = len(valid_matches)
     if count == 0: return None
     
-    aces = sum(m['aces'] for m in matches_list)
-    dfs = sum(m['dfs'] for m in matches_list)
-    svpt = sum(m['svpt'] for m in matches_list)
-    first_in = sum(m['1stin'] for m in matches_list)
-    first_won = sum(m['1stwon'] for m in matches_list)
-    second_won = sum(m['2ndwon'] for m in matches_list)
-    bpsaved = sum(m['bpsaved'] for m in matches_list)
-    bpfaced = sum(m['bpfaced'] for m in matches_list)
-    ret_pts = sum(m['ret_pts'] for m in matches_list)
-    ret_won = sum(m['ret_won'] for m in matches_list)
-    bp_opps = sum(m['bp_opps'] for m in matches_list)
-    bp_conv = sum(m['bp_conv'] for m in matches_list)
-    
-    if svpt == 0: return None
+    aces = sum(m['aces'] for m in valid_matches)
+    dfs = sum(m['dfs'] for m in valid_matches)
+    svpt = sum(m['svpt'] for m in valid_matches)
+    first_in = sum(m['1stin'] for m in valid_matches)
+    first_won = sum(m['1stwon'] for m in valid_matches)
+    second_won = sum(m['2ndwon'] for m in valid_matches)
+    bpsaved = sum(m['bpsaved'] for m in valid_matches)
+    bpfaced = sum(m['bpfaced'] for m in valid_matches)
+    ret_pts = sum(m['ret_pts'] for m in valid_matches)
+    ret_won = sum(m['ret_won'] for m in valid_matches)
+    bp_opps = sum(m['bp_opps'] for m in valid_matches)
+    bp_conv = sum(m['bp_conv'] for m in valid_matches)
     
     return {
         "matches_with_stats": count,
         "aces_per_match": round(aces / count, 1),
         "df_per_match": round(dfs / count, 1),
-        "first_in_pct": round((first_in / svpt) * 100, 1),
+        "first_in_pct": round((first_in / svpt) * 100, 1) if svpt > 0 else 0,
         "first_win_pct": round((first_won / first_in) * 100, 1) if first_in > 0 else 0,
         "second_win_pct": round((second_won / (svpt - first_in)) * 100, 1) if (svpt - first_in) > 0 else 0,
         "bp_saved_pct": round((bpsaved / bpfaced) * 100, 1) if bpfaced > 0 else 0,
@@ -191,9 +191,9 @@ class AlchemistEngine:
                 l7_matches = s_matches[:7]
                 adv_stats["l7"][surf_key] = aggregate_stats(l7_matches)
 
-            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT BERECHNUNG
+            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT BERECHNUNG (Nimmt auch Live-Matches)
             recent_14d_matches = [m for m in sorted_stats if (now - m['date']).days <= 14]
-            # Wir nehmen statistisch ~100 Minuten pro Match an, da die CSV keine exakte Zeit hat
+            # Wir nehmen statistisch ~100 Minuten pro Match an
             estimated_minutes = len(recent_14d_matches) * 100
 
             # UI Surface Ratings (SOTA Lineare Interpolation)
@@ -201,7 +201,6 @@ class AlchemistEngine:
             for surf in ['hard', 'clay', 'grass']:
                 e_val = elo_metrics[surf]
                 
-                # Knallharte Interpolation: 1400 -> 1.0, 2100 -> 10.0
                 rating = ((e_val - 1400) / 700.0) * 9.0 + 1.0
                 rating = max(1.0, min(10.0, rating))
                 
@@ -248,17 +247,54 @@ async def main():
     log("🧮 Simuliere Elo & Aggregiere Time-Series Advanced Stats & Fatigue...")
     engine = AlchemistEngine()
     for m in matches: engine.process_match(m)
-    compiled_data = engine.compile_final_profiles()
 
-    log("💾 Lade Supabase UUIDs...")
+    log("💾 Lade Supabase UUIDs & Player Names...")
     db_players = []
     offset = 0
     while True:
-        res = supabase.table("players").select("id, sackmann_id").not_.is_("sackmann_id", "null").range(offset, offset + 999).execute()
+        res = supabase.table("players").select("id, sackmann_id, first_name, last_name").not_.is_("sackmann_id", "null").range(offset, offset + 999).execute()
         chunk = res.data or []
         db_players.extend(chunk)
         if len(chunk) < 1000: break
         offset += 1000
+
+    # 🚀 SOTA FIX: Namens-Mapping für die Live-Fatigue Injection
+    name_to_id = {}
+    for p in db_players:
+        sid = p.get('sackmann_id')
+        if sid:
+            full_name = f"{p.get('first_name','')} {p.get('last_name','')}".strip().lower()
+            last_name = str(p.get('last_name','')).strip().lower()
+            name_to_id[full_name] = sid
+            name_to_id[last_name] = sid
+
+    log("🌊 Lade aktuelle Scanner-Matches für exaktes Fatigue-Tracking...")
+    fourteen_days_ago = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
+    res_live = supabase.table("market_odds").select("player1_name, player2_name, match_time, created_at").gte("created_at", fourteen_days_ago).execute()
+    
+    for lm in (res_live.data or []):
+        date_str = lm.get('match_time') or lm.get('created_at')
+        m_date = parse_date(date_str)
+        
+        for p_col in ['player1_name', 'player2_name']:
+            p_name = str(lm.get(p_col, '')).strip().lower()
+            sid = name_to_id.get(p_name)
+            if not sid:
+                last = p_name.split()[-1] if p_name.split() else ''
+                sid = name_to_id.get(last)
+                
+            if sid:
+                # Füge das Live-Match als Geister-Statistik hinzu (nur für Minuten-Zählung)
+                engine.init_player(sid)
+                engine.players[sid]["raw_stats"].append({
+                    "date": m_date,
+                    "surface": "hard", 
+                    "aces": 0, "dfs": 0, "svpt": 0, "1stin": 0, "1stwon": 0, "2ndwon": 0,
+                    "bpsaved": 0, "bpfaced": 0, "ret_pts": 0, "ret_won": 0, "bp_opps": 0, "bp_conv": 0
+                })
+
+    log("🧮 Kompiliere endgültige Profile...")
+    compiled_data = engine.compile_final_profiles()
 
     log("🚀 Injeziere Matrix in Supabase (Player Skills & Players UI)...")
     success = 0
@@ -271,7 +307,7 @@ async def main():
                 supabase.table("player_skills").update({
                     "elo_metrics": d["elo_metrics"],
                     "advanced_stats": d["advanced_stats"],
-                    "sackmann_metrics": d["sackmann_metrics"], # Das injiziert die Fatigue Minuten in die DB!
+                    "sackmann_metrics": d["sackmann_metrics"], 
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }).eq("player_id", p["id"]).execute()
                 
@@ -282,7 +318,7 @@ async def main():
                 success += 1
             except: pass
             
-    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken (inkl. Load Management)!")
+    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken (inkl. Live-Load Management)!")
 
 if __name__ == "__main__":
     asyncio.run(main())
