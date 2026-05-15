@@ -191,6 +191,11 @@ class AlchemistEngine:
                 l7_matches = s_matches[:7]
                 adv_stats["l7"][surf_key] = aggregate_stats(l7_matches)
 
+            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT BERECHNUNG
+            recent_14d_matches = [m for m in sorted_stats if (now - m['date']).days <= 14]
+            # Wir nehmen statistisch ~100 Minuten pro Match an, da die CSV keine exakte Zeit hat
+            estimated_minutes = len(recent_14d_matches) * 100
+
             # UI Surface Ratings (SOTA Lineare Interpolation)
             surface_ui = {}
             for surf in ['hard', 'clay', 'grass']:
@@ -219,7 +224,12 @@ class AlchemistEngine:
             final_data[p_id] = {
                 "elo_metrics": elo_metrics,
                 "advanced_stats": adv_stats,
-                "surface_ratings": surface_ui
+                "surface_ratings": surface_ui,
+                "sackmann_metrics": {
+                    "fatigue": {
+                        "recent_14d_minutes": estimated_minutes
+                    }
+                }
             }
         return final_data
 
@@ -235,7 +245,7 @@ async def main():
         if len(chunk) < 1000: break
         offset += 1000
     
-    log("🧮 Simuliere Elo & Aggregiere Time-Series Advanced Stats...")
+    log("🧮 Simuliere Elo & Aggregiere Time-Series Advanced Stats & Fatigue...")
     engine = AlchemistEngine()
     for m in matches: engine.process_match(m)
     compiled_data = engine.compile_final_profiles()
@@ -261,8 +271,10 @@ async def main():
                 supabase.table("player_skills").update({
                     "elo_metrics": d["elo_metrics"],
                     "advanced_stats": d["advanced_stats"],
+                    "sackmann_metrics": d["sackmann_metrics"], # Das injiziert die Fatigue Minuten in die DB!
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 }).eq("player_id", p["id"]).execute()
+                
                 # Update UI (Frontend Fix)
                 supabase.table("players").update({
                     "surface_ratings": d["surface_ratings"]
@@ -270,7 +282,7 @@ async def main():
                 success += 1
             except: pass
             
-    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken!")
+    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken (inkl. Load Management)!")
 
 if __name__ == "__main__":
     asyncio.run(main())
