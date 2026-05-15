@@ -191,10 +191,25 @@ class AlchemistEngine:
                 l7_matches = s_matches[:7]
                 adv_stats["l7"][surf_key] = aggregate_stats(l7_matches)
 
-            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT BERECHNUNG (Nimmt auch Live-Matches)
+            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT (ACWR & Durability Index)
             recent_14d_matches = [m for m in sorted_stats if (now - m['date']).days <= 14]
-            # Wir nehmen statistisch ~100 Minuten pro Match an
-            estimated_minutes = len(recent_14d_matches) * 100
+            recent_72h_matches = [m for m in sorted_stats if (now - m['date']).total_seconds() <= (72 * 3600)]
+            
+            # Basis-Minuten (~100 pro Match)
+            base_minutes = len(recent_14d_matches) * 100
+            acute_minutes = len(recent_72h_matches) * 100
+            
+            # ACWR Multiplikator: Wenn ein Spieler einen extremen Spike in 72h hat
+            fatigue_multiplier = 1.0
+            if acute_minutes >= 200: # Mehr als ~2 Matches in 3 Tagen
+                fatigue_multiplier = 1.5 + ((acute_minutes - 200) / 100.0) * 0.25
+                
+            estimated_minutes = int(base_minutes * fatigue_multiplier)
+            
+            # 🧬 Durability Index (Robustheits-Faktor V1)
+            # Spieler mit massiver Karriere-Erfahrung (viel Volume) haben in der Regel eine bessere Basis-Robustheit
+            total_history = data["matches_played"]["overall"]
+            durability_index = round(min(95.0, max(40.0, 55.0 + (total_history / 25.0))), 1)
 
             # UI Surface Ratings (SOTA Lineare Interpolation)
             surface_ui = {}
@@ -226,7 +241,9 @@ class AlchemistEngine:
                 "surface_ratings": surface_ui,
                 "sackmann_metrics": {
                     "fatigue": {
-                        "recent_14d_minutes": estimated_minutes
+                        "recent_14d_minutes": estimated_minutes,
+                        "acute_72h_minutes": acute_minutes,
+                        "durability_index": durability_index
                     }
                 }
             }
