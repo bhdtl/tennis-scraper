@@ -50,7 +50,6 @@ def calc_expected_score(rating_a: float, rating_b: float) -> float:
 def update_elo(old_rating: float, k_factor: float, actual_score: float, expected_score: float) -> float:
     return old_rating + k_factor * (actual_score - expected_score)
 
-# 🚀 SOTA FIX: Zählt nur Matches, die auch echte Stats haben (verhindert Dilution durch Live-Matches)
 def aggregate_stats(matches_list: List[Dict]) -> Optional[Dict]:
     valid_matches = [m for m in matches_list if m.get('svpt', 0) > 0]
     count = len(valid_matches)
@@ -91,7 +90,11 @@ class AlchemistEngine:
             self.players[p_id] = {
                 "elo": {"overall": 1500.0, "hard": 1500.0, "clay": 1500.0, "grass": 1500.0},
                 "matches_played": {"overall": 0, "hard": 0, "clay": 0, "grass": 0},
-                "raw_stats": [] 
+                "raw_stats": [],
+                # 🚀 SOTA: "Time Machine" für Durability Backtesting
+                "history_q": [], 
+                "overall_tracking": {"played": 0, "won": 0},
+                "fatigue_tracking": {"played": 0, "won": 0}
             }
 
     def process_match(self, row: Dict):
@@ -105,6 +108,34 @@ class AlchemistEngine:
         raw_surf = str(row.get('surface', 'hard')).lower()
         surf = raw_surf if raw_surf in ['hard', 'clay', 'grass'] else 'hard'
         m_date = parse_date(row.get('match_date'))
+
+        # 🚀 SOTA: DURABILITY TRACKING (Before updating Elo)
+        # Berechne die Ermüdung BEIDER Spieler exakt an diesem Tag in der Vergangenheit
+        def check_fatigue_state(p_id):
+            # Bereinige die Queue von Matches, die älter als 14 Tage sind
+            self.players[p_id]["history_q"] = [d for d in self.players[p_id]["history_q"] if (m_date - d).days <= 14]
+            acute_mins = sum(100 for d in self.players[p_id]["history_q"] if (m_date - d).days <= 3)
+            chronic_mins = sum(100 for d in self.players[p_id]["history_q"])
+            return acute_mins >= 200 or chronic_mins >= 600
+
+        w_is_fatigued = check_fatigue_state(w_id)
+        l_is_fatigued = check_fatigue_state(l_id)
+
+        # Globale Stats updaten
+        self.players[w_id]["overall_tracking"]["played"] += 1
+        self.players[w_id]["overall_tracking"]["won"] += 1
+        self.players[l_id]["overall_tracking"]["played"] += 1
+
+        # Fatigue Stats updaten (Die DNA-Analyse)
+        if w_is_fatigued:
+            self.players[w_id]["fatigue_tracking"]["played"] += 1
+            self.players[w_id]["fatigue_tracking"]["won"] += 1
+        if l_is_fatigued:
+            self.players[l_id]["fatigue_tracking"]["played"] += 1
+
+        # Füge aktuelles Match in die Queue ein
+        self.players[w_id]["history_q"].append(m_date)
+        self.players[l_id]["history_q"].append(m_date)
 
         # 1. ELO CALCULATION
         kw_overall = calculate_k_factor(self.players[w_id]["matches_played"]["overall"])
@@ -128,7 +159,7 @@ class AlchemistEngine:
         # 2. TIME-SERIES STATS COLLECTION
         def extract_stats(p_id, prefix, opp_prefix):
             svpt = to_int(row.get(f'{prefix}svpt'))
-            if svpt == 0: return # Skip missing stats
+            if svpt == 0: return 
             
             opp_svpt = to_int(row.get(f'{opp_prefix}svpt'))
             opp_1stwon = to_int(row.get(f'{opp_prefix}1stwon'))
@@ -179,43 +210,48 @@ class AlchemistEngine:
             for surf_key in ["overall", "hard", "clay", "grass"]:
                 s_matches = sorted_stats if surf_key == "overall" else [m for m in sorted_stats if m['surface'] == surf_key]
                 
-                # ALL
                 adv_stats["all"][surf_key] = aggregate_stats(s_matches)
-                # YTD
                 ytd_matches = [m for m in s_matches if m['date'].year == current_year]
                 adv_stats["ytd"][surf_key] = aggregate_stats(ytd_matches)
-                # 1M
                 m1_matches = [m for m in s_matches if m['date'] >= thirty_days_ago]
                 adv_stats["1m"][surf_key] = aggregate_stats(m1_matches)
-                # L7 (Die letzten 7 dieses Belags)
                 l7_matches = s_matches[:7]
                 adv_stats["l7"][surf_key] = aggregate_stats(l7_matches)
 
-            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT (ACWR & Durability Index)
-            recent_14d_matches = [m for m in sorted_stats if (now - m['date']).days <= 14]
-            recent_72h_matches = [m for m in sorted_stats if (now - m['date']).total_seconds() <= (72 * 3600)]
+            # 🚀 SOTA: FATIGUE / LOAD MANAGEMENT (ACWR)
+            # Nutzt die Queue (History_q), um die Live-Minuten der letzten Tage zu ziehen
+            live_history = [d for d in data["history_q"] if (now - d).days <= 14]
+            acute_minutes = sum(100 for d in live_history if (now - d).total_seconds() <= (72 * 3600))
+            chronic_minutes = sum(100 for d in live_history)
             
-            # Basis-Minuten (~100 pro Match)
-            base_minutes = len(recent_14d_matches) * 100
-            acute_minutes = len(recent_72h_matches) * 100
-            
-            # ACWR Multiplikator: Wenn ein Spieler einen extremen Spike in 72h hat
             fatigue_multiplier = 1.0
-            if acute_minutes >= 200: # Mehr als ~2 Matches in 3 Tagen
+            if acute_minutes >= 200: # ACWR Spike Alarm!
                 fatigue_multiplier = 1.5 + ((acute_minutes - 200) / 100.0) * 0.25
                 
-            estimated_minutes = int(base_minutes * fatigue_multiplier)
+            estimated_minutes = int(chronic_minutes * fatigue_multiplier)
             
-            # 🧬 Durability Index (Robustheits-Faktor V1)
-            # Spieler mit massiver Karriere-Erfahrung (viel Volume) haben in der Regel eine bessere Basis-Robustheit
-            total_history = data["matches_played"]["overall"]
-            durability_index = round(min(95.0, max(40.0, 55.0 + (total_history / 25.0))), 1)
+            # 🧬 THE DURABILITY INDEX (Bayesian Smoothed Win-Rate Drop-off)
+            o_played = data["overall_tracking"]["played"]
+            o_won = data["overall_tracking"]["won"]
+            f_played = data["fatigue_tracking"]["played"]
+            f_won = data["fatigue_tracking"]["won"]
+
+            # Laplace Smoothing (Schützt junge Spieler vor extremen Werten)
+            base_win_rate = (o_won + 5) / (o_played + 10)
+            # Ziehe die Fatigue-Winrate leicht Richtung Base-Winrate
+            fatigue_win_rate = (f_won + (base_win_rate * 5)) / (f_played + 5)
+
+            # Performance Drop-Off (Positiv = Spieler spielt schlechter wenn müde)
+            drop_off = base_win_rate - fatigue_win_rate
+
+            # Skalierung auf 0-100. 
+            # 0% Drop = 80 Rating. -5% Drop (Spielt besser) = 95 Rating. 15% Drop = 35 Rating.
+            durability_index = round(max(10.0, min(99.0, 80.0 - (drop_off * 300))))
 
             # UI Surface Ratings (SOTA Lineare Interpolation)
             surface_ui = {}
             for surf in ['hard', 'clay', 'grass']:
                 e_val = elo_metrics[surf]
-                
                 rating = ((e_val - 1400) / 700.0) * 9.0 + 1.0
                 rating = max(1.0, min(10.0, rating))
                 
@@ -261,7 +297,7 @@ async def main():
         if len(chunk) < 1000: break
         offset += 1000
     
-    log("🧮 Simuliere Elo & Aggregiere Time-Series Advanced Stats & Fatigue...")
+    log("🧮 Simuliere Elo, Advanced Stats & Backteste Durability Index...")
     engine = AlchemistEngine()
     for m in matches: engine.process_match(m)
 
@@ -275,7 +311,6 @@ async def main():
         if len(chunk) < 1000: break
         offset += 1000
 
-    # 🚀 SOTA FIX: Namens-Mapping für die Live-Fatigue Injection
     name_to_id = {}
     for p in db_players:
         sid = p.get('sackmann_id')
@@ -285,7 +320,7 @@ async def main():
             name_to_id[full_name] = sid
             name_to_id[last_name] = sid
 
-    log("🌊 Lade aktuelle Scanner-Matches für exaktes Fatigue-Tracking...")
+    log("🌊 Injeziere Live-Scanner Matches als Acute-Fatigue-Data...")
     fourteen_days_ago = (datetime.now(timezone.utc) - timedelta(days=15)).isoformat()
     res_live = supabase.table("market_odds").select("player1_name, player2_name, match_time, created_at").gte("created_at", fourteen_days_ago).execute()
     
@@ -301,16 +336,11 @@ async def main():
                 sid = name_to_id.get(last)
                 
             if sid:
-                # Füge das Live-Match als Geister-Statistik hinzu (nur für Minuten-Zählung)
                 engine.init_player(sid)
-                engine.players[sid]["raw_stats"].append({
-                    "date": m_date,
-                    "surface": "hard", 
-                    "aces": 0, "dfs": 0, "svpt": 0, "1stin": 0, "1stwon": 0, "2ndwon": 0,
-                    "bpsaved": 0, "bpfaced": 0, "ret_pts": 0, "ret_won": 0, "bp_opps": 0, "bp_conv": 0
-                })
+                # Nur Zeitstempel hinzufügen, um Minuten zu pushen ohne Averages zu verwässern
+                engine.players[sid]["history_q"].append(m_date)
 
-    log("🧮 Kompiliere endgültige Profile...")
+    log("🧮 Kompiliere endgültige Quant-Profile...")
     compiled_data = engine.compile_final_profiles()
 
     log("🚀 Injeziere Matrix in Supabase (Player Skills & Players UI)...")
@@ -335,7 +365,7 @@ async def main():
                 success += 1
             except: pass
             
-    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken (inkl. Live-Load Management)!")
+    log(f"🏁 ALCHEMIST FINISHED. {success} Spieler besitzen nun Gott-Level-Statistiken (inkl. Durability Index)!")
 
 if __name__ == "__main__":
     asyncio.run(main())
