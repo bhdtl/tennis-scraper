@@ -40,7 +40,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V208.00 - ULTIMATE GIL GROSS REASONING ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V209.00 - ULTIMATE GIL GROSS REASONING ENGINE - QUANT EDITION)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -1636,6 +1636,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     else:
         convictionDirective = f"*** CONVICTION DIRECTIVE\nSolid edge ({finalProb_val:.1f}%). Detail the tactical mismatch confidently."
 
+    # 🚀 SOTA PROMPT FIX: Wir zwingen die KI, die Zahlen als Beweismittel zu nutzen!
     prompt = f"""
     You are Gil Gross, the ultimate elite tennis tactical analyst. 
     Your goal is to break down this matchup dynamically and mathematically. 
@@ -1669,9 +1670,9 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     {convictionDirective}
     
     *** CRITICAL DIRECTIVES ***
-    1. NO NUMBERS OR PERCENTAGES IN TEXT. Do not recite the stats, USE THEM to reason.
+    1. CITE THE ELO & STATS: You MUST seamlessly weave the 'True Surface Elo' and at least 1-2 specific 'Recent Surface Stats' (like Serve Win % or BP Conv) into your prose to prove your mathematical edge. DO NOT just list them, use them to justify the tactical breakdown.
     2. TACTICAL PROSA: Explain HOW the court speed (BSI), weather, and the specific playstyle clash (e.g., Aggressive Baseliner vs Counter Puncher) dictate the match.
-    3. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats' (Serve Win % vs Return Win %).
+    3. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats'.
     4. Write a 200-250 word tactical breakdown. Make it sound like a sharp, professional podcast analysis.
     5. ONLY RETURN JSON.
     
@@ -1798,7 +1799,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION 
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V208.00 (ULTIMATE GIL GROSS REASONING ENGINE) Starting...")
+    log(f"🚀 Neural Scout V209.00 (ULTIMATE GIL GROSS REASONING ENGINE) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
