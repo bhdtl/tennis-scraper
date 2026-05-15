@@ -29,7 +29,7 @@ logger = logging.getLogger("Sackmann_DataLake")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Data Lake Engine (Raw Extraction V2.1 - POSTGRES CASE FIX)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core ATP & WTA V3.0)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -62,8 +62,11 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
             if res.status_code == 200:
                 reader = csv.DictReader(io.StringIO(res.text))
                 return list(reader)
+            elif res.status_code == 404:
+                # 404 ist normal, wenn z.B. eine Quali-CSV für ein bestimmtes Jahr nicht existiert
+                log(f"ℹ️ Datei nicht gefunden (404), überspringe: {url.split('/')[-1]}")
             else:
-                log(f"⚠️ GitHub Request fehlgeschlagen: {res.status_code}")
+                log(f"⚠️ GitHub Request fehlgeschlagen: {res.status_code} für {url}")
         except Exception as e:
             log(f"❌ Netzwerkfehler beim Laden der CSV: {e}")
     return []
@@ -77,15 +80,22 @@ def to_float(val: Any) -> Optional[float]:
     except: return None
 
 # =================================================================
-# 3. PHASE 1: THE PLAYER MAPPER
+# 3. PHASE 1: THE PLAYER MAPPER (DUAL-CORE)
 # =================================================================
 async def sync_player_ids():
-    log("🔍 PHASE 1: Synchronisiere interne Spieler mit Sackmann IDs...")
+    log("🔍 PHASE 1: Synchronisiere interne Spieler mit Sackmann IDs (ATP & WTA)...")
     
-    players_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
-    sackmann_players = await fetch_csv_from_github(players_url)
+    # 🚀 SOTA: Fetch BOTH ATP and WTA player lists
+    atp_players_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
+    wta_players_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_players.csv"
+    
+    atp_players = await fetch_csv_from_github(atp_players_url)
+    wta_players = await fetch_csv_from_github(wta_players_url)
+    
+    sackmann_players = atp_players + wta_players
+    
     if not sackmann_players:
-        log("❌ Konnte Sackmann Player File nicht laden.")
+        log("❌ Konnte Sackmann Player Files nicht laden.")
         return
 
     db_players = []
@@ -99,7 +109,7 @@ async def sync_player_ids():
         offset += limit
         
     players_to_match = [p for p in db_players if p.get('sackmann_id') is None]
-    log(f"🎯 {len(players_to_match)} Spieler ohne Sackmann-ID. Starte Fuzzy Matching...")
+    log(f"🎯 {len(players_to_match)} Spieler ohne Sackmann-ID im System. Starte Fuzzy Matching...")
 
     updates = []
     for db_p in players_to_match:
@@ -115,7 +125,7 @@ async def sync_player_ids():
             score = get_similarity(db_full, sp_full)
             if score > best_score:
                 best_score = score
-                best_match_id = sp['player_id']
+                best_match_id = sp.get('player_id')
             if score == 1.0: break 
                 
         if best_score > 0.88 and best_match_id:
@@ -135,117 +145,137 @@ async def sync_player_ids():
         log("✅ Keine neuen Spieler-Matches gefunden.")
 
 # =================================================================
-# 4. PHASE 2: THE OMNI-DATA INGESTION (All fields!)
+# 4. PHASE 2: THE OMNI-DATA INGESTION (ATP + WTA)
 # =================================================================
 async def build_historical_lake():
-    log("🌊 PHASE 2: Extrahiere ALLE Rohdaten aus GitHub in Supabase...")
-    base_url = "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/"
+    log("🌊 PHASE 2: Extrahiere ALLE Rohdaten aus GitHub (ATP & WTA) in Supabase...")
+    
+    tours = [
+        {"prefix": "atp", "repo": "tennis_atp", "label": "ATP"},
+        {"prefix": "wta", "repo": "tennis_wta", "label": "WTA"}
+    ]
     
     # Wir laden die volle moderne Ära. 
     years = [str(y) for y in range(2015, 2027)]
     total_inserted = 0
     
-    for y in years:
-        log(f"📡 Verarbeite Jahr {y}...")
-        t_url = f"{base_url}atp_matches_{y}.csv"
-        c_url = f"{base_url}atp_matches_qual_chall_{y}.csv"
-        f_url = f"{base_url}atp_matches_futures_{y}.csv"
+    for tour_info in tours:
+        prefix = tour_info["prefix"]
+        repo = tour_info["repo"]
+        tour_label = tour_info["label"]
+        base_url = f"https://raw.githubusercontent.com/JeffSackmann/{repo}/master/"
         
-        t_rows = await fetch_csv_from_github(t_url)
-        c_rows = await fetch_csv_from_github(c_url)
-        f_rows = await fetch_csv_from_github(f_url) 
+        log(f"=== Starte Download Pipeline für {tour_label} ===")
         
-        year_total = t_rows + c_rows + f_rows
-        if not year_total: continue
-        
-        db_inserts = []
-        for m in year_total:
-            try:
-                w_id = to_int(m.get('winner_id'))
-                l_id = to_int(m.get('loser_id'))
-                m_num = to_int(m.get('match_num'))
-                t_id = m.get('tourney_id')
-                
-                if not w_id or not l_id or not t_id or m_num is None: continue
-                
-                raw_date = m.get('tourney_date', '')
-                if len(raw_date) == 8:
-                    fmt_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
-                else:
-                    fmt_date = "2015-01-01"
-                
-                db_inserts.append({
-                    "tourney_id": t_id,
-                    "tourney_name": m.get('tourney_name'),
-                    "surface": m.get('surface'),
-                    "draw_size": to_int(m.get('draw_size')),
-                    "tourney_level": m.get('tourney_level'),
-                    "match_date": fmt_date,
-                    "match_num": m_num,
-                    
-                    "winner_sackmann_id": w_id,
-                    "winner_seed": m.get('winner_seed'),
-                    "winner_entry": m.get('winner_entry'),
-                    "winner_name": m.get('winner_name'),
-                    "winner_hand": m.get('winner_hand'),
-                    "winner_ht": to_int(m.get('winner_ht')),
-                    "winner_ioc": m.get('winner_ioc'),
-                    "winner_age": to_float(m.get('winner_age')),
-                    "winner_rank": to_int(m.get('winner_rank')),
-                    "winner_rank_points": to_int(m.get('winner_rank_points')),
-                    
-                    "loser_sackmann_id": l_id,
-                    "loser_seed": m.get('loser_seed'),
-                    "loser_entry": m.get('loser_entry'),
-                    "loser_name": m.get('loser_name'),
-                    "loser_hand": m.get('loser_hand'),
-                    "loser_ht": to_int(m.get('loser_ht')),
-                    "loser_ioc": m.get('loser_ioc'),
-                    "loser_age": to_float(m.get('loser_age')),
-                    "loser_rank": to_int(m.get('loser_rank')),
-                    "loser_rank_points": to_int(m.get('loser_rank_points')),
-                    
-                    "score": m.get('score'),
-                    "best_of": to_int(m.get('best_of')),
-                    "round": m.get('round'),
-                    "minutes": to_int(m.get('minutes')),
-                    
-                    # 🚀 THE FIX: Alle Spalten-Keys strikt in Kleinbuchstaben, passend zu PostgreSQL!
-                    "w_ace": to_int(m.get('w_ace')),
-                    "w_df": to_int(m.get('w_df')),
-                    "w_svpt": to_int(m.get('w_svpt')),
-                    "w_1stin": to_int(m.get('w_1stIn')),     # Vorher: w_1stIn
-                    "w_1stwon": to_int(m.get('w_1stWon')),   # Vorher: w_1stWon
-                    "w_2ndwon": to_int(m.get('w_2ndWon')),   # Vorher: w_2ndWon
-                    "w_svgms": to_int(m.get('w_SvGms')),     # Vorher: w_SvGms
-                    "w_bpsaved": to_int(m.get('w_bpSaved')), # Vorher: w_bpSaved
-                    "w_bpfaced": to_int(m.get('w_bpFaced')), # Vorher: w_bpFaced
-                    
-                    "l_ace": to_int(m.get('l_ace')),
-                    "l_df": to_int(m.get('l_df')),
-                    "l_svpt": to_int(m.get('l_svpt')),
-                    "l_1stin": to_int(m.get('l_1stIn')),     # Vorher: l_1stIn
-                    "l_1stwon": to_int(m.get('l_1stWon')),   # Vorher: l_1stWon
-                    "l_2ndwon": to_int(m.get('l_2ndWon')),   # Vorher: l_2ndWon
-                    "l_svgms": to_int(m.get('l_SvGms')),     # Vorher: l_SvGms
-                    "l_bpsaved": to_int(m.get('l_bpSaved')), # Vorher: l_bpSaved
-                    "l_bpfaced": to_int(m.get('l_bpFaced'))  # Vorher: l_bpFaced
-                })
-            except Exception as loop_e:
-                continue
-
-        log(f"💾 Pushe {len(db_inserts)} Matches aus {y} in Supabase Data Lake...")
-        chunk_size = 500
-        for i in range(0, len(db_inserts), chunk_size):
-            try:
-                supabase.table("historical_matches").insert(db_inserts[i:i+chunk_size]).execute()
-            except Exception as e:
-                if "duplicate key value" not in str(e): 
-                    log(f"⚠️ Insert Error bei Chunk {i}: {str(e)}")
-                    
-        total_inserted += len(db_inserts)
+        for y in years:
+            log(f"📡 Verarbeite {tour_label} Jahr {y}...")
+            urls_to_fetch = []
             
-    log(f"✅ DATA LAKE GEBAUT: Insgesamt {total_inserted} Matchesrohdaten verarbeitet.")
+            # 🚀 SOTA: Unterschiedliche Dateistrukturen bei ATP vs WTA
+            if prefix == "atp":
+                urls_to_fetch.append(f"{base_url}atp_matches_{y}.csv")
+                urls_to_fetch.append(f"{base_url}atp_matches_qual_chall_{y}.csv")
+                urls_to_fetch.append(f"{base_url}atp_matches_futures_{y}.csv")
+            else:
+                urls_to_fetch.append(f"{base_url}wta_matches_{y}.csv")
+                urls_to_fetch.append(f"{base_url}wta_matches_qual_itf_{y}.csv")
+                
+            year_total = []
+            for url in urls_to_fetch:
+                rows = await fetch_csv_from_github(url)
+                year_total.extend(rows)
+                
+            if not year_total: continue
+            
+            db_inserts = []
+            for m in year_total:
+                try:
+                    w_id = to_int(m.get('winner_id'))
+                    l_id = to_int(m.get('loser_id'))
+                    m_num = to_int(m.get('match_num'))
+                    t_id = m.get('tourney_id')
+                    
+                    if not w_id or not l_id or not t_id or m_num is None: continue
+                    
+                    raw_date = m.get('tourney_date', '')
+                    if len(raw_date) == 8:
+                        fmt_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                    else:
+                        fmt_date = "2015-01-01"
+                    
+                    db_inserts.append({
+                        "tourney_id": t_id,
+                        "tourney_name": m.get('tourney_name'),
+                        "surface": m.get('surface'),
+                        "draw_size": to_int(m.get('draw_size')),
+                        "tourney_level": m.get('tourney_level'),
+                        "match_date": fmt_date,
+                        "match_num": m_num,
+                        "tour": tour_label, # 🚀 The Single Source of Truth Discriminator
+                        
+                        "winner_sackmann_id": w_id,
+                        "winner_seed": m.get('winner_seed'),
+                        "winner_entry": m.get('winner_entry'),
+                        "winner_name": m.get('winner_name'),
+                        "winner_hand": m.get('winner_hand'),
+                        "winner_ht": to_int(m.get('winner_ht')),
+                        "winner_ioc": m.get('winner_ioc'),
+                        "winner_age": to_float(m.get('winner_age')),
+                        "winner_rank": to_int(m.get('winner_rank')),
+                        "winner_rank_points": to_int(m.get('winner_rank_points')),
+                        
+                        "loser_sackmann_id": l_id,
+                        "loser_seed": m.get('loser_seed'),
+                        "loser_entry": m.get('loser_entry'),
+                        "loser_name": m.get('loser_name'),
+                        "loser_hand": m.get('loser_hand'),
+                        "loser_ht": to_int(m.get('loser_ht')),
+                        "loser_ioc": m.get('loser_ioc'),
+                        "loser_age": to_float(m.get('loser_age')),
+                        "loser_rank": to_int(m.get('loser_rank')),
+                        "loser_rank_points": to_int(m.get('loser_rank_points')),
+                        
+                        "score": m.get('score'),
+                        "best_of": to_int(m.get('best_of')),
+                        "round": m.get('round'),
+                        "minutes": to_int(m.get('minutes')),
+                        
+                        # 🚀 THE FIX: Alle Spalten-Keys strikt in Kleinbuchstaben, passend zu PostgreSQL!
+                        "w_ace": to_int(m.get('w_ace')),
+                        "w_df": to_int(m.get('w_df')),
+                        "w_svpt": to_int(m.get('w_svpt')),
+                        "w_1stin": to_int(m.get('w_1stIn')),     # Vorher: w_1stIn
+                        "w_1stwon": to_int(m.get('w_1stWon')),   # Vorher: w_1stWon
+                        "w_2ndwon": to_int(m.get('w_2ndWon')),   # Vorher: w_2ndWon
+                        "w_svgms": to_int(m.get('w_SvGms')),     # Vorher: w_SvGms
+                        "w_bpsaved": to_int(m.get('w_bpSaved')), # Vorher: w_bpSaved
+                        "w_bpfaced": to_int(m.get('w_bpFaced')), # Vorher: w_bpFaced
+                        
+                        "l_ace": to_int(m.get('l_ace')),
+                        "l_df": to_int(m.get('l_df')),
+                        "l_svpt": to_int(m.get('l_svpt')),
+                        "l_1stin": to_int(m.get('l_1stIn')),     # Vorher: l_1stIn
+                        "l_1stwon": to_int(m.get('l_1stWon')),   # Vorher: l_1stWon
+                        "l_2ndwon": to_int(m.get('l_2ndWon')),   # Vorher: l_2ndWon
+                        "l_svgms": to_int(m.get('l_SvGms')),     # Vorher: l_SvGms
+                        "l_bpsaved": to_int(m.get('l_bpSaved')), # Vorher: l_bpSaved
+                        "l_bpfaced": to_int(m.get('l_bpFaced'))  # Vorher: l_bpFaced
+                    })
+                except Exception as loop_e:
+                    continue
+
+            log(f"💾 Pushe {len(db_inserts)} {tour_label} Matches aus {y} in Supabase Data Lake...")
+            chunk_size = 500
+            for i in range(0, len(db_inserts), chunk_size):
+                try:
+                    supabase.table("historical_matches").insert(db_inserts[i:i+chunk_size]).execute()
+                except Exception as e:
+                    if "duplicate key value" not in str(e): 
+                        log(f"⚠️ Insert Error bei Chunk {i}: {str(e)}")
+                        
+            total_inserted += len(db_inserts)
+            
+    log(f"✅ DUAL-CORE DATA LAKE GEBAUT: Insgesamt {total_inserted} ATP & WTA Matches verarbeitet.")
 
 # =================================================================
 # EXECUTION
@@ -253,7 +283,7 @@ async def build_historical_lake():
 async def main():
     await sync_player_ids()
     await build_historical_lake()
-    log("🏁 SACKMANN ENGINE FINISHED. Dein Data Lake ist bereit für die Matrix.")
+    log("🏁 SACKMANN OMNI ENGINE FINISHED. Dein Data Lake ist bereit für die Matrix.")
 
 if __name__ == "__main__":
     asyncio.run(main())
