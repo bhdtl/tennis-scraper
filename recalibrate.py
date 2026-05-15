@@ -30,7 +30,7 @@ logger = logging.getLogger("UI_Sync_Engine")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Mass UI-Sync Engine (Backfill Protocol V1.1 - NULL FIX)...")
+log("⚡ Initialisiere Mass UI-Sync Engine (V3.1 DUAL-CORE OMNI SYNC)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -255,20 +255,27 @@ class SurfaceIntelligence:
             elif elo_val >= 1400: return 5.0, "Average", "#F0C808"
             else: return 3.5, "❄️ Weakness", "#CC0000"
 
-        # 🚀 SOTA FIX: Fallback, falls das Dict nicht die Keys besitzt
         if not isinstance(elo_metrics, dict): elo_metrics = {}
         if not isinstance(sackmann_metrics, dict): sackmann_metrics = {}
 
         for surf in ['hard', 'clay', 'grass']:
-            elo_val = elo_metrics.get(surf, 1500)
-            rating, text, color = get_rating_info(elo_val)
+            e_val = elo_metrics.get(surf, 1500)
+            
+            rating = ((e_val - 1400) / 700.0) * 9.0 + 1.0
+            rating = max(1.0, min(10.0, rating))
+            
+            if rating >= 8.5: text, color = "🔥 ELITE", "#FF00FF"
+            elif rating >= 7.0: text, color = "📈 STRONG", "#3366FF"
+            elif rating >= 5.5: text, color = "✅ SOLID", "#00B25B"
+            elif rating >= 4.0: text, color = "⚠️ VULNERABLE", "#F0C808"
+            else: text, color = "❄️ WEAKNESS", "#CC0000"
 
-            expected_win_pct = round((1 / (1 + math.pow(10, (1500 - elo_val)/400))) * 100, 1)
+            expected_win_pct = round((1 / (1 + math.pow(10, (1500 - e_val)/400))) * 100, 1)
 
             profile[surf] = {
-                "rating": rating,
+                "rating": round(rating, 1),
                 "color": color,
-                "matches_tracked": elo_metrics.get("matches_tracked", 0),
+                "matches_tracked": elo_metrics.get(f"matches_{surf}", 0),
                 "text": text,
                 "win_rate": f"{expected_win_pct}% (True Elo)"
             }
@@ -277,7 +284,7 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. DATA FETCHING (HYBRID)
+# 5. DATA FETCHING (HYBRID - DUAL CORE)
 # =================================================================
 async def fetch_player_history_extended(player_last_name: str, limit: int = 20) -> List[Dict]:
     try:
@@ -285,7 +292,7 @@ async def fetch_player_history_extended(player_last_name: str, limit: int = 20) 
         res_live = supabase.table("market_odds").select("player1_name, player2_name, odds1, odds2, actual_winner_name, score, created_at, tournament").or_(f"player1_name.ilike.%{player_last_name}%,player2_name.ilike.%{player_last_name}%").not_.is_("actual_winner_name", "null").order("created_at", desc=True).limit(limit).execute()
         live = res_live.data or []
 
-        # Data Lake
+        # Data Lake (SOTA V3: ATP & WTA support)
         res_hist = supabase.table("historical_matches").select("winner_name, loser_name, match_date, score, tourney_name, surface").or_(f"winner_name.ilike.%{player_last_name}%,loser_name.ilike.%{player_last_name}%").order("match_date", desc=True).limit(limit).execute()
         hist = res_hist.data or []
 
@@ -406,7 +413,7 @@ async def run_sync():
             # 1. Berechne neues Surface Rating (aus Elo)
             new_surface_profile = SurfaceIntelligence.compute_player_surface_profile(elo_metrics, sackmann_metrics)
             
-            # 2. Berechne neues Form Rating (Historie)
+            # 2. Berechne neues Form Rating (Historie Dual-Core)
             p_history = await fetch_player_history_extended(full_name, limit=20)
             new_form_rating = MomentumV2Engine.calculate_rating(p_history, full_name)
             
@@ -420,7 +427,7 @@ async def run_sync():
             except Exception as e:
                 pass
                 
-    log(f"🏁 UI SYNC FINISHED. {updated_count} Spieler wurden auf Quant-Niveau aktualisiert!")
+    log(f"🏁 UI SYNC FINISHED. {updated_count} Spieler wurden auf das neue Quant-Niveau (V3.1) aktualisiert!")
 
 if __name__ == "__main__":
     asyncio.run(run_sync())
