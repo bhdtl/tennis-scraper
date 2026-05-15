@@ -1,7 +1,10 @@
-name: 🌊 Run Sackmann Quant Engine (Manual)
+name: 🌊 Run Sackmann Quant Engine (Daily + Manual)
 
 on:
   workflow_dispatch: # Erlaubt das manuelle Starten über einen Button
+  schedule:
+    # Läuft jeden Tag um 03:00 Uhr UTC (Mitten in der Nacht, optimal für Daily Resets)
+    - cron: '0 3 * * *'
 
 jobs:
   build-data-lake:
@@ -24,5 +27,5 @@ jobs:
     - name: Run Sackmann Engine
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} # oder SUPABASE_KEY, je nachdem wie dein Secret heißt
+        SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }} 
       run: python sackmann_engine.py
