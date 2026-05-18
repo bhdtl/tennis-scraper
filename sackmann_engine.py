@@ -29,7 +29,7 @@ logger = logging.getLogger("Sackmann_DataLake")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.1)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.2)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -70,9 +70,15 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
             log(f"❌ Netzwerkfehler beim Laden der CSV: {e}")
     return []
 
+# SOTA Fix: Striktes Parsing für IDs (Dürfen None sein, um sie bei Fehlern zu ignorieren)
 def to_int(val: Any) -> Optional[int]:
     try: return int(float(val))
     except: return None
+
+# SOTA Fix: Striktes Parsing für Mathematik (Verhindert "None + None" Crashes)
+def to_int_safe(val: Any) -> int:
+    try: return int(float(val))
+    except: return 0
 
 def to_float(val: Any) -> Optional[float]:
     try: return float(val)
@@ -89,7 +95,6 @@ def parse_date(date_str: str) -> datetime:
         except: pass
     return datetime(2015, 1, 1, tzinfo=timezone.utc)
 
-# 🚀 SOTA: Game-Zähler für Live Matches
 def get_total_games(score_str: str) -> int:
     if not isinstance(score_str, str): return 0
     clean_score = re.sub(r'\.\d+', '', score_str.lower().replace(":", "-").strip())
@@ -226,7 +231,6 @@ async def build_historical_lake():
         tour_label = tour_info["label"]
         base_url = f"https://raw.githubusercontent.com/JeffSackmann/{repo}/master/"
         
-        # 🚀 SOTA DELTA-SYNC: Finde das letzte Match in der DB für diese Tour
         res = supabase.table("historical_matches").select("match_date").eq("tour", tour_label).order("match_date", desc=True).limit(1).execute()
         
         last_date_str = "2015-01-01"
@@ -273,7 +277,6 @@ async def build_historical_lake():
                     else:
                         fmt_date = "2015-01-01"
                         
-                    # 🚀 THE FILTER: Überspringe Matches, die vor oder exakt am letzten DB-Datum stattfanden
                     if fmt_date <= last_date_str:
                         continue
                     
@@ -314,25 +317,25 @@ async def build_historical_lake():
                         "round": m.get('round'),
                         "minutes": to_int(m.get('minutes')),
                         
-                        "w_ace": to_int(m.get('w_ace')),
-                        "w_df": to_int(m.get('w_df')),
-                        "w_svpt": to_int(m.get('w_svpt')),
-                        "w_1stin": to_int(m.get('w_1stIn')),     
-                        "w_1stwon": to_int(m.get('w_1stWon')),   
-                        "w_2ndwon": to_int(m.get('w_2ndWon')),   
-                        "w_svgms": to_int(m.get('w_SvGms')),     
-                        "w_bpsaved": to_int(m.get('w_bpSaved')), 
-                        "w_bpfaced": to_int(m.get('w_bpFaced')), 
+                        "w_ace": to_int_safe(m.get('w_ace')),
+                        "w_df": to_int_safe(m.get('w_df')),
+                        "w_svpt": to_int_safe(m.get('w_svpt')),
+                        "w_1stin": to_int_safe(m.get('w_1stIn')),     
+                        "w_1stwon": to_int_safe(m.get('w_1stWon')),   
+                        "w_2ndwon": to_int_safe(m.get('w_2ndWon')),   
+                        "w_svgms": to_int_safe(m.get('w_SvGms')),     
+                        "w_bpsaved": to_int_safe(m.get('w_bpSaved')), 
+                        "w_bpfaced": to_int_safe(m.get('w_bpFaced')), 
                         
-                        "l_ace": to_int(m.get('l_ace')),
-                        "l_df": to_int(m.get('l_df')),
-                        "l_svpt": to_int(m.get('l_svpt')),
-                        "l_1stin": to_int(m.get('l_1stIn')),     
-                        "l_1stwon": to_int(m.get('l_1stWon')),   
-                        "l_2ndwon": to_int(m.get('l_2ndWon')),   
-                        "l_svgms": to_int(m.get('l_SvGms')),     
-                        "l_bpsaved": to_int(m.get('l_bpSaved')), 
-                        "l_bpfaced": to_int(m.get('l_bpFaced'))  
+                        "l_ace": to_int_safe(m.get('l_ace')),
+                        "l_df": to_int_safe(m.get('l_df')),
+                        "l_svpt": to_int_safe(m.get('l_svpt')),
+                        "l_1stin": to_int_safe(m.get('l_1stIn')),     
+                        "l_1stwon": to_int_safe(m.get('l_1stWon')),   
+                        "l_2ndwon": to_int_safe(m.get('l_2ndWon')),   
+                        "l_svgms": to_int_safe(m.get('l_SvGms')),     
+                        "l_bpsaved": to_int_safe(m.get('l_bpSaved')), 
+                        "l_bpfaced": to_int_safe(m.get('l_bpFaced'))  
                     })
                 except Exception as loop_e:
                     continue
@@ -384,8 +387,8 @@ class AlchemistEngine:
         surf = raw_surf if raw_surf in ['hard', 'clay', 'grass'] else 'hard'
         m_date = parse_date(row.get('match_date'))
 
-        w_svpt = to_int(row.get('w_svpt', 0))
-        l_svpt = to_int(row.get('l_svpt', 0))
+        w_svpt = to_int_safe(row.get('w_svpt'))
+        l_svpt = to_int_safe(row.get('l_svpt'))
         total_pts = w_svpt + l_svpt
         
         if total_pts > 0:
@@ -434,28 +437,28 @@ class AlchemistEngine:
         self.players[l_id]["matches_played"][surf] += 1
 
         def extract_stats(p_id, prefix, opp_prefix):
-            svpt = to_int(row.get(f'{prefix}svpt'))
+            svpt = to_int_safe(row.get(f'{prefix}svpt'))
             if svpt == 0: return 
             
-            opp_svpt = to_int(row.get(f'{opp_prefix}svpt'))
-            opp_1stwon = to_int(row.get(f'{opp_prefix}1stwon'))
-            opp_2ndwon = to_int(row.get(f'{opp_prefix}2ndwon'))
+            opp_svpt = to_int_safe(row.get(f'{opp_prefix}svpt'))
+            opp_1stwon = to_int_safe(row.get(f'{opp_prefix}1stwon'))
+            opp_2ndwon = to_int_safe(row.get(f'{opp_prefix}2ndwon'))
             
             self.players[p_id]["raw_stats"].append({
                 "date": m_date,
                 "surface": surf,
-                "aces": to_int(row.get(f'{prefix}ace')),
-                "dfs": to_int(row.get(f'{prefix}df')),
+                "aces": to_int_safe(row.get(f'{prefix}ace')),
+                "dfs": to_int_safe(row.get(f'{prefix}df')),
                 "svpt": svpt,
-                "1stin": to_int(row.get(f'{prefix}1stin')),
-                "1stwon": to_int(row.get(f'{prefix}1stwon')),
-                "2ndwon": to_int(row.get(f'{prefix}2ndwon')),
-                "bpsaved": to_int(row.get(f'{prefix}bpsaved')),
-                "bpfaced": to_int(row.get(f'{prefix}bpfaced')),
+                "1stin": to_int_safe(row.get(f'{prefix}1stin')),
+                "1stwon": to_int_safe(row.get(f'{prefix}1stwon')),
+                "2ndwon": to_int_safe(row.get(f'{prefix}2ndwon')),
+                "bpsaved": to_int_safe(row.get(f'{prefix}bpsaved')),
+                "bpfaced": to_int_safe(row.get(f'{prefix}bpfaced')),
                 "ret_pts": opp_svpt,
                 "ret_won": (opp_svpt - opp_1stwon - opp_2ndwon),
-                "bp_opps": to_int(row.get(f'{opp_prefix}bpfaced')),
-                "bp_conv": (to_int(row.get(f'{opp_prefix}bpfaced')) - to_int(row.get(f'{opp_prefix}bpsaved')))
+                "bp_opps": to_int_safe(row.get(f'{opp_prefix}bpfaced')),
+                "bp_conv": (to_int_safe(row.get(f'{opp_prefix}bpfaced')) - to_int_safe(row.get(f'{opp_prefix}bpsaved')))
             })
 
         extract_stats(w_id, "w_", "l_")
@@ -546,42 +549,28 @@ class AlchemistEngine:
 
 
 async def compile_intelligence_matrix():
-    log("🌊 Lade ALLE Matches (ATP & WTA) aus Supabase für Elo-Berechnung (Cursor-Pagination)...")
+    log("🌊 Lade ALLE Matches (ATP & WTA) aus Supabase für Elo-Berechnung (ID-Cursor-Pagination)...")
     matches = []
-    last_date = "1900-01-01"
-    seen_ids = set()
+    last_id = 0
 
     while True:
-        # Die SOTA Cursor-Pagination: Verhindert Supabase Timeouts bei extrem großen Datenmengen
+        # SOTA ID-Cursor-Pagination (Verhindert Supabase Timeouts und Endlosschleifen)
         res = supabase.table("historical_matches") \
             .select("id,winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
-            .gte("match_date", last_date) \
-            .order("match_date", desc=False) \
+            .gt("id", last_id) \
+            .order("id", desc=False) \
             .limit(1000) \
             .execute()
             
         chunk = res.data or []
-        new_matches = 0
-        
-        for m in chunk:
-            # Nutze die Sackmann-IDs und das Datum als Unique-Identifier (Fallback, falls keine DB-ID existiert)
-            m_hash = f"{m.get('id', '')}_{m.get('match_date')}_{m.get('winner_sackmann_id')}_{m.get('loser_sackmann_id')}"
-            if m_hash not in seen_ids:
-                seen_ids.add(m_hash)
-                matches.append(m)
-                new_matches += 1
+        matches.extend(chunk)
         
         if len(chunk) < 1000: 
             break
             
-        # Update Cursor: Das letzte Datum des aktuellen Chunks
-        last_date = chunk[-1]["match_date"]
+        last_id = chunk[-1]["id"]
         
-        # Sicherheits-Check: Wenn keine neuen Matches hinzugefügt wurden,
-        # stecken wir an einem Tag mit >1000 Matches fest.
-        if new_matches == 0:
-            log("⚠️ Cursor hängt an einem Datum mit extrem vielen Matches fest. Breche Pagination sicherheitshalber ab.")
-            break
+    log(f"✅ {len(matches)} Matches erfolgreich per ID-Cursor geladen.")
     
     log("🧮 Simuliere Elo, Advanced Stats & True Match Load (Points-to-Minutes)...")
     engine = AlchemistEngine()
