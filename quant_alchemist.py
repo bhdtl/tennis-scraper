@@ -296,15 +296,44 @@ class AlchemistEngine:
 
 
 async def main():
-    log("🌊 Lade 250.000+ Matches (ATP & WTA) aus dem Data Lake...")
+    log("🌊 Lade ALLE Matches aus dem Data Lake (Year-Partitioned Fetching)...")
     matches = []
-    offset = 0
-    while True:
-        res = supabase.table("historical_matches").select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced").order("match_date", desc=False).range(offset, offset + 999).execute()
-        chunk = res.data or []
-        matches.extend(chunk)
-        if len(chunk) < 1000: break
-        offset += 1000
+    
+    # 🚀 SOTA FIX: Year-Partitioning + In-RAM Sortierung
+    start_year = 2015
+    current_year = datetime.now().year
+    
+    for year in range(start_year, current_year + 1):
+        year_start = f"{year}-01-01"
+        year_end = f"{year + 1}-01-01"
+        
+        log(f"📅 Extrahiere historische Matches für das Jahr {year}...")
+        offset = 0
+        year_count = 0
+        
+        while True:
+            # Kein .order(), um Supabase Timeouts zu vermeiden!
+            res = supabase.table("historical_matches") \
+                .select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
+                .gte("match_date", year_start) \
+                .lt("match_date", year_end) \
+                .range(offset, offset + 999) \
+                .execute()
+                
+            chunk = res.data or []
+            matches.extend(chunk)
+            year_count += len(chunk)
+            
+            if len(chunk) < 1000: 
+                break
+                
+            offset += 1000
+            
+        log(f"✅ {year_count} Matches für {year} erfolgreich geladen.")
+        
+    log(f"🏁 Insgesamt {len(matches)} Matches im RAM. Starte chronologische Sortierung...")
+    # Schnelle In-RAM Sortierung direkt in Python
+    matches.sort(key=lambda x: str(x.get("match_date", "2015-01-01")))
     
     log("🧮 Simuliere Elo, Advanced Stats & True Match Load (Points-to-Minutes)...")
     engine = AlchemistEngine()
