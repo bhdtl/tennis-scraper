@@ -29,7 +29,7 @@ logger = logging.getLogger("Sackmann_DataLake")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.2)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.3 - RAM SORT EDITION)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -70,7 +70,7 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
             log(f"❌ Netzwerkfehler beim Laden der CSV: {e}")
     return []
 
-# SOTA Fix: Striktes Parsing für IDs (Dürfen None sein, um sie bei Fehlern zu ignorieren)
+# SOTA Fix: Striktes Parsing für IDs
 def to_int(val: Any) -> Optional[int]:
     try: return int(float(val))
     except: return None
@@ -549,17 +549,15 @@ class AlchemistEngine:
 
 
 async def compile_intelligence_matrix():
-    log("🌊 Lade ALLE Matches (ATP & WTA) aus Supabase für Elo-Berechnung (ID-Cursor-Pagination)...")
+    log("🌊 Lade ALLE Matches aus Supabase (High-Speed Block Fetching)...")
     matches = []
-    last_id = 0
-
+    offset = 0
+    
+    # 🚀 SOTA FIX: Komplett ohne .order(), reines Offset-Streaming um Supabase Timeouts zu umgehen
     while True:
-        # SOTA ID-Cursor-Pagination (Verhindert Supabase Timeouts und Endlosschleifen)
         res = supabase.table("historical_matches") \
-            .select("id,winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
-            .gt("id", last_id) \
-            .order("id", desc=False) \
-            .limit(1000) \
+            .select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
+            .range(offset, offset + 999) \
             .execute()
             
         chunk = res.data or []
@@ -568,9 +566,13 @@ async def compile_intelligence_matrix():
         if len(chunk) < 1000: 
             break
             
-        last_id = chunk[-1]["id"]
+        offset += 1000
         
-    log(f"✅ {len(matches)} Matches erfolgreich per ID-Cursor geladen.")
+    log(f"✅ {len(matches)} Matches erfolgreich per Block-Fetch geladen.")
+    
+    log("⏱️ Sortiere Matches chronologisch in RAM...")
+    # Wir sortieren extrem schnell lokal mit Python, statt die Datenbank zu belasten
+    matches.sort(key=lambda x: str(x.get("match_date", "2015-01-01")))
     
     log("🧮 Simuliere Elo, Advanced Stats & True Match Load (Points-to-Minutes)...")
     engine = AlchemistEngine()
