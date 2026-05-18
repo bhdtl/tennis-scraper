@@ -9,6 +9,7 @@ import unicodedata
 import logging
 import sys
 import difflib
+import math
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -29,7 +30,7 @@ logger = logging.getLogger("Sackmann_DataLake")
 def log(msg: str):
     logger.info(msg)
 
-log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.3 - RAM SORT EDITION)...")
+log("⚡ Initialisiere Elite Data Lake Engine (Dual-Core DELTA SYNC V3.4 - YEAR PARTITION EDITION)...")
 
 # Secrets Load
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -70,12 +71,10 @@ async def fetch_csv_from_github(url: str) -> List[Dict[str, str]]:
             log(f"❌ Netzwerkfehler beim Laden der CSV: {e}")
     return []
 
-# SOTA Fix: Striktes Parsing für IDs
 def to_int(val: Any) -> Optional[int]:
     try: return int(float(val))
     except: return None
 
-# SOTA Fix: Striktes Parsing für Mathematik (Verhindert "None + None" Crashes)
 def to_int_safe(val: Any) -> int:
     try: return int(float(val))
     except: return 0
@@ -549,29 +548,42 @@ class AlchemistEngine:
 
 
 async def compile_intelligence_matrix():
-    log("🌊 Lade ALLE Matches aus Supabase (High-Speed Block Fetching)...")
+    log("🌊 Lade ALLE Matches aus Supabase (Year-Partitioned Fetching)...")
     matches = []
-    offset = 0
     
-    # 🚀 SOTA FIX: Komplett ohne .order(), reines Offset-Streaming um Supabase Timeouts zu umgehen
-    while True:
-        res = supabase.table("historical_matches") \
-            .select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
-            .range(offset, offset + 999) \
-            .execute()
-            
-        chunk = res.data or []
-        matches.extend(chunk)
-        
-        if len(chunk) < 1000: 
-            break
-            
-        offset += 1000
-        
-    log(f"✅ {len(matches)} Matches erfolgreich per Block-Fetch geladen.")
+    # 🚀 SOTA FIX: Wir splitten die Abfrage in Jahre. Dadurch bleibt das "OFFSET" minimal (max ~30.000 pro Jahr)
+    # und PostgreSQL muss nicht jedes Mal das gesamte Jahrzehnt scannen!
+    start_year = 2015
+    current_year = datetime.now().year
     
-    log("⏱️ Sortiere Matches chronologisch in RAM...")
-    # Wir sortieren extrem schnell lokal mit Python, statt die Datenbank zu belasten
+    for year in range(start_year, current_year + 1):
+        year_start = f"{year}-01-01"
+        year_end = f"{year + 1}-01-01"
+        
+        log(f"📅 Extrahiere historische Matches für das Jahr {year}...")
+        offset = 0
+        year_count = 0
+        
+        while True:
+            res = supabase.table("historical_matches") \
+                .select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
+                .gte("match_date", year_start) \
+                .lt("match_date", year_end) \
+                .range(offset, offset + 999) \
+                .execute()
+                
+            chunk = res.data or []
+            matches.extend(chunk)
+            year_count += len(chunk)
+            
+            if len(chunk) < 1000: 
+                break
+                
+            offset += 1000
+            
+        log(f"✅ {year_count} Matches für {year} erfolgreich geladen.")
+        
+    log(f"🏁 Insgesamt {len(matches)} Matches im RAM. Starte chronologische Sortierung...")
     matches.sort(key=lambda x: str(x.get("match_date", "2015-01-01")))
     
     log("🧮 Simuliere Elo, Advanced Stats & True Match Load (Points-to-Minutes)...")
