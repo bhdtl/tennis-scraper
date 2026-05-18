@@ -40,7 +40,7 @@ logger = logging.getLogger("NeuralScout_Architect")
 def log(msg: str):
     logger.info(msg)
 
-log("🔌 Initialisiere Neural Scout (V210.00 - ULTIMATE DURABILITY & FATIGUE QUANT ENGINE)...")
+log("🔌 Initialisiere Neural Scout (V211.00 - SYNDICATE TWO-BRAIN ENGINE)...")
 
 # Secrets Load
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -62,9 +62,6 @@ METADATA_CACHE: Dict[str, Any] = {}
 WEATHER_CACHE: Dict[str, Any] = {} 
 GLOBAL_SURFACE_MAP: Dict[str, str] = {} 
 TML_MATCH_CACHE: List[Dict] = [] 
-
-SKILL_MEANS = {'serve': 77.6, 'forehand': 78.7, 'backhand': 76.4, 'volley': 72.4, 'speed': 79.4, 'stamina': 77.4, 'power': 75.5, 'mental': 76.8, 'overall_rating': 76.6}
-SKILL_STDS = {'serve': 8.3, 'forehand': 7.2, 'backhand': 8.1, 'volley': 8.8, 'speed': 6.8, 'stamina': 6.8, 'power': 8.8, 'mental': 7.0, 'overall_rating': 6.6}
 
 DYNAMIC_WEIGHTS = {
     "ATP": {"SKILL": 0.50, "FORM": 0.35, "SURFACE": 0.15, "MC_VARIANCE": 1.20},
@@ -703,89 +700,71 @@ class SurfaceIntelligence:
         return profile
 
 # =================================================================
-# 5. SOTA MARKOV CHAIN ENGINE (WITH DURABILITY/FATIGUE PENALTY)
+# 5. SOTA MARKOV CHAIN ENGINE (PURE DATA DRIVEN)
 # =================================================================
 class MarkovChainEngine:
     @staticmethod
+    def get_serve_win_pct(skills_dict: Dict, surf: str) -> float:
+        adv = skills_dict.get('advanced_stats', {}).get('all', {}).get(surf, {})
+        if adv and adv.get('matches_with_stats', 0) > 3:
+            first_in = adv.get('first_in_pct', 60) / 100.0
+            first_win = adv.get('first_win_pct', 70) / 100.0
+            second_win = adv.get('second_win_pct', 50) / 100.0
+            return (first_in * first_win) + ((1.0 - first_in) * second_win)
+        elo = skills_dict.get('elo_metrics', {}).get(surf, 1500)
+        return 0.62 + ((elo - 1500) * 0.00012)
+
+    @staticmethod
+    def get_ret_win_pct(skills_dict: Dict, surf: str) -> float:
+        adv = skills_dict.get('advanced_stats', {}).get('all', {}).get(surf, {})
+        if adv and adv.get('matches_with_stats', 0) > 3:
+            return adv.get('ret_win_pct', 38) / 100.0
+        elo = skills_dict.get('elo_metrics', {}).get(surf, 1500)
+        return 0.38 + ((elo - 1500) * 0.00012)
+
+    @staticmethod
     def run_simulation(s1: Dict, s2: Dict, formA: float, formB: float, 
-                       bsi: float, styleA: str, styleB: str, 
+                       bsi: float, surface: str, 
                        sackmannA: Dict, sackmannB: Dict,
                        iterations: int = 2500) -> Dict[str, Any]:
         
-        def get_z_score(val, mean, std):
-            return (val - mean) / std if std else 0
+        surf_key = SurfaceIntelligence.normalize_surface_key(surface)
+        
+        base_srv_A = MarkovChainEngine.get_serve_win_pct(s1, surf_key)
+        base_srv_B = MarkovChainEngine.get_serve_win_pct(s2, surf_key)
+        base_ret_A = MarkovChainEngine.get_ret_win_pct(s1, surf_key)
+        base_ret_B = MarkovChainEngine.get_ret_win_pct(s2, surf_key)
 
-        def get_serve_prob(serve_skill, power_skill):
-            z_serve = get_z_score(serve_skill, SKILL_MEANS['serve'], SKILL_STDS['serve'])
-            z_power = get_z_score(power_skill, SKILL_MEANS['power'], SKILL_STDS['power'])
-            prob = 0.64 + (z_serve * 0.04) + (z_power * 0.02)
-            return max(0.40, min(0.95, prob))
-            
-        def get_return_def(speed_skill, backhand_skill, forehand_skill):
-            z_speed = get_z_score(speed_skill, SKILL_MEANS['speed'], SKILL_STDS['speed'])
-            z_bh = get_z_score(backhand_skill, SKILL_MEANS['backhand'], SKILL_STDS['backhand'])
-            z_fh = get_z_score(forehand_skill, SKILL_MEANS['forehand'], SKILL_STDS['forehand'])
-            return (z_speed * 0.02) + (z_bh * 0.015) + (z_fh * 0.015)
+        # Baseline: Average of Server's skill and Returner's defense
+        p_A_wins_on_serve = (base_srv_A + (1.0 - base_ret_B)) / 2.0
+        p_B_wins_on_serve = (base_srv_B + (1.0 - base_ret_A)) / 2.0
 
-        base_serve_win_A = get_serve_prob(s1.get('serve', 50), s1.get('power', 50))
-        base_serve_win_B = get_serve_prob(s2.get('serve', 50), s2.get('power', 50))
-
-        return_def_A = get_return_def(s1.get('speed', 50), s1.get('backhand', 50), s1.get('forehand', 50))
-        return_def_B = get_return_def(s2.get('speed', 50), s2.get('backhand', 50), s2.get('forehand', 50))
-
-        p_A_wins_on_serve = base_serve_win_A - return_def_B
-        p_B_wins_on_serve = base_serve_win_B - return_def_A
-
-        # 🚀 SOTA FIX: THE DURABILITY & FATIGUE PENALTY
-        # Wir berechnen die physische Erschöpfung (Drop-Off in Win%) basierend auf Acute Load und Durability Index
+        # 🚀 THE DURABILITY & FATIGUE PENALTY
         acuteA = sackmannA.get('fatigue', {}).get('acute_72h_minutes', 0)
         durA = sackmannA.get('fatigue', {}).get('durability_index', 70)
-        fatigue_penalty_A = max(0, (acuteA - 150) / 100) * ((100 - durA) / 100) * 0.012
+        fatigue_penalty_A = max(0, (acuteA - 150) / 100) * ((100 - durA) / 100) * 0.015
 
         acuteB = sackmannB.get('fatigue', {}).get('acute_72h_minutes', 0)
         durB = sackmannB.get('fatigue', {}).get('durability_index', 70)
-        fatigue_penalty_B = max(0, (acuteB - 150) / 100) * ((100 - durB) / 100) * 0.012
+        fatigue_penalty_B = max(0, (acuteB - 150) / 100) * ((100 - durB) / 100) * 0.015
 
-        # Abzug auf den eigenen Aufschlag, Boost auf den gegnerischen Aufschlag (schlechterer Return)
         p_A_wins_on_serve -= fatigue_penalty_A
-        p_B_wins_on_serve += (fatigue_penalty_A * 0.5)
+        p_B_wins_on_serve += (fatigue_penalty_A * 0.4)
 
         p_B_wins_on_serve -= fatigue_penalty_B
-        p_A_wins_on_serve += (fatigue_penalty_B * 0.5)
+        p_A_wins_on_serve += (fatigue_penalty_B * 0.4)
 
-        overall_A = s1.get('overall_rating', 50)
-        overall_B = s2.get('overall_rating', 50)
-        overall_gap_delta = (overall_A - overall_B) * 0.0035
+        # BSI (Court speed multiplier)
+        bsi_adj = (bsi - 6.5) * 0.012
+        p_A_wins_on_serve += bsi_adj
+        p_B_wins_on_serve += bsi_adj
 
-        p_A_wins_on_serve += overall_gap_delta
-        p_B_wins_on_serve -= overall_gap_delta
+        # Form modifier
+        p_A_wins_on_serve += ((formA - 5) * 0.005)
+        p_B_wins_on_serve += ((formB - 5) * 0.005)
 
-        bsi_modifier_A = (bsi - 6.5) * 0.015
-        bsi_modifier_B = bsi_modifier_A
-
-        safe_style_A = (styleA or "").lower()
-        safe_style_B = (styleB or "").lower()
-
-        if "big server" in safe_style_A or "first-strike" in safe_style_A:
-            bsi_modifier_A *= (2.5 if bsi < 6.0 else 1.5)
-        if "big server" in safe_style_B or "first-strike" in safe_style_B:
-            bsi_modifier_B *= (2.5 if bsi < 6.0 else 1.5)
-
-        if ("counter puncher" in safe_style_A or "grinder" in safe_style_A) and bsi < 6.0:
-            return_def_A += 0.02
-            p_B_wins_on_serve -= 0.03
-        if ("counter puncher" in safe_style_B or "grinder" in safe_style_B) and bsi < 6.0:
-            return_def_B += 0.02
-            p_A_wins_on_serve -= 0.03
-
-        p_A_wins_on_serve += bsi_modifier_A
-        p_B_wins_on_serve += bsi_modifier_B
-
-        p_A_wins_on_serve += ((formA - 5) * 0.008)
-        p_B_wins_on_serve += ((formB - 5) * 0.008)
-
-        p_A_wins_on_serve = max(0.40, min(0.92, p_A_wins_on_serve))
-        p_B_wins_on_serve = max(0.40, min(0.92, p_B_wins_on_serve))
+        p_A_wins_on_serve = max(0.45, min(0.92, p_A_wins_on_serve))
+        p_B_wins_on_serve = max(0.45, min(0.92, p_B_wins_on_serve))
 
         def simulate_game(prob_serve_win):
             pts_srv, pts_ret = 0, 0
@@ -871,8 +850,6 @@ class MarkovChainEngine:
         return {
             "probA": round(prob_A, 1),
             "probB": round(prob_B, 1),
-            "scoreA": overall_A,
-            "scoreB": overall_B,
             "set_betting_probs": set_betting_probs,
             "projected_handicap_A": round(avg_handicap_A, 1)
         }
@@ -989,7 +966,7 @@ async def call_openrouter(prompt: str, model: str = MODEL_NAME, temp: float = 0.
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a data extraction AI. Return ONLY valid JSON."},
+            {"role": "system", "content": "You are an elite tactical data extraction AI. Return ONLY valid JSON."},
             {"role": "user", "content": prompt}
         ],
         "temperature": temp, 
@@ -1120,49 +1097,24 @@ async def update_past_results_api(api: TennisDataAPI, players: List[Dict]):
                         "score": final_score
                     }).eq("id", matched_pm['id']).execute()
 
-                    p1_name = matched_pm['player1_name']
-                    p2_name = matched_pm['player2_name']
-                    
-                    p1_id = next((p['id'] for p in players if is_same_player(p1_name, p.get('last_name', ''))), None)
-                    p2_id = next((p['id'] for p in players if is_same_player(p2_name, p.get('last_name', ''))), None)
-                    
-                    db_player_ids = [pid for pid in [p1_id, p2_id] if pid]
-                    if db_player_ids:
-                        try:
-                            skills_res = supabase.table('player_skills').select('*').in_('player_id', db_player_ids).execute()
-                            db_skills = skills_res.data or []
-                            
-                            if p1_id:
-                                p1_skills_db = next((s for s in db_skills if s.get('player_id') == p1_id), None)
-                                odds1 = to_float(matched_pm.get('odds1', 1.85))
-                                if p1_skills_db:
-                                    new_s1 = LiveSkillEngine.calculate_new_skills(p1_skills_db, odds1, is_same_player(winner, p1_name), final_score, is_player1=True)
-                                    if new_s1:
-                                        new_s1['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                        supabase.table('player_skills').update(new_s1).eq('player_id', p1_id).execute()
-                                        
-                            if p2_id:
-                                p2_skills_db = next((s for s in db_skills if s.get('player_id') == p2_id), None)
-                                odds2 = to_float(matched_pm.get('odds2', 1.85))
-                                if p2_skills_db:
-                                    new_s2 = LiveSkillEngine.calculate_new_skills(p2_skills_db, odds2, is_same_player(winner, p2_name), final_score, is_player1=False)
-                                    if new_s2:
-                                        new_s2['updated_at'] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                                        supabase.table('player_skills').update(new_s2).eq('player_id', p2_id).execute()
-                        except Exception as se: pass
+                p1_name = matched_pm['player1_name']
+                p2_name = matched_pm['player2_name']
+                
+                p1_id = next((p['id'] for p in players if is_same_player(p1_name, p.get('last_name', ''))), None)
+                p2_id = next((p['id'] for p in players if is_same_player(p2_name, p.get('last_name', ''))), None)
 
-                    for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
-                        p_exists = next((p for p in players if is_same_player(p_name_hook, p.get('last_name', ''))), None)
-                        if not p_exists: continue
-                        
-                        p_hist = await fetch_player_history_extended(p_name_hook, limit=20)
-                        p_form = MomentumV2Engine.calculate_rating(p_hist, p_name_hook)
-                        
-                        target_p_id = p1_id if is_same_player(p_name_hook, matched_pm['player1_name']) else p2_id
-                        if target_p_id:
-                            supabase.table('players').update({
-                                'form_rating': p_form 
-                            }).eq('id', target_p_id).execute()
+                for p_name_hook in [matched_pm['player1_name'], matched_pm['player2_name']]:
+                    p_exists = next((p for p in players if is_same_player(p_name_hook, p.get('last_name', ''))), None)
+                    if not p_exists: continue
+                    
+                    p_hist = await fetch_player_history_extended(p_name_hook, limit=20)
+                    p_form = MomentumV2Engine.calculate_rating(p_hist, p_name_hook)
+                    
+                    target_p_id = p1_id if is_same_player(p_name_hook, matched_pm['player1_name']) else p2_id
+                    if target_p_id:
+                        supabase.table('players').update({
+                            'form_rating': p_form 
+                        }).eq('id', target_p_id).execute()
 
                 safe_to_check = [x for x in safe_to_check if x['id'] != matched_pm['id']]
 
@@ -1361,16 +1313,13 @@ async def get_db_data():
         return [], {}, [], []
 
 # =================================================================
-# 8. MATH CORE 
+# 8. MATH CORE (PURE KELLY / NO CUTOFFS)
 # =================================================================
-def sigmoid_prob(diff: float, sensitivity: float = 0.1) -> float:
-    return 1 / (1 + math.exp(-sensitivity * diff))
-
 def normal_cdf_prob(elo_diff: float, sigma: float = 280.0) -> float:
     z = elo_diff / (sigma * math.sqrt(2))
     return 0.5 * (1 + math.erf(z))
 
-def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str = "") -> Dict[str, Any]:
+def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str = "", ai_conviction_multiplier: float = 1.0) -> Dict[str, Any]:
     if market_odds <= 1.01 or fair_prob <= 0 or fair_prob >= 1: 
         return {"type": "NONE", "edge_percent": 0.0, "is_value": False, "kelly_stake": 0.0}
         
@@ -1378,140 +1327,49 @@ def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str
     actual_edge_decimal = (fair_prob * market_odds) - 1.0
     edge_percent = round(actual_edge_decimal * 100, 1)
     
-    tour_lower = tour_name.lower()
-    is_major = any(x in tour_lower for x in ['grand slam', 'wimbledon', 'roland garros', 'us open', 'australian open', 'masters', '1000'])
-    
-    if edge_percent < 4.0:
-        return {"type": "NOISE (THIN MARGIN)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+    if actual_edge_decimal <= 0.01: # Weniger als 1% Edge -> Noise
+        return {"type": "NO EDGE", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
         
-    if 1.50 <= market_odds <= 1.99:
-        if edge_percent < 8.0:
-            return {"type": "NOISE (CORE NOISE)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-            
-    capped_edge_for_kelly = min(actual_edge_decimal, 0.15)
-    
-    if is_major:
-        capped_edge_for_kelly = min(capped_edge_for_kelly, 0.10) 
-
+    # Fractional Kelly Protocol (1/4 Kelly)
     b = market_odds - 1.0
-    full_kelly = capped_edge_for_kelly / b
+    full_kelly = actual_edge_decimal / b
+    kelly_fraction = 0.25
     
-    kelly_multiplier = 0.25 
+    raw_stake = (full_kelly * 100) * kelly_fraction
     
-    if market_odds >= 3.0:
-        kelly_multiplier = 0.15
-    if market_odds >= 5.0:
-        kelly_multiplier = 0.05
-        
-    raw_stake = (full_kelly * 100) * kelly_multiplier
-    optimal_stake = round(raw_stake, 1)
+    # 🚀 SOTA: LLM Conviction Filter greift in die Stake-Berechnung ein
+    adjusted_stake = raw_stake * ai_conviction_multiplier
     
-    if market_odds >= 3.5:
-        optimal_stake = min(1.0, optimal_stake)
-    elif market_odds >= 2.5:
-        optimal_stake = min(2.0, optimal_stake)
-    elif market_odds >= 2.0:
-        optimal_stake = min(3.0, optimal_stake)
+    # Syndicate Rule: Max 5% der Bankroll pro Wette
+    optimal_stake = round(min(5.0, max(0.1, adjusted_stake)), 2)
+    
+    if ai_conviction_multiplier <= 0.2:
+        label = "🛑 AI VETO (BAD MATCHUP)"
+        return {"type": label, "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+    elif optimal_stake >= 3.0:
+        label = "🔥 MAX BOMB (QUANT + SCOUT)"
+    elif optimal_stake >= 1.5:
+        label = "✨ HIGH CONVICTION"
+    elif optimal_stake >= 0.5:
+        label = "🛡️ CORE VALUE"
     else:
-        optimal_stake = min(5.0, optimal_stake)
-    
-    label = "VALUE"
-    
-    if market_odds >= 3.00:
-        if optimal_stake >= 0.5:
-            label = "✨ HIGH VARIANCE ALPHA"
-        else:
-            return {"type": "NOISE (LONGSHOT <0.5u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-    elif 2.00 <= market_odds <= 2.99:
-        if optimal_stake >= 1.0:
-            label = "🔥 UNDERDOG ALPHA"
-        else:
-            return {"type": "NOISE (UNDERDOG <1.0u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-    else: 
-        if optimal_stake >= 2.0:
-            if optimal_stake >= 4.0: label = "🔥 MAX BOMB" 
-            else: label = "✨ HIGH CONVICTION" 
-        elif optimal_stake >= 1.0:
-            label = "🛡️ CORE VALUE"
-        else:
-            return {"type": "NOISE (FAV <1.0u)", "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
+        label = "🔬 MICRO EDGE"
 
     return {"type": label, "edge_percent": edge_percent, "is_value": True, "kelly_stake": optimal_stake}
 
-def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, bsi, surface, mc_prob_a, market_odds1, market_odds2, pinnacle_prob_a=None):
-    elo_surf = 'clay' if 'clay' in surface.lower() else ('grass' if 'grass' in surface.lower() else 'hard')
+def calculate_physics_fair_odds(p1_name, p2_name, s1, s2, surface, mc_prob_a):
+    elo_surf = SurfaceIntelligence.normalize_surface_key(surface)
     elo1 = s1.get('elo_metrics', {}).get(elo_surf, 1500)
     elo2 = s2.get('elo_metrics', {}).get(elo_surf, 1500)
     
-    elo_diff_model = elo1 - elo2
+    elo_diff = elo1 - elo2
+    prob_elo = normal_cdf_prob(elo_diff, sigma=280.0)
     
-    prob_market = 0.5
-    model_trust_factor = 0.30
-
-    if market_odds1 > 0 and market_odds2 > 0:
-        inv1 = 1/market_odds1
-        inv2 = 1/market_odds2
-        implied_p1 = inv1 / (inv1 + inv2)
-        prob_market = implied_p1
-        
-        try: 
-            elo_diff_market = -400 * math.log10(1/implied_p1 - 1)
-        except: 
-            elo_diff_market = elo_diff_model
-            
-        elo_diff_final = (elo_diff_model * 0.70) + (elo_diff_market * 0.30)
-        
-        if 0.45 <= implied_p1 <= 0.60:
-            model_trust_factor = 0.15
-        elif implied_p1 < 0.35 or implied_p1 > 0.65:
-            model_trust_factor = 0.45
-            
-    else: 
-        elo_diff_final = elo_diff_model
-        model_trust_factor = 0.50
-        
-    if pinnacle_prob_a is not None:
-        prob_market = pinnacle_prob_a
-        model_trust_factor *= 0.8 
-        
-    prob_elo = normal_cdf_prob(elo_diff_final, sigma=280.0)
     mc_prob_a = max(0.01, min(0.99, mc_prob_a / 100.0))
     
-    prob_alpha = (prob_elo * 0.35) + (mc_prob_a * 0.65)
-    final_prob = (prob_alpha * model_trust_factor) + (prob_market * (1 - model_trust_factor))
-    
+    # 🚀 SOTA: Keine Market-Blend mehr während Discovery. Pure Model Edge.
+    final_prob = (prob_elo * 0.30) + (mc_prob_a * 0.70)
     return final_prob
-
-def recalculate_fair_odds_with_new_market(old_fair_odds1: float, old_market_odds1: float, old_market_odds2: float, new_market_odds1: float, new_market_odds2: float) -> float:
-    try:
-        old_prob_market = 0.5
-        if old_market_odds1 > 1 and old_market_odds2 > 1:
-            inv1 = 1/old_market_odds1
-            inv2 = 1/old_market_odds2
-            old_prob_market = inv1 / (inv1 + inv2)
-            
-        if old_fair_odds1 <= 1.01: 
-            return 0.5
-            
-        old_final_prob = 1 / old_fair_odds1
-        alpha_part = old_final_prob - (old_prob_market * 0.40)
-        prob_alpha = alpha_part / 0.60
-        
-        new_prob_market = 0.5
-        if new_market_odds1 > 1 and new_market_odds2 > 1:
-            inv1 = 1/new_market_odds1
-            inv2 = 1/new_market_odds2
-            new_prob_market = inv1 / (inv1 + inv2)
-            
-        new_final_prob = (prob_alpha * 0.60) + (new_prob_market * 0.40)
-        
-        if new_market_odds1 < 1.10:
-             mkt_prob1 = 1/new_market_odds1
-             new_final_prob = (new_final_prob * 0.15) + (mkt_prob1 * 0.85)
-             
-        return new_final_prob
-    except: 
-        return 0.5
 
 # =================================================================
 # 9. PIPELINE UTILS
@@ -1584,11 +1442,6 @@ async def find_best_court_match_smart(tour, db_tours, p1, p2, p1_country="Unknow
         
     return 'Hard Court Outdoor', 6.5, 'Fallback', tour.split()[0], tour
 
-def format_skills(s: Dict) -> str:
-    if not s: 
-        return "No granular skill data."
-    return f"Serve: {s.get('serve', 50)}, FH: {s.get('forehand', 50)}, BH: {s.get('backhand', 50)}, Volley: {s.get('volley', 50)}, Speed: {s.get('speed', 50)}, Stamina: {s.get('stamina', 50)}, Power: {s.get('power', 50)}, Mental: {s.get('mental', 50)}, OVR: {s.get('overall_rating', 50)}"
-
 # 🚀 SOTA PROMPT ENGINEERING (THE ULTIMATE GIL GROSS ENGINE)
 async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, surface, bsi, notes, form1_data, form2_data, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record, sackmann1, sackmann2):
     fatigueA = await get_advanced_load_analysis(await fetch_player_history_extended(p1['last_name'], 10))
@@ -1600,8 +1453,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
         weather_str = "Weather: Neutral/No Data."
         
     current_surf_key = SurfaceIntelligence.normalize_surface_key(surface)
-    p1_s_rating = p1_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
-    p2_s_rating = p2_surface_profile.get(current_surf_key, {}).get('rating', 5.0)
     
     elo_A = s1.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
     elo_B = s2.get('elo_metrics', {}).get(current_surf_key.lower(), 1500)
@@ -1623,7 +1474,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     scoutA = f"Strengths: {report1.get('strengths', 'Unknown')}. Weakness: {report1.get('weaknesses', 'Unknown')}." if report1 else "No scouting report available for Player A."
     scoutB = f"Strengths: {report2.get('strengths', 'Unknown')}. Weakness: {report2.get('weaknesses', 'Unknown')}." if report2 else "No scouting report available for Player B."
     
-    # 🚀 SOTA: Injiziere Acute Load & Durability Index ins Gehirn
     acute1 = sackmann1.get('fatigue', {}).get('acute_72h_minutes', 0)
     dur1 = sackmann1.get('fatigue', {}).get('durability_index', 70)
     fatigue_str_A = f"{fatigueA} | Acute 72h Load: {acute1} mins | Durability Index: {dur1}/100"
@@ -1643,18 +1493,9 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     tour = "WTA" if "WTA" in tour_name.upper() else "ATP"
     sys_acc = SYSTEM_ACCURACY.get(tour, 65.0)
 
-    convictionDirective = ""
-    if finalProb_val >= 70.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (CRITICAL)\nThe math gives {predictedMCWinner} a massive {finalProb_val:.1f}% win probability. Be HIGHLY ASSERTIVE. Explain exactly how {predictedMCWinner}'s strengths will physically break down {predictedMCLoser}. No hedging."
-    elif 55.0 <= finalProb_val <= 60.0:
-        convictionDirective = f"*** CONVICTION DIRECTIVE (COIN FLIP WARNING)\nThis is a highly volatile match ({finalProb_val:.1f}%). Focus HEAVILY on current Fatigue, recent H2H, and fine margins. Acknowledge the risk. DO NOT overstate small skill advantages."
-    else:
-        convictionDirective = f"*** CONVICTION DIRECTIVE\nSolid edge ({finalProb_val:.1f}%). Detail the tactical mismatch confidently."
-
     prompt = f"""
     You are Gil Gross, the ultimate elite tennis tactical analyst. 
-    Your goal is to break down this matchup dynamically and mathematically. 
-    Analyze how Player A's specific playstyle and strengths interact with Player B's weaknesses on this specific surface.
+    Your goal is to break down this matchup dynamically and qualitatively. The core math is already calculated.
     
     *** SYSTEM SELF-REFLECTION ***
     Our neural network accuracy is {sys_acc}%. 
@@ -1667,7 +1508,6 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - Style: {p1.get('play_style', 'Unknown')}
     - True Surface Elo: {elo_A}
     - Recent Surface Stats: {recent_stats_A}
-    - Form: {form1_data['text']}
     - Fatigue Profile: {fatigue_str_A}
     - Scout: {scoutA}
     
@@ -1675,28 +1515,29 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     - Style: {p2.get('play_style', 'Unknown')}
     - True Surface Elo: {elo_B}
     - Recent Surface Stats: {recent_stats_B}
-    - Form: {form2_data['text']}
     - Fatigue Profile: {fatigue_str_B}
     - Scout: {scoutB}
 
-    Winner: {predictedMCWinner} (Model Prob: {finalProb})
-    
-    {convictionDirective}
+    Mathematical Winner: {predictedMCWinner} (Model Prob: {finalProb})
     
     *** CRITICAL DIRECTIVES ***
-    1. CITE THE ELO & STATS: You MUST seamlessly weave the 'True Surface Elo' and at least 1-2 specific 'Recent Surface Stats' (like Serve Win % or BP Conv) into your prose to prove your mathematical edge. DO NOT just list them, use them to justify the tactical breakdown.
-    2. THE FATIGUE FACTOR: Evaluate the 'Acute 72h Load' against the 'Durability Index'. A low Durability Index combined with high Acute Load means a guaranteed physical drop-off. Explain how this affects their specific playstyle (e.g. lost depth on the backhand).
+    1. CITE THE ELO & STATS: You MUST seamlessly weave the 'True Surface Elo' and at least 1-2 specific 'Recent Surface Stats' (like Serve Win % or BP Conv) into your prose. 
+    2. THE FATIGUE FACTOR: Evaluate the 'Acute 72h Load' against the 'Durability Index'. A low Durability Index combined with high Acute Load means a guaranteed physical drop-off.
     3. TACTICAL PROSA: Explain HOW the court speed (BSI), weather, and the specific playstyle clash dictate the match.
-    4. FACTUAL INTEGRITY: Explicitly base your logic on the 'Scout Weaknesses', 'True Surface Elo', and 'Recent Surface Stats'.
-    5. Write a 200-250 word tactical breakdown. Make it sound like a sharp, professional podcast analysis.
-    6. ONLY RETURN JSON.
+    4. MULTIPLIER: Provide a "conviction_multiplier" (Float: 0.0 to 1.5). 
+       - 0.0 = VETO (Injured/Exhausted/Horrible matchup for the Mathematical Winner).
+       - 0.5 = REDUCE STAKE (Risky matchup).
+       - 1.0 = STANDARD.
+       - 1.5 = MAX UPGRADE (Dream tactical matchup & opponent is fatigued).
+    5. ONLY RETURN JSON.
     
     OUTPUT JSON:
     {{
         "winner_prediction": "{predictedMCWinner}",
-        "key_factor": "One sharp tactical sentence focusing on the primary mismatch (e.g. Serve vs Return on this specific surface).",
+        "key_factor": "One sharp tactical sentence focusing on the primary mismatch.",
         "prediction_text": "Deep Gil Gross style analysis (200-250 words). Tactical physics, playstyle clash, and fatigue/stats impact.",
-        "tactical_bullets": ["Tactic 1 (playstyle)", "Tactic 2 (surface/stats)", "Tactic 3 (weakness/fatigue)"]
+        "tactical_bullets": ["Tactic 1 (playstyle)", "Tactic 2 (surface/stats)", "Tactic 3 (weakness/fatigue)"],
+        "conviction_multiplier": 1.0
     }}
     """
     
@@ -1704,7 +1545,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
     default_text = f"Analysis unavailable for {p1['last_name']} vs {p2['last_name']}."
     
     if not res: 
-        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
+        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA'], 'conviction_multiplier': 1.0}
         
     try:
         cleaned = res.replace("json", "").replace("```", "").strip()
@@ -1715,10 +1556,11 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
         
         return {
             'ai_text': formatted_text.strip(),
-            'mc_prob_a': mc_results['probA']
+            'mc_prob_a': mc_results['probA'],
+            'conviction_multiplier': to_float(data.get('conviction_multiplier', 1.0), 1.0)
         }
     except: 
-        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA']}
+        return {'ai_text': default_text, 'mc_prob_a': mc_results['probA'], 'conviction_multiplier': 1.0}
 
 # =================================================================
 # 10. QUANTUM GAMES SIMULATOR (OVER/UNDER) 
@@ -1726,6 +1568,7 @@ async def analyze_match_with_ai(tour_name, p1, p2, s1, s2, report1, report2, sur
 class QuantumGamesSimulator:
     @staticmethod
     def derive_hold_probability(server_skills: Dict, returner_skills: Dict, bsi: float, surface: str) -> float:
+        # Simplified fallback for Games O/U simulation
         p_hold = 67.0 
         p_hold += (server_skills.get('serve', 50) - 50) * 0.35 
         p_hold += (server_skills.get('power', 50) - 50) * 0.10
@@ -1814,7 +1657,7 @@ class QuantumGamesSimulator:
 # PIPELINE EXECUTION 
 # =================================================================
 async def run_pipeline():
-    log(f"🚀 Neural Scout V210.00 (ULTIMATE DURABILITY ENGINE) Starting...")
+    log(f"🚀 Neural Scout V211.00 (SYNDICATE TWO-BRAIN ENGINE) Starting...")
     
     api = TennisDataAPI(API_TENNIS_KEY)
 
@@ -2080,12 +1923,12 @@ async def run_pipeline():
                         should_run_ai = False
                 
                 if not should_run_ai:
-                    new_prob = recalculate_fair_odds_with_new_market(cached_ai['ai_fair_odds1'], cached_ai['old_odds1'], cached_ai['old_odds2'], m['odds1'], m['odds2'])
-                    fair1 = round(1/new_prob, 2) if new_prob > 0.01 else 99
-                    fair2 = round(1/(1-new_prob), 2) if new_prob < 0.99 else 99
-                    
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name)
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name)
+                    fair1 = cached_ai['ai_fair_odds1']
+                    fair2 = round(1 / (1 - (1/fair1)), 2) if fair1 > 1.01 else 99
+                    # Wir benötigen auch bei gecacheten Spielen den Conviction-Wert des LLMs. Da dieser nicht gecached ist,
+                    # nutzen wir den Standard-Wert 1.0, sofern nicht anders bekannt.
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name, ai_conviction_multiplier=1.0)
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name, ai_conviction_multiplier=1.0)
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
@@ -2097,7 +1940,7 @@ async def run_pipeline():
                         hist_is_value = True
                         hist_pick_player = full_n2
                         
-                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE).*?\]', '', cached_ai['ai_text']).strip() 
+                    ai_text_final = re.sub(r'\n*\s*\[.*?(Fair|Edge|VALUE|WATCH|NONE|VETO|BOMB|CONVICTION|MICRO).*?\]', '', cached_ai['ai_text']).strip() 
                     ai_text_final += value_tag
                     hist_fair1 = fair1
                     hist_fair2 = fair2
@@ -2147,13 +1990,11 @@ async def run_pipeline():
 
                     sim_result = QuantumGamesSimulator.run_simulation(s1, s2, bsi, surf, actual_ou_line=m.get('actual_ou_line'), empirical_ou=empirical_ou)
                     
-                    styleA = p1_obj.get('play_style', '')
-                    styleB = p2_obj.get('play_style', '')
-                    
+                    # 🚀 SOTA: Pure Data Markov Chain
                     mc_results = MarkovChainEngine.run_simulation(
                         s1=s1, s2=s2,
                         formA=p1_form_v2['score'], formB=p2_form_v2['score'],
-                        bsi=bsi, styleA=styleA, styleB=styleB,
+                        bsi=bsi, surface=surf,
                         sackmannA=sackmannA, sackmannB=sackmannB,
                         iterations=2500
                     )
@@ -2184,12 +2025,13 @@ async def run_pipeline():
 
                     sim_result["h2h"] = h2h_record
 
+                    # 🚀 SOTA: The AI (Gill Gross) acts ONLY as a smart filter (Multiplier), not as a probability generator.
                     ai = await analyze_match_with_ai(
                         matched_tour_name, p1_obj, p2_obj, s1, s2, report1, report2, surf, bsi, notes, 
                         p1_form_v2, p2_form_v2, weather_data, p1_surface_profile, p2_surface_profile, mc_results, h2h_record, sackmannA, sackmannB
                     )
                     
-                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, bsi, surf, ai['mc_prob_a'], m['odds1'], m['odds2'], pinnacle_prob_a)
+                    prob = calculate_physics_fair_odds(full_n1, full_n2, s1, s2, surf, ai['mc_prob_a'])
                     
                     fair1 = round(1/prob, 2) if prob > 0.01 else 99
                     fair2 = round(1/(1-prob), 2) if prob < 0.99 else 99
@@ -2207,8 +2049,9 @@ async def run_pipeline():
                     sim_result['projected_handicap'] = round((prob - 0.50) * 100 * 0.14, 2)
                     sim_result['bookmaker_set_odds'] = m.get('bookie_set_odds', {})
 
-                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name)
-                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name)
+                    # 🚀 SOTA: Fractional Kelly + AI Filter
+                    val_p1 = calculate_value_metrics(1/fair1, m['odds1'], matched_tour_name, ai['conviction_multiplier'])
+                    val_p2 = calculate_value_metrics(1/fair2, m['odds2'], matched_tour_name, ai['conviction_multiplier'])
                     
                     value_tag = ""
                     if val_p1["is_value"]: 
