@@ -1333,34 +1333,34 @@ def calculate_value_metrics(fair_prob: float, market_odds: float, tour_name: str
     b = market_odds - 1.0
     full_kelly = actual_edge_decimal / b
     
-    # 🚀 SOTA FIX: DYNAMISCHE VARIANCE PENALTY (Syndicate Standard)
-    # Wir dämpfen das Risiko massiv ab, je höher die Quote wird.
+        # 🚀 SOTA FIX: SYNDICATE VARIANCE PENALTY (0-3 Unit Scale)
+    # Wir dämpfen das Risiko massiv ab und setzen ein Hard-Cap bei 3.0 Units.
     if market_odds < 2.00:
-        kelly_fraction = 0.25      # 1/4 Kelly für verlässliche Favoriten
-        max_allowed_stake = 5.0    # Absolute Obergrenze
+        kelly_fraction = 0.15      # 15% Kelly für solide Favoriten
+        max_allowed_stake = 3.0    # NEUE OBERGRENZE (Max Bomb = 3.0u)
     elif market_odds < 3.00:
-        kelly_fraction = 0.15      # Reduzierter Hebel für Underdogs
-        max_allowed_stake = 3.0    # Capped
+        kelly_fraction = 0.10      # Reduzierter Hebel für Underdogs
+        max_allowed_stake = 2.0    # Max 2.0u
     elif market_odds < 5.00:
-        kelly_fraction = 0.075     # Extreme Dämpfung für hohe Varianz
-        max_allowed_stake = 1.5    # Maximal 1.5u, auch wenn KI 1.5x Multiplier gibt
+        kelly_fraction = 0.05      # Extreme Dämpfung für hohe Varianz
+        max_allowed_stake = 1.0    # Max 1.0u
     else:
-        kelly_fraction = 0.025     # Lotto-Tickets (Longshots)
-        max_allowed_stake = 0.5    # Maximal halbe Unit
+        kelly_fraction = 0.02      # Lotto-Tickets (Longshots)
+        max_allowed_stake = 0.5    # Max 0.5u
         
     raw_stake = (full_kelly * 100) * kelly_fraction
     adjusted_stake = raw_stake * ai_conviction_multiplier
     
-    # Die Stake wird streng zwischen 0.1 und der dynamischen Max-Grenze eingesperrt
+    # Die Stake wird streng zwischen 0.1 und der neuen 3.0 Max-Grenze eingesperrt
     optimal_stake = round(min(max_allowed_stake, max(0.1, adjusted_stake)), 1)
     
-    # Intelligentes Labeling basierend auf der neuen Mathematik
+    # Intelligentes Labeling angepasst an die 3-Unit Skala
     if ai_conviction_multiplier <= 0.2:
         label = "🛑 AI VETO (BAD MATCHUP)"
         return {"type": label, "edge_percent": edge_percent, "is_value": False, "kelly_stake": 0.0}
-    elif optimal_stake >= 3.0:
+    elif optimal_stake >= 2.5:     # 2.5u - 3.0u ist jetzt die Max Bomb
         label = "🔥 MAX BOMB (QUANT + SCOUT)"
-    elif optimal_stake >= 1.5:
+    elif optimal_stake >= 1.5:     # 1.5u - 2.4u ist High Conviction
         label = "✨ HIGH CONVICTION"
     elif optimal_stake >= 0.5:
         label = "🛡️ CORE VALUE"
