@@ -546,17 +546,42 @@ class AlchemistEngine:
 
 
 async def compile_intelligence_matrix():
-    log("🌊 Lade ALLE Matches (ATP & WTA) aus Supabase für Elo-Berechnung...")
+    log("🌊 Lade ALLE Matches (ATP & WTA) aus Supabase für Elo-Berechnung (Cursor-Pagination)...")
     matches = []
-    offset = 0
+    last_date = "1900-01-01"
+    seen_ids = set()
+
     while True:
-        # Hier holen wir ALLES aus der DB, um das Elo korrekt sequenziell aufzubauen. 
-        # Das dauert in Python nur wenige Sekunden.
-        res = supabase.table("historical_matches").select("winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced").order("match_date", desc=False).range(offset, offset + 999).execute()
+        # Die SOTA Cursor-Pagination: Verhindert Supabase Timeouts bei extrem großen Datenmengen
+        res = supabase.table("historical_matches") \
+            .select("id,winner_sackmann_id,loser_sackmann_id,surface,match_date,w_ace,w_df,w_svpt,w_1stin,w_1stwon,w_2ndwon,w_bpsaved,w_bpfaced,l_ace,l_df,l_svpt,l_1stin,l_1stwon,l_2ndwon,l_bpsaved,l_bpfaced") \
+            .gte("match_date", last_date) \
+            .order("match_date", desc=False) \
+            .limit(1000) \
+            .execute()
+            
         chunk = res.data or []
-        matches.extend(chunk)
-        if len(chunk) < 1000: break
-        offset += 1000
+        new_matches = 0
+        
+        for m in chunk:
+            # Nutze die Sackmann-IDs und das Datum als Unique-Identifier (Fallback, falls keine DB-ID existiert)
+            m_hash = f"{m.get('id', '')}_{m.get('match_date')}_{m.get('winner_sackmann_id')}_{m.get('loser_sackmann_id')}"
+            if m_hash not in seen_ids:
+                seen_ids.add(m_hash)
+                matches.append(m)
+                new_matches += 1
+        
+        if len(chunk) < 1000: 
+            break
+            
+        # Update Cursor: Das letzte Datum des aktuellen Chunks
+        last_date = chunk[-1]["match_date"]
+        
+        # Sicherheits-Check: Wenn keine neuen Matches hinzugefügt wurden,
+        # stecken wir an einem Tag mit >1000 Matches fest.
+        if new_matches == 0:
+            log("⚠️ Cursor hängt an einem Datum mit extrem vielen Matches fest. Breche Pagination sicherheitshalber ab.")
+            break
     
     log("🧮 Simuliere Elo, Advanced Stats & True Match Load (Points-to-Minutes)...")
     engine = AlchemistEngine()
